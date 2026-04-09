@@ -276,7 +276,7 @@ docs/architecture/SCALA_CODE_PATTERNS.md (index — follow TOC to specific subse
 
 | Concern | Technology |
 |---------|-----------|
-| Language | Scala 3.4.1 |
+| Language | Scala 3.7.3 |
 | Effect system | Cats Effect (tagless final) |
 | HTTP | http4s Ember |
 | JSON | Circe (semi-auto derivation) |

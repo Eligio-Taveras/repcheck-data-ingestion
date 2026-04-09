@@ -42,7 +42,7 @@ FROM gcr.io/distroless/java21-debian12
 WORKDIR /app
 
 # Copy the fat JAR from the build stage
-COPY --from=build /app/PLACEHOLDER_PROJECT/target/scala-3.4.1/PLACEHOLDER_JAR app.jar
+COPY --from=build /app/PLACEHOLDER_PROJECT/target/scala-3.7.3/PLACEHOLDER_JAR app.jar
 
 # JVM tuning for Cloud Run:
 #   -XX:MaxRAMPercentage=75.0 — use 75% of container memory limit

@@ -11,7 +11,7 @@
 lazy val commonSettings = Seq(
   organization := "com.repcheck",
   version := "0.1.0-SNAPSHOT",
-  scalaVersion := "3.4.1",
+  scalaVersion := "3.7.3",
   semanticdbEnabled := true
 )
 
@@ -66,7 +66,7 @@ lazy val root = (project in file("."))
     organization := "com.repcheck",
     name := "repcheck-shared-models",
     version := "0.1.0-SNAPSHOT",
-    scalaVersion := "3.4.1",
+    scalaVersion := "3.7.3",
     libraryDependencies ++= circe
   )
 ```

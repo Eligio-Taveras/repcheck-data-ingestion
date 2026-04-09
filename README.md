@@ -15,7 +15,7 @@ This module depends on the following shared libraries:
 
 | Concern | Technology |
 |---------|-----------|
-| Language | Scala 3.4.1 |
+| Language | Scala 3.7.3 |
 | Effect system | Cats Effect (tagless final `F[_]`) |
 | HTTP | http4s Ember |
 | JSON | Circe (semi-auto derivation) |
