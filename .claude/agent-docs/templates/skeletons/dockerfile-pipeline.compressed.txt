@@ -1,0 +1,52 @@
+<!-- GENERATED FILE — DO NOT EDIT. Source: docs/templates/skeletons/dockerfile-pipeline.txt -->
+
+# Dockerfile — Cloud Run Job Pipeline Application
+
+Multi-stage build: JDK for compilation, Distroless for runtime. Replace: PLACEHOLDER_PROJECT (SBT sub-project name), PLACEHOLDER_JAR (assembly JAR filename), PLACEHOLDER_MAIN (fully qualified main class).
+
+## Stage 1: Build
+
+```dockerfile
+FROM eclipse-temurin:21-jdk AS build
+
+WORKDIR /app
+
+COPY project/ project/
+COPY build.sbt .
+
+RUN sbt update
+
+COPY . .
+RUN sbt "PLACEHOLDER_PROJECT / assembly"
+```
+
+Copy SBT structure first for Docker layer caching; dependencies change less often than source code.
+
+## Stage 2: Runtime
+
+```dockerfile
+FROM gcr.io/distroless/java21-debian12
+
+WORKDIR /app
+
+COPY --from=build /app/PLACEHOLDER_PROJECT/target/scala-3.4.1/PLACEHOLDER_JAR app.jar
+
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
+```
+
+Distroless: ~130MB vs ~300MB for JRE, no shell (no injection attacks), Google-maintained security patches. JVM tuning: -XX:MaxRAMPercentage=75.0 uses 75% of container memory; JDK 21 is container-aware (reads cgroup limits). No EXPOSE for Cloud Run Jobs (batch workloads); add EXPOSE 8080 for Cloud Run Services. Cannot docker exec on Distroless; use Cloud Logging for debugging.
+
+## .dockerignore
+
+```
+target/
+.idea/
+.bsp/
+.metals/
+.git/
+docs/
+blog/
+.claude/
+*.md
+.github/
+```

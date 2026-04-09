@@ -1,0 +1,98 @@
+# =============================================================================
+# Cloud Run Job Definition
+# =============================================================================
+# Deploy with: gcloud run jobs replace cloud-run-job.yaml --region=us-central1
+#
+# Replace all PLACEHOLDER values:
+#   PLACEHOLDER_JOB_NAME   — e.g., repcheck-bills-pipeline
+#   PLACEHOLDER_COMPONENT  — e.g., bills-pipeline
+#   PLACEHOLDER_ENV        — e.g., dev, staging, prod
+#   PLACEHOLDER_IMAGE      — e.g., bills-pipeline
+#   PLACEHOLDER_TAG        — e.g., latest or git SHA
+# =============================================================================
+
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: PLACEHOLDER_JOB_NAME
+  labels:
+    app: repcheck
+    component: PLACEHOLDER_COMPONENT
+  annotations:
+    run.googleapis.com/launch-stage: GA
+spec:
+  template:
+    metadata:
+      labels:
+        app: repcheck
+        component: PLACEHOLDER_COMPONENT
+    spec:
+      template:
+        spec:
+          containers:
+            - image: us-central1-docker.pkg.dev/repcheck-PLACEHOLDER_ENV/repcheck-images/PLACEHOLDER_IMAGE:PLACEHOLDER_TAG
+              resources:
+                limits:
+                  # 2 CPU / 2Gi — default for medium-sized pipelines.
+                  # Adjust per pipeline: ingestion may need less,
+                  # LLM analysis may need more for concurrent API calls.
+                  cpu: "2"
+                  memory: 2Gi
+              env:
+                # --- Common environment variables ---
+                - name: GOOGLE_CLOUD_PROJECT
+                  value: repcheck-PLACEHOLDER_ENV
+                # AlloyDB connection string injected via config (see config-pattern.scala)
+                # - name: ALLOYDB_URL
+                #   value: "jdbc:postgresql://PLACEHOLDER_ALLOYDB_HOST:5432/repcheck"
+
+                # --- Pipeline-specific variables (add as needed) ---
+                # - name: CONGRESS_GOV_API_KEY
+                #   valueFrom:
+                #     secretKeyRef:
+                #       name: congress-api-key
+                #       key: latest
+                #
+                # - name: ANTHROPIC_API_KEY
+                #   valueFrom:
+                #     secretKeyRef:
+                #       name: anthropic-api-key
+                #       key: latest
+                #
+                # - name: SNAPSHOT_PATH
+                #   value: "gs://repcheck-snapshots-PLACEHOLDER_ENV/PLACEHOLDER_RUN_ID/"
+
+          # --- Service Account ---
+          # Pipeline runtime SA has AlloyDB, Pub/Sub, and GCS access.
+          # Separate from the deployer SA used in CI/CD.
+          serviceAccountName: repcheck-pipeline-sa@repcheck-PLACEHOLDER_ENV.iam.gserviceaccount.com
+
+          # --- Timeout ---
+          # 1 hour max for batch jobs. Adjust per pipeline:
+          #   - Ingestion (bills, votes): 30 min typical
+          #   - LLM Analysis: up to 1 hour (depends on bill count + LLM latency)
+          #   - Scoring: 15-30 min typical
+          timeoutSeconds: 3600
+
+          # --- Retry Policy ---
+          # maxRetries: 1 — the application handles retry internally via
+          # RetryWrapper (exponential backoff, per-subsystem config).
+          # Job-level retry is a safety net for infrastructure failures only.
+          maxRetries: 1
+
+# =============================================================================
+# Cloud Scheduler Trigger (for cron-driven ingestion pipelines)
+# =============================================================================
+# Create with:
+#   gcloud scheduler jobs create http PLACEHOLDER_JOB_NAME-trigger \
+#     --location=us-central1 \
+#     --schedule="0 2 * * *" \
+#     --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/repcheck-PLACEHOLDER_ENV/jobs/PLACEHOLDER_JOB_NAME:run" \
+#     --http-method=POST \
+#     --oauth-service-account-email=repcheck-pipeline-sa@repcheck-PLACEHOLDER_ENV.iam.gserviceaccount.com
+#
+# Schedule examples:
+#   "0 2 * * *"    — Daily at 2 AM UTC (bill/vote ingestion)
+#   "0 */6 * * *"  — Every 6 hours (member updates)
+#   "*/30 * * * *" — Every 30 minutes (high-frequency polling)
+# =============================================================================

@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/**", "feat/**", "fix/**", "chore/**", "claude/**", "dev/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+      contents: read
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_ACTOR: ${{ github.actor }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Install sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Check formatting (Scalafmt)
+        run: sbt scalafmtCheckAll
+
+      - name: Compile (includes WartRemover + tpolecat checks)
+        run: sbt compile
+
+      - name: Check Scalafix rules
+        run: sbt "scalafixAll --check"
+
+      - name: Run tests with coverage
+        run: sbt coverage test coverageReport
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+          files: |
+            bills-common/target/scala-3.7.3/scoverage-report/scoverage.xml
+            bill-metadata-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
+            bill-text-availability-checker/target/scala-3.7.3/scoverage-report/scoverage.xml
+            bill-text-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
+
+  doc-generator:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_ACTOR: ${{ github.actor }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Install sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Compile doc generator
+        run: sbt docGenerator/compile
+
+      - name: Run doc generator tests
+        run: sbt docGenerator/test

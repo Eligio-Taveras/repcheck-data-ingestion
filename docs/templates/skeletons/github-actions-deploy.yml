@@ -1,0 +1,245 @@
+# =============================================================================
+# GitHub Actions — Deployment Workflow
+# =============================================================================
+# Conditional deployment based on repository archetype:
+#   - Library repos: publish JAR to GitHub Packages
+#   - Pipeline repos: Docker build → Artifact Registry → Cloud Run Job
+#   - Config repos: sync prompt configs to GCS
+#
+# Replace all PLACEHOLDER values before use.
+#
+# Prerequisites:
+#   - Workload Identity Federation configured (see deployment-architecture.md)
+#   - GitHub Environments: dev, staging, production (with protection rules)
+#   - Artifact Registry repository created in each GCP project
+# =============================================================================
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']  # Library repos trigger on version tags
+
+# Prevent concurrent deploys to the same environment
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+# =============================================================================
+# Job 1: Detect which archetype this repo is
+# =============================================================================
+jobs:
+  detect-archetype:
+    runs-on: ubuntu-latest
+    outputs:
+      archetype: ${{ steps.detect.outputs.archetype }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - id: detect
+        run: |
+          if [ -f "Dockerfile" ]; then
+            echo "archetype=pipeline" >> $GITHUB_OUTPUT
+          elif [ -d "prompt-config" ]; then
+            echo "archetype=config" >> $GITHUB_OUTPUT
+          else
+            echo "archetype=library" >> $GITHUB_OUTPUT
+          fi
+
+  # ===========================================================================
+  # Job 2a: Library → publish to GitHub Packages (Maven)
+  # ===========================================================================
+  # Triggers on version tags (v*) only.
+  publish-library:
+    needs: detect-archetype
+    if: needs.detect-archetype.outputs.archetype == 'library' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'sbt'
+
+      - uses: sbt/setup-sbt@v1
+
+      - name: Publish to GitHub Packages
+        run: sbt publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ===========================================================================
+  # Job 2b: Pipeline → Docker build + push + Cloud Run Job deploy
+  # ===========================================================================
+  # Deploys to dev on every merge to main.
+  # Staging and prod deployments use GitHub Environments with protection rules.
+  deploy-pipeline-dev:
+    needs: detect-archetype
+    if: needs.detect-archetype.outputs.archetype == 'pipeline' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write  # Required for Workload Identity Federation
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      # Authenticate to GCP via Workload Identity Federation (keyless)
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/PLACEHOLDER_PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          service_account: "repcheck-deployer@repcheck-dev.iam.gserviceaccount.com"
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Configure Docker to push to Artifact Registry
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev
+
+      # Build and push Docker image
+      - name: Build and push Docker image
+        run: |
+          IMAGE=us-central1-docker.pkg.dev/repcheck-dev/repcheck-images/PLACEHOLDER_IMAGE
+          docker build -t $IMAGE:${{ github.sha }} -t $IMAGE:latest .
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+
+      # Deploy Cloud Run Job with new image
+      - name: Deploy Cloud Run Job
+        run: |
+          gcloud run jobs update PLACEHOLDER_JOB_NAME \
+            --image=us-central1-docker.pkg.dev/repcheck-dev/repcheck-images/PLACEHOLDER_IMAGE:${{ github.sha }} \
+            --region=us-central1
+
+  # ---------------------------------------------------------------------------
+  # E2E tests against dev (runs after dev deployment)
+  # ---------------------------------------------------------------------------
+  e2e-tests-dev:
+    needs: deploy-pipeline-dev
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'sbt'
+
+      - uses: sbt/setup-sbt@v1
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/PLACEHOLDER_PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          service_account: "repcheck-deployer@repcheck-dev.iam.gserviceaccount.com"
+
+      - name: Run E2E tests against dev
+        run: sbt "testOnly -- -n com.repcheck.tags.E2ETest"
+        env:
+          GOOGLE_CLOUD_PROJECT: repcheck-dev
+          TEST_NAMESPACE_PREFIX: ci-${{ github.run_id }}-
+
+  # ---------------------------------------------------------------------------
+  # Deploy to staging (auto, if e2e tests pass)
+  # ---------------------------------------------------------------------------
+  deploy-pipeline-staging:
+    needs: e2e-tests-dev
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/PLACEHOLDER_PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          service_account: "repcheck-deployer@repcheck-staging.iam.gserviceaccount.com"
+
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev
+
+      # Re-tag the dev image for staging (don't rebuild)
+      - name: Promote image to staging
+        run: |
+          gcloud artifacts docker tags add \
+            us-central1-docker.pkg.dev/repcheck-dev/repcheck-images/PLACEHOLDER_IMAGE:${{ github.sha }} \
+            us-central1-docker.pkg.dev/repcheck-staging/repcheck-images/PLACEHOLDER_IMAGE:${{ github.sha }}
+
+      - name: Deploy Cloud Run Job to staging
+        run: |
+          gcloud run jobs update PLACEHOLDER_JOB_NAME \
+            --image=us-central1-docker.pkg.dev/repcheck-staging/repcheck-images/PLACEHOLDER_IMAGE:${{ github.sha }} \
+            --region=us-central1
+
+  # ---------------------------------------------------------------------------
+  # Deploy to production (manual approval gate)
+  # ---------------------------------------------------------------------------
+  deploy-pipeline-prod:
+    needs: deploy-pipeline-staging
+    runs-on: ubuntu-latest
+    environment: production  # Requires manual approval via GitHub Environment protection rule
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/PLACEHOLDER_PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          service_account: "repcheck-deployer@repcheck-prod.iam.gserviceaccount.com"
+
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev
+
+      - name: Promote image to prod
+        run: |
+          gcloud artifacts docker tags add \
+            us-central1-docker.pkg.dev/repcheck-staging/repcheck-images/PLACEHOLDER_IMAGE:${{ github.sha }} \
+            us-central1-docker.pkg.dev/repcheck-prod/repcheck-images/PLACEHOLDER_IMAGE:${{ github.sha }}
+
+      - name: Deploy Cloud Run Job to prod
+        run: |
+          gcloud run jobs update PLACEHOLDER_JOB_NAME \
+            --image=us-central1-docker.pkg.dev/repcheck-prod/repcheck-images/PLACEHOLDER_IMAGE:${{ github.sha }} \
+            --region=us-central1
+
+  # ===========================================================================
+  # Job 2c: Config → upload prompt configs to GCS
+  # ===========================================================================
+  deploy-config:
+    needs: detect-archetype
+    if: needs.detect-archetype.outputs.archetype == 'config' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/PLACEHOLDER_PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          service_account: "repcheck-deployer@repcheck-dev.iam.gserviceaccount.com"
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Sync prompt configs to GCS. gsutil rsync ensures deletions propagate.
+      - name: Deploy prompt configs to GCS
+        run: |
+          gsutil -m rsync -r prompt-config/ gs://repcheck-prompt-configs-dev/PLACEHOLDER_ENGINE_NAME/

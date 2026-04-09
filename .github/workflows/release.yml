@@ -1,0 +1,116 @@
+name: Release
+
+# Triggers on every push to main (i.e. merged PRs).
+# Reads PR labels to decide the semver bump, tags the commit, then publishes.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create tags + GitHub Releases
+      packages: write   # publish to GitHub Packages
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_ACTOR: ${{ github.actor }}
+
+    steps:
+      - name: Checkout code (full history for tags)
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0          # sbt-dynver needs full history + tags
+          fetch-tags: true
+
+      # ── Determine version bump from the merged PR's labels ──
+      - name: Resolve merged PR number
+        id: pr
+        run: |
+          PR_NUMBER=$(gh pr list --state merged --search "${{ github.sha }}" --json number --jq '.[0].number // empty')
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Read PR labels
+        id: labels
+        run: |
+          if [ -z "${{ steps.pr.outputs.number }}" ]; then
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+            echo "No merged PR found for this commit — defaulting to patch bump"
+            exit 0
+          fi
+          LABELS=$(gh pr view "${{ steps.pr.outputs.number }}" --json labels --jq '[.labels[].name] | join(",")')
+          echo "raw=$LABELS" >> "$GITHUB_OUTPUT"
+          if echo "$LABELS" | grep -q "release:major"; then
+            echo "bump=major" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS" | grep -q "release:minor"; then
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS" | grep -q "release:skip"; then
+            echo "bump=skip" >> "$GITHUB_OUTPUT"
+          else
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Compute the next version tag ──
+      - name: Compute next version
+        if: steps.labels.outputs.bump != 'skip'
+        id: version
+        run: |
+          BUMP="${{ steps.labels.outputs.bump }}"
+          # Find the latest semver tag (vX.Y.Z)
+          LATEST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            # No tags yet — start at v0.1.0
+            NEXT="v0.1.0"
+          else
+            # Strip leading 'v'
+            VERSION="${LATEST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+            case "$BUMP" in
+              major) NEXT="v$((MAJOR + 1)).0.0" ;;
+              minor) NEXT="v${MAJOR}.$((MINOR + 1)).0" ;;
+              patch) NEXT="v${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+            esac
+          fi
+          echo "tag=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Resolved: $LATEST_TAG -> $NEXT ($BUMP)"
+
+      # ── Create the git tag ──
+      - name: Create git tag
+        if: steps.labels.outputs.bump != 'skip'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Tagged ${{ github.sha }} as $TAG"
+
+      # ── Publish with the new tag (dynver resolves a clean version) ──
+      - name: Set up JDK 21
+        if: steps.labels.outputs.bump != 'skip'
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Install sbt
+        if: steps.labels.outputs.bump != 'skip'
+        uses: sbt/setup-sbt@v1
+
+      - name: Publish to GitHub Packages
+        if: steps.labels.outputs.bump != 'skip'
+        run: sbt billsCommon/publish
+
+      # ── Create a GitHub Release for visibility ──
+      - name: Create GitHub Release
+        if: steps.labels.outputs.bump != 'skip'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          PR="${{ steps.pr.outputs.number }}"
+          BODY="Published \`com.repcheck:repcheck-data-ingestion_3:${TAG#v}\` to GitHub Packages."
+          if [ -n "$PR" ]; then
+            BODY="$BODY\n\nSource: #$PR"
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "$(echo -e "$BODY")" \
+            --target "${{ github.sha }}"

@@ -1,0 +1,83 @@
+<!-- GENERATED FILE — DO NOT EDIT. Source: docs/templates/skeletons/cloud-run-job.yaml -->
+
+# Cloud Run Job Definition
+
+**Deploy:** `gcloud run jobs replace cloud-run-job.yaml --region=us-central1`
+
+**Placeholders to replace:**
+- `PLACEHOLDER_JOB_NAME` — e.g., repcheck-bills-pipeline
+- `PLACEHOLDER_COMPONENT` — e.g., bills-pipeline
+- `PLACEHOLDER_ENV` — dev, staging, prod
+- `PLACEHOLDER_IMAGE` — e.g., bills-pipeline
+- `PLACEHOLDER_TAG` — latest or git SHA
+
+## Job Manifest
+
+```yaml
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: PLACEHOLDER_JOB_NAME
+  labels:
+    app: repcheck
+    component: PLACEHOLDER_COMPONENT
+  annotations:
+    run.googleapis.com/launch-stage: GA
+spec:
+  template:
+    metadata:
+      labels:
+        app: repcheck
+        component: PLACEHOLDER_COMPONENT
+    spec:
+      template:
+        spec:
+          containers:
+            - image: us-central1-docker.pkg.dev/repcheck-PLACEHOLDER_ENV/repcheck-images/PLACEHOLDER_IMAGE:PLACEHOLDER_TAG
+              resources:
+                limits:
+                  cpu: "2"
+                  memory: 2Gi
+              env:
+                - name: GOOGLE_CLOUD_PROJECT
+                  value: repcheck-PLACEHOLDER_ENV
+                # AlloyDB connection string injected via config (see config-pattern.scala)
+                # - name: ALLOYDB_URL
+                #   value: "jdbc:postgresql://PLACEHOLDER_ALLOYDB_HOST:5432/repcheck"
+                # - name: CONGRESS_GOV_API_KEY
+                #   valueFrom:
+                #     secretKeyRef:
+                #       name: congress-api-key
+                #       key: latest
+                # - name: ANTHROPIC_API_KEY
+                #   valueFrom:
+                #     secretKeyRef:
+                #       name: anthropic-api-key
+                #       key: latest
+                # - name: SNAPSHOT_PATH
+                #   value: "gs://repcheck-snapshots-PLACEHOLDER_ENV/PLACEHOLDER_RUN_ID/"
+          serviceAccountName: repcheck-pipeline-sa@repcheck-PLACEHOLDER_ENV.iam.gserviceaccount.com
+          timeoutSeconds: 3600
+          maxRetries: 1
+```
+
+**Resource sizing:** 2 CPU / 2Gi default. Adjust per pipeline: ingestion needs less, LLM analysis needs more for concurrent API calls.
+**Timeout:** 1 hour max. Ingestion (30 min), LLM analysis (up to 1 hour), scoring (15-30 min).
+**Retries:** maxRetries=1 is safety net for infrastructure; app handles internal retry via RetryWrapper (exponential backoff).
+
+## Cloud Scheduler Trigger (Cron)
+
+**Create:**
+```bash
+gcloud scheduler jobs create http PLACEHOLDER_JOB_NAME-trigger \
+  --location=us-central1 \
+  --schedule="0 2 * * *" \
+  --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/repcheck-PLACEHOLDER_ENV/jobs/PLACEHOLDER_JOB_NAME:run" \
+  --http-method=POST \
+  --oauth-service-account-email=repcheck-pipeline-sa@repcheck-PLACEHOLDER_ENV.iam.gserviceaccount.com
+```
+
+**Schedule examples:**
+- `"0 2 * * *"` — Daily 2 AM UTC (bill/vote ingestion)
+- `"0 */6 * * *"` — Every 6 hours (member updates)
+- `"*/30 * * * *"` — Every 30 minutes (high-frequency polling)

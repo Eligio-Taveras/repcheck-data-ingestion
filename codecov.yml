@@ -1,0 +1,12 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto    # Don't fail on overall repo coverage, just track it
+        threshold: 5%   # Allow up to 5% drop before failing
+    patch:
+      default:
+        target: 90%     # New/changed lines in a PR must have 90% coverage
+
+ignore:
+  - "doc-generator/**"

@@ -1,0 +1,69 @@
+# =============================================================================
+# Dockerfile — Cloud Run Job Pipeline Application
+# =============================================================================
+# Multi-stage build: JDK for compilation, Distroless for runtime.
+# Replace all PLACEHOLDER values before use.
+#
+# PLACEHOLDER_PROJECT  — SBT sub-project name (e.g., bills-pipeline)
+# PLACEHOLDER_JAR      — Assembly JAR filename (e.g., bills-pipeline-assembly-0.1.0.jar)
+# PLACEHOLDER_MAIN     — Fully qualified main class (e.g., com.repcheck.BillsPipelineApp)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Build — compile and assemble fat JAR
+# ---------------------------------------------------------------------------
+FROM eclipse-temurin:21-jdk AS build
+
+WORKDIR /app
+
+# Copy SBT structure first for Docker layer caching.
+# Dependencies change less often than source code, so this layer is cached
+# across builds that only change application code.
+COPY project/ project/
+COPY build.sbt .
+
+# Resolve dependencies in a separate layer (cached if build.sbt unchanged)
+RUN sbt update
+
+# Copy full source and assemble
+COPY . .
+RUN sbt "PLACEHOLDER_PROJECT / assembly"
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime — minimal Distroless image
+# ---------------------------------------------------------------------------
+# Why Distroless:
+#   - No shell, no package manager (~130MB vs ~300MB for JRE)
+#   - Minimal attack surface (no shell injection possible)
+#   - Google maintains security patches
+#   - Trade-off: cannot docker exec for debugging (use Cloud Logging)
+FROM gcr.io/distroless/java21-debian12
+
+WORKDIR /app
+
+# Copy the fat JAR from the build stage
+COPY --from=build /app/PLACEHOLDER_PROJECT/target/scala-3.4.1/PLACEHOLDER_JAR app.jar
+
+# JVM tuning for Cloud Run:
+#   -XX:MaxRAMPercentage=75.0 — use 75% of container memory limit
+#   JDK 21 is container-aware by default (reads cgroup limits)
+#
+# No EXPOSE — Cloud Run Jobs are batch (run, process, exit), not HTTP-serving.
+# For Cloud Run Services, add: EXPOSE 8080
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
+
+
+# =============================================================================
+# .dockerignore — place this content in a .dockerignore file at repo root
+# =============================================================================
+# target/
+# .idea/
+# .bsp/
+# .metals/
+# .git/
+# docs/
+# blog/
+# .claude/
+# *.md
+# .github/
+# =============================================================================

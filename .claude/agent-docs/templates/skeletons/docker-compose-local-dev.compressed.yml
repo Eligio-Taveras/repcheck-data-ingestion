@@ -1,0 +1,74 @@
+<!-- GENERATED FILE — DO NOT EDIT. Source: docs/templates/skeletons/docker-compose-local-dev.yml -->
+
+# Docker Compose — Local Development Stack
+
+Provides local infrastructure for GCP services used by RepCheck pipelines.
+
+**Start:** `docker-compose -f docker-compose-local-dev.yml up -d`
+
+**Environment Variables:**
+```
+DATABASE_URL=jdbc:postgresql://localhost:5432/PLACEHOLDER_DB_NAME
+PUBSUB_EMULATOR_HOST=localhost:8085
+```
+
+AlloyDB Omni is Google's official local AlloyDB engine (identical to managed service). Includes columnar engine and pgvector built-in; wire-compatible with PostgreSQL.
+
+## Configuration
+
+```yaml
+version: "3.9"
+
+services:
+  alloydb:
+    image: google/alloydbomni:16.8.0
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: PLACEHOLDER_DB_NAME
+      POSTGRES_USER: PLACEHOLDER_DB_USER
+      POSTGRES_PASSWORD: PLACEHOLDER_DB_PASS
+    volumes:
+      - alloydbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U PLACEHOLDER_DB_USER"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pubsub-emulator:
+    image: google/cloud-sdk:slim
+    command: >
+      gcloud beta emulators pubsub start
+      --host-port=0.0.0.0:8085
+      --project=repcheck-local
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8085/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  alloydbdata:
+    driver: local
+```
+
+## Usage
+
+| Task | Command |
+|------|---------|
+| Start stack | `docker-compose -f docker-compose-local-dev.yml up -d` |
+| Set env vars | `export DATABASE_URL=jdbc:postgresql://localhost:5432/PLACEHOLDER_DB_NAME && export PUBSUB_EMULATOR_HOST=localhost:8085` |
+| Connect psql | `psql -h localhost -p 5432 -U PLACEHOLDER_DB_USER -d PLACEHOLDER_DB_NAME` |
+| Enable pgvector | `psql -h localhost -p 5432 -U PLACEHOLDER_DB_USER -d PLACEHOLDER_DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;"` |
+| Stop stack | `docker-compose -f docker-compose-local-dev.yml down` |
+| Stop & remove data | `docker-compose -f docker-compose-local-dev.yml down -v` |
+
+**Notes:**
+- Pub/Sub Emulator auto-detects via `PUBSUB_EMULATOR_HOST`; no credentials needed
+- Topics/subscriptions must be created programmatically (emulator starts empty)
+- pgvector is built into AlloyDB Omni; just register with `CREATE EXTENSION`
+- Non-emulatable services (Cloud Scheduler, Artifact Registry) use shared `repcheck-dev` GCP project with namespaced resources
