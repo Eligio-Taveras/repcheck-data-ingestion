@@ -42,7 +42,7 @@ lazy val commonSettings = Seq(
   ),
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
-    "com.repcheck" %% "repchecksharedmodels"       % "0.1.6",
+    "com.repcheck" %% "repchecksharedmodels"       % "0.1.6+3-ce186b22+20260409-1242-SNAPSHOT",
     "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.7",
     "com.repcheck" %% "repcheck-ingestion-common" % "0.1.1",
     "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.2" % Test,
@@ -74,7 +74,10 @@ lazy val commonSettings = Seq(
     Wart.Throw                  // Warn on bare throw — prefer F.raiseError
   ),
 
-  exceptionUniquenessRootPackages := Seq("com.repcheck")
+  exceptionUniquenessRootPackages := Seq("com.repcheck"),
+
+  // Suppress Scala 3.4-migration infix warnings for ScalaTest matchers in test sources
+  Test / scalacOptions += "-Wconf:msg=is not declared infix:s",
 )
 
 // Pipeline-specific settings (IOApp projects get test config override)
