@@ -103,6 +103,10 @@ lazy val billsCommon = (project in file("bills-common"))
     // Docker integration tests share a single AlloyDB Omni container; sequential execution
     // prevents cross-suite FK violations during table cleanup.
     Test / parallelExecution := false,
+    // Exclude DB-backed integration tests from `sbt test` by default — they require a local
+    // Docker daemon to start an AlloyDB Omni container. Use the `dockerTest` alias below to
+    // run them explicitly.
+    Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-l", "DockerRequired"),
   )
 
 lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
@@ -134,6 +138,16 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ pubSub ++ logging ++ testDeps,
   )
+
+// `dockerTest` runs only the DB-backed integration tests against a local AlloyDB Omni
+// container. The default `Test / testOptions` exclude DockerRequired tests, so this alias
+// overrides those options for the duration of the run and then restores them.
+addCommandAlias(
+  "dockerTest",
+  "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; billsCommon / test" +
+    "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))",
+)
 
 lazy val docGenerator = (project in file("doc-generator"))
   .settings(

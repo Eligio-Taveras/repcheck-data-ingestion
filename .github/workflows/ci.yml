@@ -39,19 +39,41 @@ jobs:
       - name: Check Scalafix rules
         run: sbt "scalafixAll --check"
 
-      - name: Run tests with coverage
+      - name: Pull AlloyDB Omni image (cached for DB-backed integration tests)
+        run: docker pull google/alloydbomni:16.8.0
+
+      - name: Run non-Docker tests with coverage
         run: sbt coverage test coverageReport
 
-      - name: Upload coverage reports to Codecov
+      - name: Upload non-Docker coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+          flags: unit
           files: |
             bills-common/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-metadata-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-text-availability-checker/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-text-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
+
+      - name: Run DB-backed integration tests against AlloyDB Omni with coverage
+        # `dockerTest` is a build.sbt command alias that flips the testOptions filter to
+        # INCLUDE only @DockerRequired specs. The default `sbt test` task above EXCLUDES them.
+        # `coverage` / `coverageReport` are sbt commands wrapped around the alias so the
+        # integration suites contribute to overall coverage.
+        # `clean` ensures scoverage measurement data from the non-Docker run is cleared so
+        # the integration-flag report on Codecov reflects only the DB-backed suites.
+        run: sbt clean coverage dockerTest coverageReport
+
+      - name: Upload Docker coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+          flags: integration
+          files: |
+            bills-common/target/scala-3.7.3/scoverage-report/scoverage.xml
 
   doc-generator:
     runs-on: ubuntu-latest
