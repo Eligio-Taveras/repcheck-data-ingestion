@@ -42,10 +42,10 @@ lazy val commonSettings = Seq(
   ),
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
-    "com.repcheck" %% "repchecksharedmodels"       % "0.1.6",
-    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.7",
-    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.1",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.2" % Test,
+    "com.repcheck" %% "repchecksharedmodels"       % "0.1.9",
+    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.10",
+    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.5",
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.9" % Test,
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
@@ -74,7 +74,10 @@ lazy val commonSettings = Seq(
     Wart.Throw                  // Warn on bare throw — prefer F.raiseError
   ),
 
-  exceptionUniquenessRootPackages := Seq("com.repcheck")
+  exceptionUniquenessRootPackages := Seq("com.repcheck"),
+
+  // Suppress Scala 3.4-migration infix warnings for ScalaTest matchers in test sources
+  Test / scalacOptions += "-Wconf:msg=is not declared infix:s",
 )
 
 // Pipeline-specific settings (IOApp projects get test config override)
@@ -97,6 +100,9 @@ lazy val billsCommon = (project in file("bills-common"))
     name := "bills-common",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig ++ fs2
       ++ catsEffect ++ doobie ++ pubSub ++ logging ++ testDeps,
+    // Docker integration tests share a single AlloyDB Omni container; sequential execution
+    // prevents cross-suite FK violations during table cleanup.
+    Test / parallelExecution := false,
   )
 
 lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
@@ -134,8 +140,8 @@ lazy val docGenerator = (project in file("doc-generator"))
     commonSettings,
     libraryDependencies ++= Seq(
       "com.anthropic" % "anthropic-java" % "2.18.0",
-      "org.typelevel" %% "cats-effect" % "3.5.4",
-      "ch.qos.logback" % "logback-classic" % "1.5.6"
+      "org.typelevel" %% "cats-effect" % "3.7.0",
+      "ch.qos.logback" % "logback-classic" % "1.5.32"
     ),
     // Exclude WartRemover for this utility project — uses Java SDK patterns
     wartremoverErrors := Seq.empty,
