@@ -42,101 +42,92 @@ class BillsApiClient[F[_]](
   private val isoFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'").withZone(ZoneOffset.UTC)
 
-  override def fetchPage(params: FetchParams): F[PagedResponse[BillListItemDTO]] = {
-    val baseUri = Uri
-      .unsafeFromString(s"${config.baseUrl}/bill")
-      .withQueryParam("api_key", config.apiKey)
-      .withQueryParam("offset", params.offset)
-      .withQueryParam("limit", params.pageSize)
-      .withQueryParam("sort", params.sort.queryValue)
+  private def raiseApiError[A](response: org.http4s.Response[F]): F[A] =
+    response
+      .as[String]
+      .recover { case _ => response.status.reason }
+      .flatMap(body => temporal.raiseError[A](CongressGovApiException(response.status.code, body)))
 
-    val withCongress = params.congress.fold(baseUri)(c => baseUri.withQueryParam("congress", c))
-
-    val withFrom = params.fromDateTime.fold(withCongress) { dt =>
-      withCongress.withQueryParam("fromDateTime", isoFormatter.format(dt))
+  private def parseUri(raw: String): F[Uri] =
+    Uri.fromString(raw) match {
+      case Right(uri) => temporal.pure(uri)
+      case Left(err)  => temporal.raiseError(BillFetchFailed(raw, 0, err.sanitized, err))
     }
 
-    val uri = params.toDateTime.fold(withFrom)(dt => withFrom.withQueryParam("toDateTime", isoFormatter.format(dt)))
+  override def fetchPage(params: FetchParams): F[PagedResponse[BillListItemDTO]] =
+    parseUri(s"${config.baseUrl}/bill").flatMap { baseUri =>
+      val uri = {
+        val withBase = baseUri
+          .withQueryParam("api_key", config.apiKey)
+          .withQueryParam("offset", params.offset)
+          .withQueryParam("limit", params.pageSize)
+          .withQueryParam("sort", params.sort.queryValue)
 
-    val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
-      if (response.status.isSuccess) {
-        response.as[BillListResponseDTO].map { listResponse =>
-          PagedResponse(
-            items = listResponse.items,
-            totalCount = listResponse.pagination.flatMap(_.count).getOrElse(listResponse.items.size),
-            nextOffset = if (listResponse.items.size < params.pageSize) { None }
-            else { Some(params.offset + params.pageSize) },
-          )
+        val withCongress = params.congress.fold(withBase)(c => withBase.withQueryParam("congress", c))
+
+        val withFrom = params.fromDateTime.fold(withCongress) { dt =>
+          withCongress.withQueryParam("fromDateTime", isoFormatter.format(dt))
         }
-      } else {
-        org.http4s.EntityDecoder
-          .text[F](using temporal)
-          .decode(response, strict = false)
-          .value
-          .flatMap {
-            case Right(body) =>
-              temporal.raiseError(CongressGovApiException(response.status.code, body))
-            case Left(_) =>
-              temporal.raiseError(
-                CongressGovApiException(response.status.code, response.status.reason)
-              )
-          }
+
+        params.toDateTime.fold(withFrom)(dt => withFrom.withQueryParam("toDateTime", isoFormatter.format(dt)))
       }
+
+      val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
+        if (response.status.isSuccess) {
+          response.as[BillListResponseDTO].map { listResponse =>
+            PagedResponse(
+              items = listResponse.items,
+              totalCount = listResponse.pagination.flatMap(_.count).getOrElse(listResponse.items.size),
+              nextOffset = if (listResponse.items.size < params.pageSize) { None }
+              else { Some(params.offset + params.pageSize) },
+            )
+          }
+        } else {
+          raiseApiError(response)
+        }
+      }
+
+      retryWrapper.withRetry(
+        operation = operation,
+        config = config.retry,
+        classifier = CongressGovErrorClassifier,
+        errorFactory = (msg, cause) =>
+          BillFetchFailed(
+            endpoint = uri.renderString,
+            statusCode = 0,
+            detail = msg,
+            cause = cause,
+          ),
+        correlationId = UUID.randomUUID(),
+      )
     }
 
-    retryWrapper.withRetry(
-      operation = operation,
-      config = config.retry,
-      classifier = CongressGovErrorClassifier,
-      errorFactory = (msg, cause) =>
-        BillFetchFailed(
-          endpoint = uri.renderString,
-          statusCode = 0,
-          detail = msg,
-          cause = cause,
-        ),
-      correlationId = UUID.randomUUID(),
-    )
-  }
+  def fetchDetail(detailUrl: String): F[BillDetailDTO] =
+    parseUri(detailUrl).flatMap { baseUri =>
+      val uri = baseUri.withQueryParam("api_key", config.apiKey)
 
-  def fetchDetail(detailUrl: String): F[BillDetailDTO] = {
-    val uri = Uri
-      .unsafeFromString(detailUrl)
-      .withQueryParam("api_key", config.apiKey)
-
-    val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
-      if (response.status.isSuccess) {
-        response.as[BillDetailWrapper].map(_.bill)
-      } else {
-        org.http4s.EntityDecoder
-          .text[F](using temporal)
-          .decode(response, strict = false)
-          .value
-          .flatMap {
-            case Right(body) =>
-              temporal.raiseError(CongressGovApiException(response.status.code, body))
-            case Left(_) =>
-              temporal.raiseError(
-                CongressGovApiException(response.status.code, response.status.reason)
-              )
-          }
+      val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
+        if (response.status.isSuccess) {
+          response.as[BillDetailWrapper].map(_.bill)
+        } else {
+          raiseApiError(response)
+        }
       }
-    }
 
-    retryWrapper.withRetry(
-      operation = operation,
-      config = config.retry,
-      classifier = CongressGovErrorClassifier,
-      errorFactory = (msg, cause) =>
-        BillFetchFailed(
-          endpoint = uri.renderString,
-          statusCode = 0,
-          detail = msg,
-          cause = cause,
-        ),
-      correlationId = UUID.randomUUID(),
-    )
-  }
+      retryWrapper.withRetry(
+        operation = operation,
+        config = config.retry,
+        classifier = CongressGovErrorClassifier,
+        errorFactory = (msg, cause) =>
+          BillFetchFailed(
+            endpoint = uri.renderString,
+            statusCode = 0,
+            detail = msg,
+            cause = cause,
+          ),
+        correlationId = UUID.randomUUID(),
+      )
+    }
 
 }
 

@@ -26,43 +26,52 @@ class BillTextApiClient[F[_]: Temporal](
   implicit private val textVersionsResponseDecoder: EntityDecoder[F, TextVersionsResponse] =
     jsonOf[F, TextVersionsResponse]
 
+  private def raiseApiError[A](response: org.http4s.Response[F]): F[A] =
+    response
+      .as[String]
+      .recover { case _ => response.status.reason }
+      .flatMap(body => Temporal[F].raiseError[A](CongressGovApiException(response.status.code, body)))
+
+  private def parseUri(raw: String): F[Uri] =
+    Uri.fromString(raw) match {
+      case Right(uri) => Temporal[F].pure(uri)
+      case Left(err)  => Temporal[F].raiseError(err)
+    }
+
   def fetchTextVersions(
     congress: Int,
     billType: String,
     number: String,
   ): F[List[TextVersionDTO]] = {
     val billId = s"$congress-${billType.toUpperCase}-$number"
-    val uri = Uri
-      .unsafeFromString(s"${config.baseUrl}/bill/$congress/$billType/$number/text")
-      .withQueryParam("api_key", config.apiKey)
 
-    val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
-      response.status match {
-        case Status.NotFound =>
-          Temporal[F].pure(List.empty[TextVersionDTO])
-        case status if status.isSuccess =>
-          response.as[TextVersionsResponse].map(_.textVersions)
-        case status =>
-          response.as[String].flatMap { body =>
-            Temporal[F].raiseError[List[TextVersionDTO]](
-              CongressGovApiException(status.code, body)
-            )
-          }
+    parseUri(s"${config.baseUrl}/bill/$congress/$billType/$number/text").flatMap { baseUri =>
+      val uri = baseUri.withQueryParam("api_key", config.apiKey)
+
+      val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
+        response.status match {
+          case Status.NotFound =>
+            Temporal[F].pure(List.empty[TextVersionDTO])
+          case status if status.isSuccess =>
+            response.as[TextVersionsResponse].map(_.textVersions)
+          case _ =>
+            raiseApiError(response)
+        }
       }
-    }
 
-    retryWrapper.withRetry(
-      operation = operation,
-      config = config.retry,
-      classifier = CongressGovErrorClassifier,
-      errorFactory = (msg, cause) =>
-        BillTextCheckFailed(
-          billId = billId,
-          detail = msg,
-          cause = cause,
-        ),
-      correlationId = UUID.randomUUID(),
-    )
+      retryWrapper.withRetry(
+        operation = operation,
+        config = config.retry,
+        classifier = CongressGovErrorClassifier,
+        errorFactory = (msg, cause) =>
+          BillTextCheckFailed(
+            billId = billId,
+            detail = msg,
+            cause = cause,
+          ),
+        correlationId = UUID.randomUUID(),
+      )
+    }
   }
 
 }
