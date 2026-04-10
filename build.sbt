@@ -74,7 +74,7 @@ lazy val commonSettings = Seq(
     Wart.Throw                  // Warn on bare throw — prefer F.raiseError
   ),
 
-  exceptionUniquenessRootPackages := Seq("com.repcheck"),
+  exceptionUniquenessRootPackages := Seq("com.repcheck", "repcheck"),
 
   // Suppress Scala 3.4-migration infix warnings for ScalaTest matchers in test sources
   Test / scalacOptions += "-Wconf:msg=is not declared infix:s",
