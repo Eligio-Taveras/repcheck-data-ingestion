@@ -342,6 +342,36 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     f.stubPlaceholderCreator.wasCalledWith("S001234") shouldBe true
   }
 
+  it should "warn and set sponsorMemberId to None when member lookup returns None for sponsor" in {
+    val f        = createFixture()
+    val listItem = makeListItem()
+    val detail = makeDetailDTO(
+      sponsors = Some(
+        List(
+          SponsorDTO(
+            bioguideId = "GHOST001",
+            firstName = None,
+            lastName = None,
+            fullName = Some("Sen. Ghost"),
+            middleName = None,
+            isByRequest = None,
+            party = None,
+            state = None,
+            url = None,
+          )
+        )
+      )
+    )
+    stubBasicRepos(f)
+    when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(detail))
+    // Member lookup returns None — placeholder was created but ID not found
+    when(f.memberLookupRepo.findIdByNaturalKey("GHOST001")).thenReturn(doobie.free.connection.pure(Option.empty[Long]))
+
+    val result = f.processor.processListItem(listItem, correlationId).unsafeRunSync()
+    val _      = result.isSucceeded shouldBe true
+    verify(f.logger, times(1)).warn(any[LogContext], org.mockito.ArgumentMatchers.contains("GHOST001"))
+  }
+
   it should "create cosponsor placeholders for unknown members" in {
     val cosponsorUrl = "https://api.congress.gov/v3/bill/118/hr/1/cosponsors"
     val f            = createFixture()
@@ -358,6 +388,28 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
 
     val _ = f.processor.processListItem(listItem, correlationId).unsafeRunSync()
     f.stubPlaceholderCreator.callCount shouldBe 2
+  }
+
+  it should "warn and filter out cosponsor when member lookup returns None" in {
+    val cosponsorUrl = "https://api.congress.gov/v3/bill/118/hr/1/cosponsors"
+    val f            = createFixture()
+    val listItem     = makeListItem()
+    val detail       = makeDetailDTO(cosponsorsUrl = Some(cosponsorUrl))
+    val cosponsors = List(
+      CoSponsorDTO("FOUND01", None, None, None, Some(true), None, None, Some("2024-01-15"), None, None),
+      CoSponsorDTO("NOTFOUND", None, None, None, Some(false), None, None, Some("2024-02-01"), None, None),
+    )
+    stubBasicRepos(f)
+    when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(detail))
+    when(f.apiClient.fetchCosponsors(anyString())).thenReturn(IO.pure(cosponsors))
+    // First cosponsor found, second returns None
+    when(f.memberLookupRepo.findIdByNaturalKey("FOUND01")).thenReturn(doobie.free.connection.pure(Some(200L)))
+    when(f.memberLookupRepo.findIdByNaturalKey("NOTFOUND")).thenReturn(doobie.free.connection.pure(Option.empty[Long]))
+
+    val result = f.processor.processListItem(listItem, correlationId).unsafeRunSync()
+    val _      = result.isSucceeded shouldBe true
+    // Should warn about the not-found cosponsor
+    verify(f.logger, times(1)).warn(any[LogContext], org.mockito.ArgumentMatchers.contains("NOTFOUND"))
   }
 
   it should "handle single bill failure without halting the stream" in {
