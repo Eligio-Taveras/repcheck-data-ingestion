@@ -4,19 +4,17 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 
-import cats.Monad
 import cats.effect.Async
 import cats.syntax.all._
 
 import fs2.Stream
 
 import doobie._
-import doobie.implicits._
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
 import repcheck.pipeline.models.metadata.ProcessingResult
-import repcheck.shared.models.congress.dos.bill.{BillCosponsorDO, BillDO, BillSubjectDO}
+import repcheck.shared.models.congress.dos.bill.BillDO
 import repcheck.shared.models.congress.dos.member.MemberDO
 import repcheck.shared.models.congress.dto.bill.{BillListItemDTO, CoSponsorDTO}
 import repcheck.shared.models.congress.dto.conversions.BillConversions._
@@ -48,6 +46,12 @@ class BillMetadataProcessor[F[_]: Async](
 ) {
 
   private val stepName = "bill-metadata"
+
+  private val memberResolver =
+    new MemberResolver[F](memberLookupRepo, placeholderCreator, memberEntityRepo, xa, logger)
+
+  private val billPersister =
+    new BillPersister[F](billRepo, cosponsorRepo, subjectRepo, historyArchiver, xa)
 
   def streamAll(correlationId: UUID): Stream[F, ProcessingResult] = {
     val fromDateTime = Instant.now().minus(config.lookbackDays.toLong, ChronoUnit.DAYS)
@@ -122,9 +126,9 @@ class BillMetadataProcessor[F[_]: Async](
         detail.toDO.leftMap(reason => BillProcessingFailed(naturalKey, s"DTO-to-DO conversion failed: $reason"))
       )
       cosponsorDTOs <- fetchCosponsorsFromDetail(detail, ctx)
-      billDO        <- ensureSponsorPlaceholder(conversionResult.bill, detail, ctx)
-      cosponsorDOs  <- buildCosponsorDOs(cosponsorDTOs, ctx)
-      _             <- persistBill(billDO, conversionResult.subjects, cosponsorDOs, naturalKey, isNew)
+      billDO        <- memberResolver.ensureSponsorPlaceholder(conversionResult.bill, detail, ctx)
+      cosponsorDOs  <- memberResolver.buildCosponsorDOs(cosponsorDTOs, ctx)
+      _             <- billPersister.persistBill(billDO, conversionResult.subjects, cosponsorDOs, naturalKey, isNew)
       _             <- logger.info(ctx, s"Bill $naturalKey upserted")
     } yield ProcessingResult.Succeeded(naturalKey)
   }
@@ -141,78 +145,6 @@ class BillMetadataProcessor[F[_]: Async](
       case None =>
         Async[F].pure(List.empty[CoSponsorDTO])
     }
-  }
-
-  private def ensureSponsorPlaceholder(
-    billDO: BillDO,
-    detail: repcheck.shared.models.congress.dto.bill.BillDetailDTO,
-    logCtx: LogContext,
-  ): F[BillDO] = {
-    val sponsorBioguideId = detail.sponsors.flatMap(_.headOption).map(_.bioguideId)
-    sponsorBioguideId match {
-      case Some(bioguideId) =>
-        for {
-          _        <- placeholderCreator.ensureExists[MemberDO](bioguideId, memberEntityRepo)
-          memberId <- TransactionRunner.run(xa)(memberLookupRepo.findIdByNaturalKey(bioguideId))
-          _ <-
-            if (memberId.isEmpty) {
-              logger.warn(logCtx, s"Sponsor member ID not found after placeholder creation for $bioguideId")
-            } else {
-              Async[F].unit
-            }
-        } yield billDO.copy(sponsorMemberId = memberId)
-      case None =>
-        Async[F].pure(billDO)
-    }
-  }
-
-  private def buildCosponsorDOs(
-    cosponsorDTOs: List[CoSponsorDTO],
-    logCtx: LogContext,
-  ): F[List[BillCosponsorDO]] =
-    cosponsorDTOs.traverseFilter { dto =>
-      for {
-        _        <- placeholderCreator.ensureExists[MemberDO](dto.bioguideId, memberEntityRepo)
-        memberId <- TransactionRunner.run(xa)(memberLookupRepo.findIdByNaturalKey(dto.bioguideId))
-        result <- memberId match {
-          case Some(mid) =>
-            Async[F].pure(
-              Some(
-                BillCosponsorDO(
-                  billId = 0L,
-                  memberId = mid,
-                  isOriginalCosponsor = dto.isOriginalCosponsor,
-                  sponsorshipDate = dto.sponsorshipDate,
-                )
-              )
-            )
-          case None =>
-            logger.warn(logCtx, s"Cosponsor member ID not found for ${dto.bioguideId}") *>
-              Async[F].pure(Option.empty[BillCosponsorDO])
-        }
-      } yield result
-    }
-
-  private def persistBill(
-    billDO: BillDO,
-    subjects: List[BillSubjectDO],
-    cosponsorDOs: List[BillCosponsorDO],
-    naturalKey: String,
-    isNew: Boolean,
-  ): F[Unit] = {
-    val writeProgram: ConnectionIO[Unit] = for {
-      _ <-
-        if (!isNew) {
-          historyArchiver.archiveBill(naturalKey).void
-        } else {
-          Monad[ConnectionIO].unit
-        }
-      billId <- billRepo.upsert(billDO)
-      _      <- cosponsorRepo.replaceAll(billId, cosponsorDOs.map(_.copy(billId = billId)))
-      _      <- subjectRepo.replaceAll(billId, subjects.map(_.copy(billId = billId)))
-    } yield ()
-
-    TransactionRunner.run(xa)(writeProgram)
   }
 
   private def parseInstantStr(dateStr: String): Option[Instant] =
