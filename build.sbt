@@ -42,16 +42,11 @@ lazy val commonSettings = Seq(
   ),
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
-    "com.repcheck" %% "repchecksharedmodels"       % "0.1.8",
-    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.9",
-    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.1",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.8" % Test,
+    "com.repcheck" %% "repchecksharedmodels"       % "0.1.9",
+    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.10",
+    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.5",
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.9" % Test,
   ),
-  // Doobie RC4→RC5 eviction: our own libraries (shared-models, pipeline-models, ingestion-common)
-  // depend on RC4 but db-migrations-runner requires RC5. The API is compatible.
-  libraryDependencySchemes += "org.tpolecat" %% "doobie-core" % VersionScheme.Always,
-  libraryDependencySchemes += "org.tpolecat" %% "doobie-postgres" % VersionScheme.Always,
-  libraryDependencySchemes += "org.tpolecat" %% "doobie-hikari" % VersionScheme.Always,
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
   tpolecatScalacOptions ++= {
@@ -145,8 +140,8 @@ lazy val docGenerator = (project in file("doc-generator"))
     commonSettings,
     libraryDependencies ++= Seq(
       "com.anthropic" % "anthropic-java" % "2.18.0",
-      "org.typelevel" %% "cats-effect" % "3.5.4",
-      "ch.qos.logback" % "logback-classic" % "1.5.6"
+      "org.typelevel" %% "cats-effect" % "3.7.0",
+      "ch.qos.logback" % "logback-classic" % "1.5.32"
     ),
     // Exclude WartRemover for this utility project — uses Java SDK patterns
     wartremoverErrors := Seq.empty,
