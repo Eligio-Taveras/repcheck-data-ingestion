@@ -57,13 +57,16 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
       case None    => sys.error("Expected bill to be present after insert")
     }
 
+    val m1 = memberIdByKey("TEST-M001")
+    val m2 = memberIdByKey("TEST-M002")
+    val m3 = memberIdByKey("TEST-M003")
     cosponsorRepo
       .replaceAll(
         billId,
         List(
-          BillCosponsorDO(billId, 1L, Some(true), Some("2024-01-15")),
-          BillCosponsorDO(billId, 2L, Some(false), Some("2024-02-01")),
-          BillCosponsorDO(billId, 3L, Some(true), Some("2024-01-20")),
+          BillCosponsorDO(billId, m1, Some(true), Some("2024-01-15")),
+          BillCosponsorDO(billId, m2, Some(false), Some("2024-02-01")),
+          BillCosponsorDO(billId, m3, Some(true), Some("2024-01-20")),
         ),
       )
       .unsafeRunSync()

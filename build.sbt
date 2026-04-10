@@ -42,11 +42,16 @@ lazy val commonSettings = Seq(
   ),
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
-    "com.repcheck" %% "repchecksharedmodels"       % "0.1.6+3-ce186b22+20260409-1242-SNAPSHOT",
-    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.7",
+    "com.repcheck" %% "repchecksharedmodels"       % "0.1.8",
+    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.9",
     "com.repcheck" %% "repcheck-ingestion-common" % "0.1.1",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.2" % Test,
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.8" % Test,
   ),
+  // Doobie RC4→RC5 eviction: our own libraries (shared-models, pipeline-models, ingestion-common)
+  // depend on RC4 but db-migrations-runner requires RC5. The API is compatible.
+  libraryDependencySchemes += "org.tpolecat" %% "doobie-core" % VersionScheme.Always,
+  libraryDependencySchemes += "org.tpolecat" %% "doobie-postgres" % VersionScheme.Always,
+  libraryDependencySchemes += "org.tpolecat" %% "doobie-hikari" % VersionScheme.Always,
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
   tpolecatScalacOptions ++= {
@@ -100,6 +105,9 @@ lazy val billsCommon = (project in file("bills-common"))
     name := "bills-common",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig ++ fs2
       ++ catsEffect ++ doobie ++ pubSub ++ logging ++ testDeps,
+    // Docker integration tests share a single AlloyDB Omni container; sequential execution
+    // prevents cross-suite FK violations during table cleanup.
+    Test / parallelExecution := false,
   )
 
 lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))

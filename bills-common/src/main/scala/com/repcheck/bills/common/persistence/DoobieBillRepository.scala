@@ -71,7 +71,7 @@ class DoobieBillRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) extends Bi
         ${bill.constitutionalAuthorityText}, ${bill.sponsorMemberId},
         ${bill.textUrl}, ${bill.textFormat}, ${bill.textVersionType},
         ${bill.textDate}::timestamptz,
-        ${bill.textContent}, ${bill.textEmbedding},
+        ${bill.textContent}, ${bill.textEmbedding}::vector,
         ${bill.summaryText}, ${bill.summaryActionDesc},
         ${bill.summaryActionDate}::date,
         ${bill.updateDate}::timestamptz, ${bill.updateDateIncludingText}::timestamptz,

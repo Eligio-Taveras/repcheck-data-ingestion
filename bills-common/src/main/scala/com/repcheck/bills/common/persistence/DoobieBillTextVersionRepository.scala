@@ -39,7 +39,7 @@ class DoobieBillTextVersionRepository[F[_]: MonadCancelThrow](xa: Transactor[F])
       ) VALUES (
         ${version.billId}, ${version.versionCode}, ${version.versionType},
         ${version.versionDate}::timestamptz, ${version.formatType}, ${version.url},
-        ${version.content}, ${version.embedding}, ${version.fetchedAt}
+        ${version.content}, ${version.embedding}::vector, ${version.fetchedAt}
       )
       RETURNING id
     """.query[Long].unique.transact(xa).adaptErr {
@@ -70,7 +70,7 @@ class DoobieBillTextVersionRepository[F[_]: MonadCancelThrow](xa: Transactor[F])
         ) VALUES (
           ${version.billId}, ${version.versionCode}, ${version.versionType},
           ${version.versionDate}::timestamptz, ${version.formatType}, ${version.url},
-          ${version.content}, ${version.embedding}, ${version.fetchedAt}
+          ${version.content}, ${version.embedding}::vector, ${version.fetchedAt}
         )
         RETURNING id
       """.query[Long].unique

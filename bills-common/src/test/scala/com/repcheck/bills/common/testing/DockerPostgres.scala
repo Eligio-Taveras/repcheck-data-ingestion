@@ -3,11 +3,12 @@ package com.repcheck.bills.common.testing
 import java.sql.{Connection, DriverManager}
 
 import scala.annotation.tailrec
-import scala.io.Source
 import scala.sys.process._
 import scala.util.Try
 
 import cats.effect.{IO, Resource}
+
+import repcheck.db.migrations.MigrationRunner
 
 final case class PostgresContainerInfo(jdbcUrl: String, user: String, password: String) {
 
@@ -99,30 +100,10 @@ object DockerPostgres {
     }
   }
 
-  private val migrationFiles: List[String] = List(
-    "db/changelog/changes/001-initial-schema.sql",
-    "db/changelog/changes/002-schema-expansion.sql",
-  )
-
   private def applyMigrations(port: Int): Unit = {
     val conn = connectWithRetry(port, maxConnectAttempts)
-    try
-      migrationFiles.foreach(name => runMigrationFile(conn, name))
+    try MigrationRunner.migrate(conn)
     finally conn.close()
-  }
-
-  private def runMigrationFile(connection: Connection, resourcePath: String): Unit = {
-    val stream = Option(getClass.getClassLoader.getResourceAsStream(resourcePath))
-      .getOrElse(sys.error(s"Migration file not found on test classpath: $resourcePath"))
-    val sql =
-      try Source.fromInputStream(stream, "UTF-8").mkString
-      finally stream.close()
-
-    val stmt = connection.createStatement()
-    try {
-      val _ = stmt.execute(sql)
-      ()
-    } finally stmt.close()
   }
 
   @tailrec

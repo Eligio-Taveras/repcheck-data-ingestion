@@ -65,7 +65,10 @@ class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with T
 
   "replaceAll" should "insert cosponsors for a new bill" taggedAs DockerRequired in {
     val billId     = insertBillAndGetId()
-    val cosponsors = List(makeCosponsor(billId, 1L), makeCosponsor(billId, 2L), makeCosponsor(billId, 3L))
+    val m1         = memberIdByKey("TEST-M001")
+    val m2         = memberIdByKey("TEST-M002")
+    val m3         = memberIdByKey("TEST-M003")
+    val cosponsors = List(makeCosponsor(billId, m1), makeCosponsor(billId, m2), makeCosponsor(billId, m3))
 
     cosponsorRepo.replaceAll(billId, cosponsors).unsafeRunSync()
     val found = cosponsorRepo.findByBillId(billId).unsafeRunSync()
@@ -74,12 +77,17 @@ class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with T
 
   it should "replace cosponsors on re-ingest" taggedAs DockerRequired in {
     val billId = insertBillAndGetId()
+    val m1     = memberIdByKey("TEST-M001")
+    val m2     = memberIdByKey("TEST-M002")
+    val m3     = memberIdByKey("TEST-M003")
+    val m4     = memberIdByKey("TEST-M004")
+    val m5     = memberIdByKey("TEST-M005")
     cosponsorRepo
-      .replaceAll(billId, List(makeCosponsor(billId, 1L), makeCosponsor(billId, 2L), makeCosponsor(billId, 3L)))
+      .replaceAll(billId, List(makeCosponsor(billId, m1), makeCosponsor(billId, m2), makeCosponsor(billId, m3)))
       .unsafeRunSync()
 
     cosponsorRepo
-      .replaceAll(billId, List(makeCosponsor(billId, 4L), makeCosponsor(billId, 5L)))
+      .replaceAll(billId, List(makeCosponsor(billId, m4), makeCosponsor(billId, m5)))
       .unsafeRunSync()
 
     val found = cosponsorRepo.findByBillId(billId).unsafeRunSync()
@@ -88,7 +96,8 @@ class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with T
 
   it should "handle empty list (clears all)" taggedAs DockerRequired in {
     val billId = insertBillAndGetId()
-    cosponsorRepo.replaceAll(billId, List(makeCosponsor(billId, 1L))).unsafeRunSync()
+    val m1     = memberIdByKey("TEST-M001")
+    cosponsorRepo.replaceAll(billId, List(makeCosponsor(billId, m1))).unsafeRunSync()
 
     cosponsorRepo.replaceAll(billId, List.empty).unsafeRunSync()
 

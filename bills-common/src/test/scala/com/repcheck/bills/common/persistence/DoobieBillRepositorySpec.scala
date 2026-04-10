@@ -1,17 +1,40 @@
 package com.repcheck.bills.common.persistence
 
+import java.time.Instant
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.shared.models.congress.dos.bill.BillDO
+import repcheck.shared.models.congress.dos.bill.{BillDO, BillTextVersionDO}
 
 import com.repcheck.bills.common.testing.{DockerRequired, TransactorFixture}
 
 class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with TransactorFixture {
 
-  private lazy val repo = new DoobieBillRepository[IO](xa)
+  private lazy val repo            = new DoobieBillRepository[IO](xa)
+  private lazy val textVersionRepo = new DoobieBillTextVersionRepository[IO](xa)
+
+  /** Insert a text version row and return its auto-generated id for FK-safe updateTextFields tests. */
+  private def insertTextVersion(billId: Long): Long =
+    textVersionRepo
+      .insertVersion(
+        BillTextVersionDO(
+          id = 0L,
+          billId = billId,
+          versionCode = "IH",
+          versionType = "IH version",
+          versionDate = Some("2024-01-15T00:00:00Z"),
+          formatType = Some("Formatted Text"),
+          url = Some("https://congress.gov/text/IH"),
+          content = None,
+          embedding = None,
+          fetchedAt = Some(Instant.now()),
+          createdAt = None,
+        )
+      )
+      .unsafeRunSync()
 
   private def makeBill(
     congress: Int = 118,
@@ -149,9 +172,11 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
   it should "include non-final text bills" taggedAs DockerRequired in {
     val bill = makeBill(number = "2")
     repo.upsert(bill).unsafeRunSync()
+    val billId    = repo.findByBillId("118-HR-2").unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
+    val versionId = insertTextVersion(billId)
 
     repo
-      .updateTextFields("118-HR-2", "http://text", "Formatted Text", "IH", "2024-01-15T00:00:00Z", 1L)
+      .updateTextFields("118-HR-2", "http://text", "Formatted Text", "IH", "2024-01-15T00:00:00Z", versionId)
       .unsafeRunSync()
 
     val found = repo.findBillsNeedingTextCheck().unsafeRunSync()
@@ -160,7 +185,8 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
 
   "updateTextFields" should "set text columns without touching metadata" taggedAs DockerRequired in {
     repo.upsert(makeBill()).unsafeRunSync()
-    val versionId = 42L
+    val billId    = repo.findByBillId("118-HR-1234").unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
+    val versionId = insertTextVersion(billId)
 
     repo
       .updateTextFields("118-HR-1234", "http://text.xml", "Formatted XML", "RH", "2024-02-01T00:00:00Z", versionId)
