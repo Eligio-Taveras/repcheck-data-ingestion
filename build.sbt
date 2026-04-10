@@ -42,7 +42,7 @@ lazy val commonSettings = Seq(
   ),
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
-    "com.repcheck" %% "repchecksharedmodels"       % "0.1.9",
+    "com.repcheck" %% "repchecksharedmodels"       % "0.1.9+3-78c897d5-SNAPSHOT",
     "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.10",
     "com.repcheck" %% "repcheck-ingestion-common" % "0.1.5",
     "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.9" % Test,
@@ -116,7 +116,8 @@ lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
   .settings(
     name := "bill-metadata-pipeline",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ logging ++ testDeps,
+      ++ catsEffect ++ doobie ++ diff ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
   )
 
 lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-checker"))

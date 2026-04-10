@@ -13,10 +13,10 @@ import com.repcheck.bills.common.testing.{DockerRequired, TransactorFixture}
 
 class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with TransactorFixture {
 
-  private lazy val billRepo      = new DoobieBillRepository[IO](xa)
-  private lazy val cosponsorRepo = new DoobieBillCosponsorRepository[IO](xa)
-  private lazy val subjectRepo   = new DoobieBillSubjectRepository[IO](xa)
-  private lazy val archiver      = new DoobieBillHistoryArchiver[IO](xa)
+  private lazy val billRepo      = new DoobieBillRepository
+  private lazy val cosponsorRepo = new DoobieBillCosponsorRepository
+  private lazy val subjectRepo   = new DoobieBillSubjectRepository
+  private lazy val archiver      = new DoobieBillHistoryArchiver
 
   private def insertFullBill(): Long = {
     val bill = BillDO(
@@ -51,8 +51,8 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
       updatedAt = None,
       latestTextVersionId = None,
     )
-    billRepo.upsert(bill).unsafeRunSync()
-    val billId = billRepo.findByBillId("118-HR-300").unsafeRunSync() match {
+    val _ = billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    val billId = billRepo.findByBillId("118-HR-300").transact(xa).unsafeRunSync() match {
       case Some(b) => b.billId
       case None    => sys.error("Expected bill to be present after insert")
     }
@@ -69,6 +69,7 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
           BillCosponsorDO(billId, m3, Some(true), Some("2024-01-20")),
         ),
       )
+      .transact(xa)
       .unsafeRunSync()
 
     subjectRepo
@@ -82,6 +83,7 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
           BillSubjectDO(billId, "Public health", None, None),
         ),
       )
+      .transact(xa)
       .unsafeRunSync()
 
     billId
@@ -89,7 +91,7 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
 
   "archiveBill" should "copy bill row to bill_history" taggedAs DockerRequired in {
     val _         = insertFullBill()
-    val historyId = archiver.archiveBill("118-HR-300").unsafeRunSync()
+    val historyId = archiver.archiveBill("118-HR-300").transact(xa).unsafeRunSync()
 
     val count = sql"SELECT COUNT(*) FROM bill_history WHERE id = $historyId"
       .query[Long]
@@ -101,7 +103,7 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
 
   it should "copy cosponsors to bill_cosponsor_history" taggedAs DockerRequired in {
     val _         = insertFullBill()
-    val historyId = archiver.archiveBill("118-HR-300").unsafeRunSync()
+    val historyId = archiver.archiveBill("118-HR-300").transact(xa).unsafeRunSync()
 
     val count = sql"SELECT COUNT(*) FROM bill_cosponsor_history WHERE history_id = $historyId"
       .query[Long]
@@ -113,7 +115,7 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
 
   it should "copy subjects to bill_subject_history" taggedAs DockerRequired in {
     val _         = insertFullBill()
-    val historyId = archiver.archiveBill("118-HR-300").unsafeRunSync()
+    val historyId = archiver.archiveBill("118-HR-300").transact(xa).unsafeRunSync()
 
     val count = sql"SELECT COUNT(*) FROM bill_subject_history WHERE history_id = $historyId"
       .query[Long]
@@ -125,7 +127,7 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
 
   it should "link all history rows with the same history_id" taggedAs DockerRequired in {
     val _         = insertFullBill()
-    val historyId = archiver.archiveBill("118-HR-300").unsafeRunSync()
+    val historyId = archiver.archiveBill("118-HR-300").transact(xa).unsafeRunSync()
 
     val billHistoryIds = sql"SELECT id FROM bill_history WHERE id = $historyId"
       .query[Long]
@@ -150,8 +152,8 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
 
   it should "produce distinct history_id values for multiple archives" taggedAs DockerRequired in {
     val _   = insertFullBill()
-    val id1 = archiver.archiveBill("118-HR-300").unsafeRunSync()
-    val id2 = archiver.archiveBill("118-HR-300").unsafeRunSync()
+    val id1 = archiver.archiveBill("118-HR-300").transact(xa).unsafeRunSync()
+    val id2 = archiver.archiveBill("118-HR-300").transact(xa).unsafeRunSync()
     id1 should not be id2
   }
 
@@ -188,8 +190,8 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
       updatedAt = None,
       latestTextVersionId = None,
     )
-    billRepo.upsert(bill).unsafeRunSync()
-    val historyId = archiver.archiveBill("118-HR-301").unsafeRunSync()
+    val _         = billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    val historyId = archiver.archiveBill("118-HR-301").transact(xa).unsafeRunSync()
 
     val billCount = sql"SELECT COUNT(*) FROM bill_history WHERE id = $historyId"
       .query[Long]

@@ -1,6 +1,5 @@
 package com.repcheck.bills.common.persistence
 
-import cats.effect.kernel.MonadCancelThrow
 import cats.syntax.all._
 
 import doobie._
@@ -10,10 +9,9 @@ import doobie.postgres.implicits._
 import repcheck.pipeline.models.constants.Tables
 import repcheck.shared.models.congress.dos.bill.BillDO
 
-import com.repcheck.bills.common.errors.BillUpsertFailed
 import com.repcheck.bills.common.persistence.DoobieInstances.{floatArrayGet, floatArrayPut}
 
-class DoobieBillRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) extends BillRepository[F] {
+class DoobieBillRepository extends BillRepository[ConnectionIO] {
 
   private val table = Fragment.const(Tables.Bills)
 
@@ -50,7 +48,7 @@ class DoobieBillRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) extends Bi
     latest_text_version_id
   """
 
-  override def upsert(bill: BillDO): F[Unit] =
+  override def upsert(bill: BillDO): ConnectionIO[Long] =
     sql"""
       INSERT INTO $table (
         congress, bill_type, number, title,
@@ -101,22 +99,19 @@ class DoobieBillRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) extends Bi
         legislation_url = EXCLUDED.legislation_url,
         api_url = EXCLUDED.api_url,
         updated_at = NOW()
-    """.update.run.transact(xa).void.adaptErr {
-      case e =>
-        BillUpsertFailed(bill.naturalKey, e.getMessage, e)
-    }
+      RETURNING id
+    """.query[Long].unique
 
-  override def findByBillId(billId: String): F[Option[BillDO]] = {
+  override def findByBillId(billId: String): ConnectionIO[Option[BillDO]] = {
     val (congress, billType, number) = parseNaturalKey(billId)
     (fr"SELECT" ++ selectColumns ++ fr"FROM $table WHERE congress = $congress AND bill_type = $billType AND number = $number::int")
       .query[BillDO]
       .option
-      .transact(xa)
   }
 
-  override def findByBillIds(billIds: List[String]): F[List[BillDO]] =
+  override def findByBillIds(billIds: List[String]): ConnectionIO[List[BillDO]] =
     if (billIds.isEmpty) {
-      List.empty[BillDO].pure[F]
+      doobie.free.connection.pure(List.empty[BillDO])
     } else {
       val parsed    = billIds.map(parseNaturalKey)
       val fragments = parsed.map { case (c, t, n) => fr"(congress = $c AND bill_type = $t AND number = $n::int)" }
@@ -127,16 +122,14 @@ class DoobieBillRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) extends Bi
       (fr"SELECT" ++ selectColumns ++ fr"FROM $table WHERE" ++ conditions)
         .query[BillDO]
         .to[List]
-        .transact(xa)
     }
 
-  override def findBillsNeedingTextCheck(): F[List[BillDO]] =
+  override def findBillsNeedingTextCheck(): ConnectionIO[List[BillDO]] =
     (fr"SELECT" ++ selectColumns ++ fr"""FROM $table
       WHERE text_url IS NULL
          OR (text_version_type IS DISTINCT FROM 'ENR')""")
       .query[BillDO]
       .to[List]
-      .transact(xa)
 
   override def updateTextFields(
     billId: String,
@@ -145,7 +138,7 @@ class DoobieBillRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) extends Bi
     textVersionType: String,
     textDate: String,
     latestTextVersionId: Long,
-  ): F[Unit] = {
+  ): ConnectionIO[Unit] = {
     val (congress, billType, number) = parseNaturalKey(billId)
     sql"""
       UPDATE $table SET
@@ -156,7 +149,7 @@ class DoobieBillRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) extends Bi
         latest_text_version_id = $latestTextVersionId,
         updated_at = NOW()
       WHERE congress = $congress AND bill_type = $billType AND number = $number::int
-    """.update.run.transact(xa).void
+    """.update.run.void
   }
 
   private[persistence] def parseNaturalKey(naturalKey: String): (Int, String, String) = {

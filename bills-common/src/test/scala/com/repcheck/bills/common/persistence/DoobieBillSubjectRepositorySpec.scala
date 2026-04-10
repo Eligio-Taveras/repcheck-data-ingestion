@@ -3,6 +3,8 @@ package com.repcheck.bills.common.persistence
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
+import doobie.implicits._
+
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.shared.models.congress.dos.bill.{BillDO, BillSubjectDO}
@@ -11,8 +13,8 @@ import com.repcheck.bills.common.testing.{DockerRequired, TransactorFixture}
 
 class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with TransactorFixture {
 
-  private lazy val billRepo    = new DoobieBillRepository[IO](xa)
-  private lazy val subjectRepo = new DoobieBillSubjectRepository[IO](xa)
+  private lazy val billRepo    = new DoobieBillRepository
+  private lazy val subjectRepo = new DoobieBillSubjectRepository
 
   private def insertBillAndGetId(): Long = {
     val bill = BillDO(
@@ -47,8 +49,8 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
       updatedAt = None,
       latestTextVersionId = None,
     )
-    billRepo.upsert(bill).unsafeRunSync()
-    billRepo.findByBillId("118-HR-200").unsafeRunSync() match {
+    val _ = billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    billRepo.findByBillId("118-HR-200").transact(xa).unsafeRunSync() match {
       case Some(bill) => bill.billId
       case None       => sys.error("Expected bill to be present after insert")
     }
@@ -72,8 +74,8 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
       makeSubject(billId, "Economy"),
     )
 
-    subjectRepo.replaceAll(billId, subjects).unsafeRunSync()
-    val found = subjectRepo.findByBillId(billId).unsafeRunSync()
+    subjectRepo.replaceAll(billId, subjects).transact(xa).unsafeRunSync()
+    val found = subjectRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found.size shouldBe 5
   }
 
@@ -90,6 +92,7 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
           makeSubject(billId, "Economy"),
         ),
       )
+      .transact(xa)
       .unsafeRunSync()
 
     subjectRepo
@@ -101,20 +104,21 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
           makeSubject(billId, "Agriculture"),
         ),
       )
+      .transact(xa)
       .unsafeRunSync()
 
-    val found = subjectRepo.findByBillId(billId).unsafeRunSync()
+    val found = subjectRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     val _     = found.size shouldBe 3
     found.map(_.subjectName) should contain allOf ("Technology", "Science", "Agriculture")
   }
 
   it should "handle empty list" taggedAs DockerRequired in {
     val billId = insertBillAndGetId()
-    subjectRepo.replaceAll(billId, List(makeSubject(billId, "Health"))).unsafeRunSync()
+    subjectRepo.replaceAll(billId, List(makeSubject(billId, "Health"))).transact(xa).unsafeRunSync()
 
-    subjectRepo.replaceAll(billId, List.empty).unsafeRunSync()
+    subjectRepo.replaceAll(billId, List.empty).transact(xa).unsafeRunSync()
 
-    val found = subjectRepo.findByBillId(billId).unsafeRunSync()
+    val found = subjectRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found shouldBe empty
   }
 
@@ -138,8 +142,8 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
       ),
     )
 
-    subjectRepo.replaceAll(billId, subjects).unsafeRunSync()
-    val found = subjectRepo.findByBillId(billId).unsafeRunSync()
+    subjectRepo.replaceAll(billId, subjects).transact(xa).unsafeRunSync()
+    val found = subjectRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found.size shouldBe 2
   }
 
@@ -154,14 +158,14 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
       )
     )
 
-    subjectRepo.replaceAll(billId, subjects).unsafeRunSync()
-    val found = subjectRepo.findByBillId(billId).unsafeRunSync()
+    subjectRepo.replaceAll(billId, subjects).transact(xa).unsafeRunSync()
+    val found = subjectRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     val _     = found.size shouldBe 1
     found.headOption.flatMap(_.embedding).isDefined shouldBe true
   }
 
   "findByBillId" should "return empty for unknown bill" taggedAs DockerRequired in {
-    val found = subjectRepo.findByBillId(99999L).unsafeRunSync()
+    val found = subjectRepo.findByBillId(99999L).transact(xa).unsafeRunSync()
     found shouldBe empty
   }
 

@@ -24,7 +24,13 @@ import repcheck.ingestion.common.api.{
   PagedResponse,
 }
 import repcheck.pipeline.models.errors.RetryWrapper
-import repcheck.shared.models.congress.dto.bill.{BillDetailDTO, BillListItemDTO, BillListResponseDTO}
+import repcheck.shared.models.congress.dto.bill.{
+  BillDetailDTO,
+  BillListItemDTO,
+  BillListResponseDTO,
+  CoSponsorDTO,
+  CosponsorListResponseDTO,
+}
 
 import com.repcheck.bills.metadata.errors.BillFetchFailed
 
@@ -127,6 +133,54 @@ class BillsApiClient[F[_]](
           ),
         correlationId = UUID.randomUUID(),
       )
+    }
+
+  def fetchCosponsors(cosponsorUrl: String): F[List[CoSponsorDTO]] =
+    fetchCosponsorsPage(cosponsorUrl, List.empty, config.pageSize)
+
+  private def fetchCosponsorsPage(
+    url: String,
+    accumulated: List[CoSponsorDTO],
+    pageSize: Int,
+  ): F[List[CoSponsorDTO]] =
+    parseUri(url).flatMap { baseUri =>
+      val uri = baseUri
+        .withQueryParam("api_key", config.apiKey)
+        .withQueryParam("limit", pageSize)
+
+      val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
+        if (response.status.isSuccess) {
+          response.as[CosponsorListResponseDTO]
+        } else {
+          raiseApiError[CosponsorListResponseDTO](response)
+        }
+      }
+
+      retryWrapper
+        .withRetry(
+          operation = operation,
+          config = config.retry,
+          classifier = CongressGovErrorClassifier,
+          errorFactory = (msg, cause) =>
+            BillFetchFailed(
+              endpoint = uri.renderString,
+              statusCode = 0,
+              detail = msg,
+              cause = cause,
+            ),
+          correlationId = UUID.randomUUID(),
+        )
+        .flatMap { listResponse =>
+          val all     = accumulated ++ listResponse.cosponsors
+          val nextUrl = listResponse.pagination.flatMap(_.url)
+          if (listResponse.cosponsors.size < pageSize || nextUrl.isEmpty) {
+            temporal.pure(all)
+          } else {
+            temporal.flatMap(temporal.sleep(pageDelay)) { _ =>
+              fetchCosponsorsPage(nextUrl.getOrElse(url), all, pageSize)
+            }
+          }
+        }
     }
 
 }

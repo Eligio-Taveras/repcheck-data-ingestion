@@ -1,8 +1,5 @@
 package com.repcheck.bills.common.persistence
 
-import cats.effect.kernel.MonadCancelThrow
-import cats.syntax.all._
-
 import doobie._
 import doobie.implicits._
 import doobie.postgres.implicits._
@@ -10,10 +7,9 @@ import doobie.postgres.implicits._
 import repcheck.pipeline.models.constants.Tables
 import repcheck.shared.models.congress.dos.bill.BillTextVersionDO
 
-import com.repcheck.bills.common.errors.BillTextVersionInsertFailed
 import com.repcheck.bills.common.persistence.DoobieInstances.{floatArrayGet, floatArrayPut}
 
-class DoobieBillTextVersionRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) extends BillTextVersionRepository[F] {
+class DoobieBillTextVersionRepository extends BillTextVersionRepository[ConnectionIO] {
 
   private val table = Fragment.const(Tables.BillTextVersions)
 
@@ -31,7 +27,7 @@ class DoobieBillTextVersionRepository[F[_]: MonadCancelThrow](xa: Transactor[F])
     created_at
   """
 
-  override def insertVersion(version: BillTextVersionDO): F[Long] =
+  override def insertVersion(version: BillTextVersionDO): ConnectionIO[Long] =
     sql"""
       INSERT INTO $table (
         bill_id, version_code, version_type,
@@ -42,27 +38,22 @@ class DoobieBillTextVersionRepository[F[_]: MonadCancelThrow](xa: Transactor[F])
         ${version.content}, ${version.embedding}::vector, ${version.fetchedAt}
       )
       RETURNING id
-    """.query[Long].unique.transact(xa).adaptErr {
-      case e =>
-        BillTextVersionInsertFailed(version.billId, e.getMessage, e)
-    }
+    """.query[Long].unique
 
-  override def findByBillId(billId: Long): F[List[BillTextVersionDO]] =
+  override def findByBillId(billId: Long): ConnectionIO[List[BillTextVersionDO]] =
     (fr"SELECT" ++ selectColumns ++ fr"FROM $table WHERE bill_id = $billId ORDER BY version_date DESC NULLS LAST")
       .query[BillTextVersionDO]
       .to[List]
-      .transact(xa)
 
-  override def findLatestByBillId(billId: Long): F[Option[BillTextVersionDO]] =
+  override def findLatestByBillId(billId: Long): ConnectionIO[Option[BillTextVersionDO]] =
     (fr"SELECT" ++ selectColumns ++ fr"FROM $table WHERE bill_id = $billId ORDER BY version_date DESC NULLS LAST LIMIT 1")
       .query[BillTextVersionDO]
       .option
-      .transact(xa)
 
-  override def storeAndUpdateBill(version: BillTextVersionDO): F[Long] = {
+  override def storeAndUpdateBill(version: BillTextVersionDO): ConnectionIO[Long] = {
     val billsTable = Fragment.const(Tables.Bills)
 
-    val program = for {
+    for {
       generatedId <- sql"""
         INSERT INTO $table (
           bill_id, version_code, version_type,
@@ -86,11 +77,6 @@ class DoobieBillTextVersionRepository[F[_]: MonadCancelThrow](xa: Transactor[F])
         WHERE id = ${version.billId}
       """.update.run
     } yield generatedId
-
-    program.transact(xa).adaptErr {
-      case e =>
-        BillTextVersionInsertFailed(version.billId, e.getMessage, e)
-    }
   }
 
 }
