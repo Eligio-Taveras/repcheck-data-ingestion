@@ -4,7 +4,7 @@ import doobie.{Get, Put}
 
 object DoobieInstances {
 
-  private val parseFloatVector: String => Array[Float] = { pgVector =>
+  private[persistence] val parseFloatVector: String => Array[Float] = { pgVector =>
     val trimmed = pgVector.stripPrefix("[").stripSuffix("]")
     if (trimmed.isEmpty) {
       Array.empty[Float]
@@ -13,7 +13,7 @@ object DoobieInstances {
     }
   }
 
-  private val formatFloatVector: Array[Float] => String =
+  private[persistence] val formatFloatVector: Array[Float] => String =
     arr => arr.mkString("[", ",", "]")
 
   implicit val floatArrayGet: Get[Array[Float]] =

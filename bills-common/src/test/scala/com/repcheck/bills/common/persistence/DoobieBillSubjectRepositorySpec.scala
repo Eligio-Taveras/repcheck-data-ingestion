@@ -118,6 +118,48 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
     found shouldBe empty
   }
 
+  private def make1536Embedding(seed: Float): Array[Float] =
+    Array.tabulate(1536)(i => seed + i * 0.001f)
+
+  it should "round-trip subjects with embeddings" taggedAs DockerRequired in {
+    val billId = insertBillAndGetId()
+    val subjects = List(
+      BillSubjectDO(
+        billId = billId,
+        subjectName = "Armed Forces",
+        embedding = Some(make1536Embedding(0.1f)),
+        updateDate = Some("2024-01-15T00:00:00Z"),
+      ),
+      BillSubjectDO(
+        billId = billId,
+        subjectName = "Veterans",
+        embedding = Some(make1536Embedding(0.4f)),
+        updateDate = None,
+      ),
+    )
+
+    subjectRepo.replaceAll(billId, subjects).unsafeRunSync()
+    val found = subjectRepo.findByBillId(billId).unsafeRunSync()
+    found.size shouldBe 2
+  }
+
+  it should "preserve embedding values through round-trip" taggedAs DockerRequired in {
+    val billId = insertBillAndGetId()
+    val subjects = List(
+      BillSubjectDO(
+        billId = billId,
+        subjectName = "Finance",
+        embedding = Some(make1536Embedding(1.0f)),
+        updateDate = Some("2024-06-01T00:00:00Z"),
+      )
+    )
+
+    subjectRepo.replaceAll(billId, subjects).unsafeRunSync()
+    val found = subjectRepo.findByBillId(billId).unsafeRunSync()
+    val _     = found.size shouldBe 1
+    found.headOption.flatMap(_.embedding).isDefined shouldBe true
+  }
+
   "findByBillId" should "return empty for unknown bill" taggedAs DockerRequired in {
     val found = subjectRepo.findByBillId(99999L).unsafeRunSync()
     found shouldBe empty
