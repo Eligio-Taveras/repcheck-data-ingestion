@@ -27,6 +27,7 @@ import com.repcheck.bills.common.persistence.{
   BillRepository,
   BillSubjectRepository,
   MemberLookupRepository,
+  TransactionRunner,
 }
 import com.repcheck.bills.metadata.api.BillsApiClient
 import com.repcheck.bills.metadata.config.BillMetadataConfig
@@ -73,7 +74,7 @@ class BillMetadataProcessor[F[_]: Async](
     val logCtx     = LogContext(correlationId.toString, stepName, Some(correlationId), Some(naturalKey))
 
     for {
-      stored <- billRepo.findByBillId(naturalKey).transact(xa)
+      stored <- TransactionRunner.run(xa)(billRepo.findByBillId(naturalKey))
       result <- evaluateAndProcess(listItem, naturalKey, stored, correlationId, logCtx)
     } yield result
   }
@@ -152,7 +153,7 @@ class BillMetadataProcessor[F[_]: Async](
       case Some(bioguideId) =>
         for {
           _        <- placeholderCreator.ensureExists[MemberDO](bioguideId, memberEntityRepo)
-          memberId <- memberLookupRepo.findIdByNaturalKey(bioguideId).transact(xa)
+          memberId <- TransactionRunner.run(xa)(memberLookupRepo.findIdByNaturalKey(bioguideId))
           _ <-
             if (memberId.isEmpty) {
               logger.warn(logCtx, s"Sponsor member ID not found after placeholder creation for $bioguideId")
@@ -172,7 +173,7 @@ class BillMetadataProcessor[F[_]: Async](
     cosponsorDTOs.traverseFilter { dto =>
       for {
         _        <- placeholderCreator.ensureExists[MemberDO](dto.bioguideId, memberEntityRepo)
-        memberId <- memberLookupRepo.findIdByNaturalKey(dto.bioguideId).transact(xa)
+        memberId <- TransactionRunner.run(xa)(memberLookupRepo.findIdByNaturalKey(dto.bioguideId))
         result <- memberId match {
           case Some(mid) =>
             Async[F].pure(
@@ -211,7 +212,7 @@ class BillMetadataProcessor[F[_]: Async](
       _      <- subjectRepo.replaceAll(billId, subjects.map(_.copy(billId = billId)))
     } yield ()
 
-    writeProgram.transact(xa)
+    TransactionRunner.run(xa)(writeProgram)
   }
 
   private def parseInstantStr(dateStr: String): Option[Instant] =

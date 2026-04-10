@@ -21,7 +21,6 @@ import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
 import repcheck.ingestion.common.placeholders.{DefaultPlaceholderCreator, DoobieEntityRepository}
 import repcheck.pipeline.models.errors.RetryWrapper
-
 import repcheck.shared.models.congress.dos.member.MemberDO
 
 import com.repcheck.bills.common.persistence.{
