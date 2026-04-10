@@ -118,7 +118,7 @@ lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ diff ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
-    coverageExcludedFiles := ".*BillMetadataPipelineApp.*",
+    coverageExcludedFiles := ".*BillMetadataPipeline;.*BillMetadataPipelineApp",
   )
 
 lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-checker"))

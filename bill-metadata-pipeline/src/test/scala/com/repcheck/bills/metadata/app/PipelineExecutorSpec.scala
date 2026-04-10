@@ -12,7 +12,7 @@ import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
-class BillMetadataPipelineSpec extends AnyFlatSpec with Matchers {
+class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
 
   private val correlationId = UUID.fromString("00000000-0000-0000-0000-000000000001")
   private val pipelineName  = "test-pipeline"
@@ -52,7 +52,7 @@ class BillMetadataPipelineSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = BillMetadataPipeline.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -65,7 +65,7 @@ class BillMetadataPipelineSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = BillMetadataPipeline.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
     result.code shouldBe 1
   }
 
@@ -78,7 +78,7 @@ class BillMetadataPipelineSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = BillMetadataPipeline.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -86,7 +86,7 @@ class BillMetadataPipelineSpec extends AnyFlatSpec with Matchers {
     val logger                               = new StubPipelineLogger
     val stream: Stream[IO, ProcessingResult] = Stream.empty
 
-    val result = BillMetadataPipeline.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -101,7 +101,7 @@ class BillMetadataPipelineSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val _ = BillMetadataPipeline.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
 
     val _          = logger.messages.size shouldBe 1
     val logMessage = logger.messages.headOption.getOrElse(fail("expected at least one log message"))
@@ -119,7 +119,7 @@ class BillMetadataPipelineSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = BillMetadataPipeline.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
     result.code shouldBe 1
   }
 
@@ -133,7 +133,7 @@ class BillMetadataPipelineSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = BillMetadataPipeline.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -141,7 +141,7 @@ class BillMetadataPipelineSpec extends AnyFlatSpec with Matchers {
     val logger = new StubPipelineLogger
     val stream = Stream.emit(ProcessingResult.Succeeded("bill-1"))
 
-    val _ = BillMetadataPipeline.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
 
     logger.messages should not be empty
   }
@@ -152,7 +152,7 @@ class BillMetadataPipelineSpec extends AnyFlatSpec with Matchers {
       Stream.emit(ProcessingResult.Succeeded("bill-1")) ++
         Stream.raiseError[IO](new RuntimeException("stream failure"))
 
-    val result = BillMetadataPipeline.execute[IO](stream, logger, pipelineName, correlationId).attempt.unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).attempt.unsafeRunSync()
     result.isLeft shouldBe true
   }
 

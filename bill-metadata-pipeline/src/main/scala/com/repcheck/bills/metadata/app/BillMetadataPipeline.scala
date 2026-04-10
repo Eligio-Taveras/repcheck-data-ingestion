@@ -8,7 +8,6 @@ import cats.syntax.all._
 
 import org.http4s.ember.client.EmberClientBuilder
 
-import fs2.Stream
 import fs2.io.net.Network
 
 import doobie.postgres.implicits._
@@ -19,10 +18,10 @@ import pureconfig.ConfigSource
 
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
-import repcheck.ingestion.common.logging.{LogContext, PipelineLogger, PipelineLoggerFactory}
+import repcheck.ingestion.common.logging.PipelineLoggerFactory
 import repcheck.ingestion.common.placeholders.{DefaultPlaceholderCreator, DoobieEntityRepository}
 import repcheck.pipeline.models.errors.RetryWrapper
-import repcheck.pipeline.models.metadata.{PipelineRunSummary, ProcessingResult}
+
 import repcheck.shared.models.congress.dos.member.MemberDO
 
 import com.repcheck.bills.common.persistence.{
@@ -130,7 +129,7 @@ private[app] object BillMetadataPipeline {
 
           val correlationId = UUID.randomUUID()
           val resultStream  = processor.streamAll(correlationId)
-          execute[F](resultStream, logger, PipelineName, correlationId)
+          PipelineExecutor.execute[F](resultStream, logger, PipelineName, correlationId)
       }
     } yield exitCode
   }
@@ -142,38 +141,5 @@ private[app] object BillMetadataPipeline {
       xa         <- TransactorResource.make[F](config.database)
       httpClient <- EmberClientBuilder.default[F].build
     } yield (xa, httpClient)
-
-  /**
-   * Testable pipeline execution logic. Accepts a pre-built result stream and logger so that tests can inject stubs
-   * without needing to construct the full dependency graph.
-   */
-  private[app] def execute[F[_]: Async](
-    resultStream: Stream[F, ProcessingResult],
-    logger: PipelineLogger[F],
-    pipelineName: String,
-    correlationId: UUID,
-  ): F[ExitCode] = {
-    val logCtx = LogContext(runId = correlationId.toString, stepName = pipelineName)
-
-    for {
-      startedAt   <- Async[F].realTimeInstant
-      results     <- resultStream.compile.toList
-      completedAt <- Async[F].realTimeInstant
-      summary = PipelineRunSummary.fromResults(
-        runId = correlationId,
-        pipelineName = pipelineName,
-        startedAt = startedAt,
-        completedAt = completedAt,
-        results = results,
-      )
-      _ <- logger.info(
-        logCtx,
-        s"Pipeline completed: ${summary.itemsProcessed} processed, ${summary.itemsSucceeded} succeeded, ${summary.itemsFailed} failed",
-      )
-      exitCode =
-        if (summary.itemsFailed == 0) { ExitCode.Success }
-        else { ExitCode.Error }
-    } yield exitCode
-  }
 
 }
