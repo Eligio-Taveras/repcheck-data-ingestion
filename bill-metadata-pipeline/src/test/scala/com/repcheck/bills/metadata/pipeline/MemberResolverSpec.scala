@@ -12,6 +12,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
+import repcheck.shared.models.congress.common.BillType
 import repcheck.shared.models.congress.dos.bill.BillDO
 import repcheck.shared.models.congress.dos.member.MemberDO
 import repcheck.shared.models.congress.dto.bill.{BillDetailDTO, CoSponsorDTO, SponsorDTO}
@@ -66,7 +67,7 @@ class MemberResolverSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     billId = 1L,
     naturalKey = "118-HR-1",
     congress = 118,
-    billType = "hr",
+    billType = BillType.HR,
     number = "1",
     title = "Test",
     originChamber = None,

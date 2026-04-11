@@ -21,6 +21,8 @@ import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
 import repcheck.ingestion.common.placeholders.{DefaultPlaceholderCreator, DoobieEntityRepository}
 import repcheck.pipeline.models.errors.RetryWrapper
+import repcheck.shared.models.congress.common.DoobieEnumInstances._
+import repcheck.shared.models.congress.common.{Party, UsState}
 import repcheck.shared.models.congress.dos.member.MemberDO
 
 import com.repcheck.bills.common.persistence.{
@@ -56,9 +58,9 @@ private[app] object BillMetadataPipeline {
       Option[String],
       Option[String],
       Option[String],
-      Option[String],
-      Option[String],
-      Option[String],
+      Option[Int],
+      Option[Party],
+      Option[UsState],
       Option[Int],
       Option[String],
       Option[String],
@@ -80,7 +82,7 @@ private[app] object BillMetadataPipeline {
         m.imageUrl,
         m.imageAttribution,
         m.officialUrl,
-        m.updateDate.map(Instant.parse),
+        m.updateDate,
       )
     }
   }

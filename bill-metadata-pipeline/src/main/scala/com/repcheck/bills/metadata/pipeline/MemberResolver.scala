@@ -1,5 +1,7 @@
 package com.repcheck.bills.metadata.pipeline
 
+import java.time.LocalDate
+
 import cats.effect.Async
 import cats.syntax.all._
 
@@ -73,7 +75,7 @@ private[pipeline] class MemberResolver[F[_]: Async](
                   billId = 0L,
                   memberId = mid,
                   isOriginalCosponsor = dto.isOriginalCosponsor,
-                  sponsorshipDate = dto.sponsorshipDate,
+                  sponsorshipDate = dto.sponsorshipDate.map(LocalDate.parse),
                 )
               )
             )

@@ -1,5 +1,6 @@
 package com.repcheck.bills.metadata.pipeline
 
+import java.time.Instant
 import java.util.UUID
 
 import cats.effect.IO
@@ -15,6 +16,7 @@ import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.api.FetchParams
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
+import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.{BillCosponsorDO, BillDO, BillSubjectDO}
 import repcheck.shared.models.congress.dos.member.MemberDO
 import repcheck.shared.models.congress.dto.bill.{BillDetailDTO, BillListItemDTO, CoSponsorDTO, SponsorDTO}
@@ -135,16 +137,16 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
   private def makeStoredBill(
     naturalKey: String = "118-HR-1",
     billId: Long = 42L,
-    updateDate: Option[String],
+    updateDate: Option[Instant],
   ): BillDO =
     BillDO(
       billId = billId,
       naturalKey = naturalKey,
       congress = 118,
-      billType = "hr",
+      billType = BillType.HR,
       number = "1",
       title = "Old Title",
-      originChamber = Some("House"),
+      originChamber = Some(Chamber.House),
       originChamberCode = Some("H"),
       introducedDate = None,
       policyArea = None,
@@ -229,7 +231,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
   it should "succeed for an updated bill with newer updateDate" in {
     val f          = createFixture()
     val listItem   = makeListItem(updateDate = Some("2024-06-01T00:00:00Z"))
-    val storedBill = makeStoredBill(updateDate = Some("2024-01-01T00:00:00Z"))
+    val storedBill = makeStoredBill(updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")))
     val detail     = makeDetailDTO()
     stubBasicRepos(f, storedBill = Some(storedBill))
     when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(detail))
@@ -241,7 +243,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
   it should "skip unchanged bill with same updateDate" in {
     val f          = createFixture()
     val listItem   = makeListItem(updateDate = Some("2024-01-01T00:00:00Z"))
-    val storedBill = makeStoredBill(updateDate = Some("2024-01-01T00:00:00Z"))
+    val storedBill = makeStoredBill(updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")))
     when(f.billRepo.findByBillId(anyString())).thenReturn(doobie.free.connection.pure(Some(storedBill)))
 
     val result = f.processor.processListItem(listItem, correlationId).unsafeRunSync()
@@ -251,7 +253,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
   it should "skip bill when API updateDate is older than stored" in {
     val f          = createFixture()
     val listItem   = makeListItem(updateDate = Some("2023-06-01T00:00:00Z"))
-    val storedBill = makeStoredBill(updateDate = Some("2024-01-01T00:00:00Z"))
+    val storedBill = makeStoredBill(updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")))
     when(f.billRepo.findByBillId(anyString())).thenReturn(doobie.free.connection.pure(Some(storedBill)))
 
     val result = f.processor.processListItem(listItem, correlationId).unsafeRunSync()
@@ -261,7 +263,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
   it should "not fetch detail for unchanged bills" in {
     val f          = createFixture()
     val listItem   = makeListItem(updateDate = Some("2024-01-01T00:00:00Z"))
-    val storedBill = makeStoredBill(updateDate = Some("2024-01-01T00:00:00Z"))
+    val storedBill = makeStoredBill(updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")))
     when(f.billRepo.findByBillId(anyString())).thenReturn(doobie.free.connection.pure(Some(storedBill)))
 
     val _ = f.processor.processListItem(listItem, correlationId).unsafeRunSync()
@@ -293,7 +295,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
   it should "archive history before upsert for updated bills" in {
     val f          = createFixture()
     val listItem   = makeListItem(updateDate = Some("2024-06-01T00:00:00Z"))
-    val storedBill = makeStoredBill(updateDate = Some("2024-01-01T00:00:00Z"))
+    val storedBill = makeStoredBill(updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")))
     val detail     = makeDetailDTO()
     stubBasicRepos(f, storedBill = Some(storedBill))
     when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(detail))

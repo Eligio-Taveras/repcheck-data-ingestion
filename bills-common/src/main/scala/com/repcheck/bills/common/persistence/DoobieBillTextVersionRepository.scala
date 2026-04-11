@@ -5,6 +5,7 @@ import doobie.implicits._
 import doobie.postgres.implicits._
 
 import repcheck.pipeline.models.constants.Tables
+import repcheck.shared.models.congress.common.DoobieEnumInstances._
 import repcheck.shared.models.congress.dos.bill.BillTextVersionDO
 
 import com.repcheck.bills.common.persistence.DoobieInstances.{floatArrayGet, floatArrayPut}
@@ -18,7 +19,7 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
     bill_id,
     version_code,
     version_type,
-    version_date::text,
+    version_date::date,
     format_type,
     url,
     content,
@@ -34,7 +35,7 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
         version_date, format_type, url, content, embedding, fetched_at
       ) VALUES (
         ${version.billId}, ${version.versionCode}, ${version.versionType},
-        ${version.versionDate}::timestamptz, ${version.formatType}, ${version.url},
+        ${version.versionDate}, ${version.formatType}, ${version.url},
         ${version.content}, ${version.embedding}::vector, ${version.fetchedAt}
       )
       RETURNING id
@@ -50,9 +51,24 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
       .query[BillTextVersionDO]
       .option
 
-  override def storeAndUpdateBill(version: BillTextVersionDO): ConnectionIO[Long] = {
+  private[persistence] def buildBillTextFieldsUpdate(
+    version: BillTextVersionDO,
+    generatedId: Long,
+  ): ConnectionIO[Int] = {
     val billsTable = Fragment.const(Tables.Bills)
+    sql"""
+      UPDATE $billsTable SET
+        text_url = ${version.url},
+        text_format = ${version.formatType},
+        text_version_type = ${version.versionCode},
+        text_date = ${version.versionDate},
+        latest_text_version_id = $generatedId,
+        updated_at = NOW()
+      WHERE id = ${version.billId}
+    """.update.run
+  }
 
+  override def storeAndUpdateBill(version: BillTextVersionDO): ConnectionIO[Long] =
     for {
       generatedId <- sql"""
         INSERT INTO $table (
@@ -60,23 +76,13 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
           version_date, format_type, url, content, embedding, fetched_at
         ) VALUES (
           ${version.billId}, ${version.versionCode}, ${version.versionType},
-          ${version.versionDate}::timestamptz, ${version.formatType}, ${version.url},
+          ${version.versionDate}, ${version.formatType}, ${version.url},
           ${version.content}, ${version.embedding}::vector, ${version.fetchedAt}
         )
         RETURNING id
       """.query[Long].unique
 
-      _ <- sql"""
-        UPDATE $billsTable SET
-          text_url = ${version.url},
-          text_format = ${version.formatType},
-          text_version_type = ${version.versionCode},
-          text_date = ${version.versionDate}::timestamptz,
-          latest_text_version_id = $generatedId,
-          updated_at = NOW()
-        WHERE id = ${version.billId}
-      """.update.run
+      _ <- buildBillTextFieldsUpdate(version, generatedId)
     } yield generatedId
-  }
 
 }

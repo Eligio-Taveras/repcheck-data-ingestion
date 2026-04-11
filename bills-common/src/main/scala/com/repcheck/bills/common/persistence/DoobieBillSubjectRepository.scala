@@ -2,6 +2,7 @@ package com.repcheck.bills.common.persistence
 
 import doobie._
 import doobie.implicits._
+import doobie.postgres.implicits._
 
 import repcheck.pipeline.models.constants.Tables
 import repcheck.shared.models.congress.dos.bill.BillSubjectDO
@@ -13,8 +14,8 @@ class DoobieBillSubjectRepository extends BillSubjectRepository[ConnectionIO] {
   override def replaceAll(billId: Long, subjects: List[BillSubjectDO]): ConnectionIO[Unit] = {
     val delete = sql"DELETE FROM $table WHERE bill_id = $billId".update.run
 
-    val insert = Update[(Long, String, Option[String], Option[String])](
-      s"INSERT INTO ${Tables.BillSubjects} (bill_id, subject_name, embedding, update_date) VALUES (?, ?, ?::vector, ?::timestamptz)"
+    val insert = Update[(Long, String, Option[String], Option[java.time.Instant])](
+      s"INSERT INTO ${Tables.BillSubjects} (bill_id, subject_name, embedding, update_date) VALUES (?, ?, ?::vector, ?)"
     )
 
     val rows = subjects.map { s =>
@@ -29,8 +30,8 @@ class DoobieBillSubjectRepository extends BillSubjectRepository[ConnectionIO] {
   }
 
   override def findByBillId(billId: Long): ConnectionIO[List[BillSubjectDO]] =
-    sql"SELECT bill_id, subject_name, embedding::text, update_date::text FROM $table WHERE bill_id = $billId"
-      .query[(Long, String, Option[String], Option[String])]
+    sql"SELECT bill_id, subject_name, embedding::text, update_date FROM $table WHERE bill_id = $billId"
+      .query[(Long, String, Option[String], Option[java.time.Instant])]
       .map {
         case (bId, name, embStr, upd) =>
           val embedding = embStr.map { s =>

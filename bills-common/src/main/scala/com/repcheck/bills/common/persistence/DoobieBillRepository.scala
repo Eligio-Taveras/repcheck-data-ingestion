@@ -7,6 +7,7 @@ import doobie.implicits._
 import doobie.postgres.implicits._
 
 import repcheck.pipeline.models.constants.Tables
+import repcheck.shared.models.congress.common.DoobieEnumInstances._
 import repcheck.shared.models.congress.dos.bill.BillDO
 
 import com.repcheck.bills.common.persistence.DoobieInstances.{floatArrayGet, floatArrayPut}
@@ -24,23 +25,23 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     title,
     origin_chamber,
     origin_chamber_code,
-    introduced_date::text,
+    introduced_date,
     policy_area,
-    latest_action_date::text,
+    latest_action_date,
     latest_action_text,
     constitutional_authority_text,
     sponsor_member_id,
     text_url,
     text_format,
     text_version_type,
-    text_date::text,
+    text_date::date,
     text_content,
     text_embedding,
     summary_text,
     summary_action_desc,
-    summary_action_date::text,
-    update_date::text,
-    update_date_including_text::text,
+    summary_action_date,
+    update_date,
+    update_date_including_text,
     legislation_url,
     api_url,
     created_at,
@@ -64,15 +65,15 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
       ) VALUES (
         ${bill.congress}, ${bill.billType}, ${bill.number}::int, ${bill.title},
         ${bill.originChamber}, ${bill.originChamberCode},
-        ${bill.introducedDate}::date, ${bill.policyArea},
-        ${bill.latestActionDate}::date, ${bill.latestActionText},
+        ${bill.introducedDate}, ${bill.policyArea},
+        ${bill.latestActionDate}, ${bill.latestActionText},
         ${bill.constitutionalAuthorityText}, ${bill.sponsorMemberId},
         ${bill.textUrl}, ${bill.textFormat}, ${bill.textVersionType},
-        ${bill.textDate}::timestamptz,
+        ${bill.textDate},
         ${bill.textContent}, ${bill.textEmbedding}::vector,
         ${bill.summaryText}, ${bill.summaryActionDesc},
-        ${bill.summaryActionDate}::date,
-        ${bill.updateDate}::timestamptz, ${bill.updateDateIncludingText}::timestamptz,
+        ${bill.summaryActionDate},
+        ${bill.updateDate}, ${bill.updateDateIncludingText},
         ${bill.legislationUrl}, ${bill.apiUrl}
       )
       ON CONFLICT (congress, bill_type, number) DO UPDATE SET

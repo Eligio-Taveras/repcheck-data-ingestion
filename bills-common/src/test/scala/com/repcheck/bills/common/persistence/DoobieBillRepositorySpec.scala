@@ -1,6 +1,6 @@
 package com.repcheck.bills.common.persistence
 
-import java.time.Instant
+import java.time.{Instant, LocalDate}
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
@@ -9,6 +9,8 @@ import doobie.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import repcheck.shared.models.congress.bill.TextVersionCode
+import repcheck.shared.models.congress.common.{BillType, Chamber, FormatType}
 import repcheck.shared.models.congress.dos.bill.{BillDO, BillTextVersionDO}
 
 import com.repcheck.bills.common.testing.{DockerRequired, TransactorFixture}
@@ -27,8 +29,8 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
           billId = billId,
           versionCode = "IH",
           versionType = "IH version",
-          versionDate = Some("2024-01-15T00:00:00Z"),
-          formatType = Some("Formatted Text"),
+          versionDate = Some(LocalDate.parse("2024-01-15")),
+          formatType = Some(FormatType.FormattedText),
           url = Some("https://congress.gov/text/IH"),
           content = None,
           embedding = None,
@@ -41,22 +43,22 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
 
   private def makeBill(
     congress: Int = 118,
-    billType: String = "hr",
+    billType: BillType = BillType.HR,
     number: String = "1234",
     title: String = "Test Bill",
-    updateDate: Option[String] = Some("2024-01-15T00:00:00Z"),
+    updateDate: Option[Instant] = Some(Instant.parse("2024-01-15T00:00:00Z")),
   ): BillDO = BillDO(
     billId = 0L,
-    naturalKey = s"$congress-${billType.toUpperCase}-$number",
+    naturalKey = s"$congress-${billType.toString}-$number",
     congress = congress,
     billType = billType,
     number = number,
     title = title,
-    originChamber = Some("House"),
+    originChamber = Some(Chamber.House),
     originChamberCode = Some("H"),
-    introducedDate = Some("2024-01-10"),
+    introducedDate = Some(LocalDate.parse("2024-01-10")),
     policyArea = Some("Government Operations"),
-    latestActionDate = Some("2024-03-15"),
+    latestActionDate = Some(LocalDate.parse("2024-03-15")),
     latestActionText = Some("Referred to committee"),
     constitutionalAuthorityText = Some("Article I"),
     sponsorMemberId = None,
@@ -88,7 +90,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
       case Some(bill) =>
         val _ = bill.title shouldBe "Test Bill"
         val _ = bill.congress shouldBe 118
-        val _ = bill.billType shouldBe "hr"
+        val _ = bill.billType shouldBe BillType.HR
         bill.naturalKey shouldBe "118-HR-1234"
       case None => fail("Expected bill to be present")
     }
@@ -144,7 +146,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     val found = repo.findByBillId("118-HR-1234").transact(xa).unsafeRunSync()
     found match {
       case Some(bill) =>
-        val _ = bill.originChamber shouldBe Some("House")
+        val _ = bill.originChamber shouldBe Some(Chamber.House)
         val _ = bill.policyArea shouldBe Some("Government Operations")
         bill.legislationUrl shouldBe Some("https://congress.gov/bill/118th-congress/house-bill/1234")
       case None => fail("Expected bill to be present")
@@ -210,8 +212,8 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
       case Some(bill) =>
         val _ = bill.title shouldBe "Test Bill"
         val _ = bill.textUrl shouldBe Some("http://text.xml")
-        val _ = bill.textFormat shouldBe Some("Formatted XML")
-        val _ = bill.textVersionType shouldBe Some("RH")
+        val _ = bill.textFormat shouldBe Some(FormatType.FormattedXml)
+        val _ = bill.textVersionType shouldBe Some(TextVersionCode.RH)
         bill.latestTextVersionId shouldBe Some(versionId)
       case None => fail("Expected bill to be present")
     }

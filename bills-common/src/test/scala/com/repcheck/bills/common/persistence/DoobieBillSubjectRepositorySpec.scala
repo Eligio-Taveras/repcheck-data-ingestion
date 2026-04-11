@@ -1,5 +1,7 @@
 package com.repcheck.bills.common.persistence
 
+import java.time.Instant
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
@@ -7,6 +9,7 @@ import doobie.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import repcheck.shared.models.congress.common.BillType
 import repcheck.shared.models.congress.dos.bill.{BillDO, BillSubjectDO}
 
 import com.repcheck.bills.common.testing.{DockerRequired, TransactorFixture}
@@ -21,7 +24,7 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
       billId = 0L,
       naturalKey = "118-HR-200",
       congress = 118,
-      billType = "hr",
+      billType = BillType.HR,
       number = "200",
       title = "Subject Test Bill",
       originChamber = None,
@@ -41,7 +44,7 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
       summaryText = None,
       summaryActionDesc = None,
       summaryActionDate = None,
-      updateDate = Some("2024-01-01T00:00:00Z"),
+      updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")),
       updateDateIncludingText = None,
       legislationUrl = None,
       apiUrl = None,
@@ -61,7 +64,7 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
       billId = billId,
       subjectName = name,
       embedding = None,
-      updateDate = Some("2024-01-15T00:00:00Z"),
+      updateDate = Some(Instant.parse("2024-01-15T00:00:00Z")),
     )
 
   "replaceAll" should "insert subjects for a new bill" taggedAs DockerRequired in {
@@ -132,7 +135,7 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
         billId = billId,
         subjectName = "Armed Forces",
         embedding = Some(make1536Embedding(0.1f)),
-        updateDate = Some("2024-01-15T00:00:00Z"),
+        updateDate = Some(Instant.parse("2024-01-15T00:00:00Z")),
       ),
       BillSubjectDO(
         billId = billId,
@@ -154,7 +157,7 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
         billId = billId,
         subjectName = "Finance",
         embedding = Some(make1536Embedding(1.0f)),
-        updateDate = Some("2024-06-01T00:00:00Z"),
+        updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")),
       )
     )
 

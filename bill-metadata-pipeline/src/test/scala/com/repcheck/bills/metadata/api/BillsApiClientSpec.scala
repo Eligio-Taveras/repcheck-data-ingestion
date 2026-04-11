@@ -11,7 +11,7 @@ import org.http4s.ember.client.EmberClientBuilder
 
 import com.github.tomakehurst.wiremock.WireMockServer
 import com.github.tomakehurst.wiremock.client.WireMock._
-import com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig
+import com.github.tomakehurst.wiremock.core.WireMockConfiguration
 import com.github.tomakehurst.wiremock.stubbing.Scenario
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -23,7 +23,12 @@ import com.repcheck.bills.metadata.errors.BillFetchFailed
 
 class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
-  private val wireMock = new WireMockServer(wireMockConfig().dynamicPort())
+  private val wireMock = new WireMockServer(
+    WireMockConfiguration
+      .options()
+      .bindAddress("127.0.0.1")
+      .dynamicPort()
+  )
 
   private lazy val httpClient = EmberClientBuilder
     .default[IO]

@@ -10,6 +10,7 @@ import org.mockito.Mockito.{never, times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
+import repcheck.shared.models.congress.common.BillType
 import repcheck.shared.models.congress.dos.bill.{BillCosponsorDO, BillDO, BillSubjectDO}
 
 import com.repcheck.bills.common.persistence.{
@@ -33,7 +34,7 @@ class BillPersisterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     billId = 1L,
     naturalKey = "118-HR-1",
     congress = 118,
-    billType = "hr",
+    billType = BillType.HR,
     number = "1",
     title = "Test",
     originChamber = None,

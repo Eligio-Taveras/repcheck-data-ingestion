@@ -5,6 +5,7 @@ import cats.effect.unsafe.implicits.global
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import repcheck.shared.models.congress.common.BillType
 import repcheck.shared.models.congress.dos.bill.BillDO
 
 class BillRepositorySpec extends AnyFlatSpec with Matchers {
@@ -38,7 +39,7 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
       billId = 0L,
       naturalKey = "118-HR-1",
       congress = 118,
-      billType = "hr",
+      billType = BillType.HR,
       number = "1",
       title = "Test Bill",
       originChamber = None,

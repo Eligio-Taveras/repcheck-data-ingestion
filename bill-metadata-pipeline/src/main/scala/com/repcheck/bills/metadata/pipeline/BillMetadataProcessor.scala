@@ -91,7 +91,7 @@ class BillMetadataProcessor[F[_]: Async](
     logCtx: LogContext,
   ): F[ProcessingResult] = {
     val incomingDate = listItem.updateDate.flatMap(s => parseInstantStr(s))
-    val storedDate   = stored.flatMap(_.updateDate).flatMap(s => parseInstantStr(s))
+    val storedDate   = stored.flatMap(_.updateDate)
 
     stored match {
       case None =>

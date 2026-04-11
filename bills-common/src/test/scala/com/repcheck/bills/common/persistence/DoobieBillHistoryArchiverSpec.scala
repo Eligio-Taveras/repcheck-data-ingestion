@@ -1,5 +1,7 @@
 package com.repcheck.bills.common.persistence
 
+import java.time.{Instant, LocalDate}
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
@@ -7,6 +9,7 @@ import doobie.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.{BillCosponsorDO, BillDO, BillSubjectDO}
 
 import com.repcheck.bills.common.testing.{DockerRequired, TransactorFixture}
@@ -23,14 +26,14 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
       billId = 0L,
       naturalKey = "118-HR-300",
       congress = 118,
-      billType = "hr",
+      billType = BillType.HR,
       number = "300",
       title = "History Test Bill",
-      originChamber = Some("House"),
+      originChamber = Some(Chamber.House),
       originChamberCode = Some("H"),
-      introducedDate = Some("2024-01-10"),
+      introducedDate = Some(LocalDate.parse("2024-01-10")),
       policyArea = Some("Health"),
-      latestActionDate = Some("2024-03-15"),
+      latestActionDate = Some(LocalDate.parse("2024-03-15")),
       latestActionText = Some("Passed House"),
       constitutionalAuthorityText = None,
       sponsorMemberId = None,
@@ -43,7 +46,7 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
       summaryText = Some("A bill about health"),
       summaryActionDesc = None,
       summaryActionDate = None,
-      updateDate = Some("2024-01-01T00:00:00Z"),
+      updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")),
       updateDateIncludingText = None,
       legislationUrl = None,
       apiUrl = None,
@@ -64,9 +67,9 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
       .replaceAll(
         billId,
         List(
-          BillCosponsorDO(billId, m1, Some(true), Some("2024-01-15")),
-          BillCosponsorDO(billId, m2, Some(false), Some("2024-02-01")),
-          BillCosponsorDO(billId, m3, Some(true), Some("2024-01-20")),
+          BillCosponsorDO(billId, m1, Some(true), Some(LocalDate.parse("2024-01-15"))),
+          BillCosponsorDO(billId, m2, Some(false), Some(LocalDate.parse("2024-02-01"))),
+          BillCosponsorDO(billId, m3, Some(true), Some(LocalDate.parse("2024-01-20"))),
         ),
       )
       .transact(xa)
@@ -162,7 +165,7 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
       billId = 0L,
       naturalKey = "118-HR-301",
       congress = 118,
-      billType = "hr",
+      billType = BillType.HR,
       number = "301",
       title = "Bare Bill",
       originChamber = None,
@@ -182,7 +185,7 @@ class DoobieBillHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
       summaryText = None,
       summaryActionDesc = None,
       summaryActionDate = None,
-      updateDate = Some("2024-01-01T00:00:00Z"),
+      updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")),
       updateDateIncludingText = None,
       legislationUrl = None,
       apiUrl = None,
