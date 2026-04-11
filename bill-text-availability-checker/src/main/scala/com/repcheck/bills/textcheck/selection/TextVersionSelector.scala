@@ -28,24 +28,23 @@ object TextVersionSelector {
     if (candidates.isEmpty) {
       None
     } else {
-      // Group by format priority, take the best (lowest) format group
-      val byPriority = candidates.groupBy(_._1)
-      byPriority.keys.toList.sorted.headOption.flatMap { bestPriority =>
-        val bestFormatCandidates = byPriority(bestPriority)
-        // Within best format, pick latest date (sort ascending, take last)
-        bestFormatCandidates
-          .sortBy { case (_, version, _) => version.date.getOrElse("") }
-          .lastOption
-          .map {
-            case (_, version, format) =>
-              SelectedVersion(
-                date = version.date,
-                versionType = version.type_,
-                formatType = format.type_,
-                url = format.url,
-              )
-          }
-      }
+      // Primary: latest date wins (newer bills have updated text)
+      // Secondary: within the same date, use format priority as tiebreaker
+      candidates
+        .sortBy {
+          case (priority, version, _) =>
+            (version.date.getOrElse(""), -priority)
+        }
+        .lastOption
+        .map {
+          case (_, version, format) =>
+            SelectedVersion(
+              date = version.date,
+              versionType = version.type_,
+              formatType = format.type_,
+              url = format.url,
+            )
+        }
     }
   }
 

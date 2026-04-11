@@ -28,28 +28,50 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  it should "prefer Formatted Text over XML" in {
+  it should "prefer latest date over better format priority" in {
     val versions = List(
-      makeVersion(formats = Some(List(FormatDTO("Formatted XML", "https://example.com/xml")))),
-      makeVersion(formats = Some(List(FormatDTO("Formatted Text", "https://example.com/text")))),
+      makeVersion(
+        date = Some("2024-01-10T00:00:00Z"),
+        formats = Some(List(FormatDTO("Formatted Text", "https://example.com/old-text"))),
+      ),
+      makeVersion(
+        date = Some("2024-03-20T00:00:00Z"),
+        formats = Some(List(FormatDTO("Formatted XML", "https://example.com/new-xml"))),
+      ),
+    )
+    val result = TextVersionSelector.selectBestVersion(versions)
+    val _      = result shouldBe defined
+    result.foreach { sv =>
+      val _ = sv.formatType shouldBe "Formatted XML"
+      sv.url shouldBe "https://example.com/new-xml"
+    }
+  }
+
+  it should "prefer Formatted Text over XML within same date" in {
+    val sameDate = Some("2024-01-15T00:00:00Z")
+    val versions = List(
+      makeVersion(date = sameDate, formats = Some(List(FormatDTO("Formatted XML", "https://example.com/xml")))),
+      makeVersion(date = sameDate, formats = Some(List(FormatDTO("Formatted Text", "https://example.com/text")))),
     )
     val result = TextVersionSelector.selectBestVersion(versions)
     result.foreach(_.formatType shouldBe "Formatted Text")
   }
 
-  it should "prefer Formatted Text over PDF" in {
+  it should "prefer Formatted Text over PDF within same date" in {
+    val sameDate = Some("2024-01-15T00:00:00Z")
     val versions = List(
-      makeVersion(formats = Some(List(FormatDTO("PDF", "https://example.com/pdf")))),
-      makeVersion(formats = Some(List(FormatDTO("Formatted Text", "https://example.com/text")))),
+      makeVersion(date = sameDate, formats = Some(List(FormatDTO("PDF", "https://example.com/pdf")))),
+      makeVersion(date = sameDate, formats = Some(List(FormatDTO("Formatted Text", "https://example.com/text")))),
     )
     val result = TextVersionSelector.selectBestVersion(versions)
     result.foreach(_.formatType shouldBe "Formatted Text")
   }
 
-  it should "prefer XML over PDF" in {
+  it should "prefer XML over PDF within same date" in {
+    val sameDate = Some("2024-01-15T00:00:00Z")
     val versions = List(
-      makeVersion(formats = Some(List(FormatDTO("PDF", "https://example.com/pdf")))),
-      makeVersion(formats = Some(List(FormatDTO("Formatted XML", "https://example.com/xml")))),
+      makeVersion(date = sameDate, formats = Some(List(FormatDTO("PDF", "https://example.com/pdf")))),
+      makeVersion(date = sameDate, formats = Some(List(FormatDTO("Formatted XML", "https://example.com/xml")))),
     )
     val result = TextVersionSelector.selectBestVersion(versions)
     result.foreach(_.formatType shouldBe "Formatted XML")

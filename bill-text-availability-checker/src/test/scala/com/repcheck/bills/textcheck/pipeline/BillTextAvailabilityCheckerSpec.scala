@@ -15,6 +15,7 @@ import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
+import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.BillDO
@@ -162,6 +163,24 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val emittedEvent = captor.getValue
     val _            = emittedEvent.previousVersionCode shouldBe Some("IH")
     emittedEvent.versionCode shouldBe "EH"
+  }
+
+  it should "return Failed when selected version has no versionType" in {
+    val f        = createFixture()
+    val bill     = makeBill(textVersionType = None, textUrl = None)
+    val versions = List(makeTextVersion(versionType = None))
+
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+      .thenReturn(IO.pure(versions))
+
+    val result = f.checker.checkBill(bill, correlationId).unsafeRunSync()
+    val _      = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, reason, errorClass) =>
+        val _ = reason shouldBe "Selected text version has no version code"
+        errorClass shouldBe "MissingVersionCode"
+      case other => fail(s"Expected Failed but got $other")
+    }
   }
 
   it should "return Skipped when text version is unchanged" in {
