@@ -93,8 +93,13 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
   }
 
   "AppConfig" should "load from PureConfig reference configuration" in {
-    val result = ConfigSource.resources("application-test.conf").load[AppConfig]
-    result.isRight shouldBe true
+    val result = ConfigSource
+      .resources("application-test.conf")
+      .withFallback(ConfigSource.resources("application.conf"))
+      .load[AppConfig]
+    val _ = withClue(s"Config load failed: ${result.left.map(_.prettyPrint(0))}")(
+      result.isRight shouldBe true
+    )
   }
 
   private def makeEmptyChecker(logger: PipelineLogger[IO]): BillTextAvailabilityChecker[IO] = {
