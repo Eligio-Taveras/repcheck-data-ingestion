@@ -12,11 +12,9 @@ import org.http4s.ember.client.EmberClientBuilder
 import com.github.tomakehurst.wiremock.WireMockServer
 import com.github.tomakehurst.wiremock.client.WireMock._
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration
-
-import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-
+import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 import com.repcheck.bills.text.config.BillTextPipelineConfig
@@ -38,10 +36,10 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
   )
 
   private val noopLogger: PipelineLogger[IO] = new PipelineLogger[IO] {
-    def info(context: LogContext, message: String): IO[Unit] = IO.unit
-    def warn(context: LogContext, message: String): IO[Unit] = IO.unit
+    def info(context: LogContext, message: String): IO[Unit]                            = IO.unit
+    def warn(context: LogContext, message: String): IO[Unit]                            = IO.unit
     def error(context: LogContext, message: String, cause: Option[Throwable]): IO[Unit] = IO.unit
-    def debug(context: LogContext, message: String): IO[Unit] = IO.unit
+    def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
   }
 
   private val correlationId = UUID.randomUUID()
@@ -85,10 +83,10 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     )
 
     val result = downloader.download(s"$baseUrl/text", "Formatted Text", correlationId).unsafeRunSync()
-    result should not include "<html>"
-    result should not include "<body>"
-    result should not include "<p>"
-    result should include("Section 1.")
+    val _      = result should not include "<html>"
+    val _      = result should not include "<body>"
+    val _      = result should not include "<p>"
+    val _      = result should include("Section 1.")
     result should include("The bill text here.")
   }
 
@@ -104,10 +102,10 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     )
 
     val result = downloader.download(s"$baseUrl/text", "Formatted Text", correlationId).unsafeRunSync()
-    result should include("5 & 10")
-    result should include("< 20")
-    result should include("> 3")
-    result should include("\"test\"")
+    val _      = result should include("5 & 10")
+    val _      = result should include("< 20")
+    val _      = result should include("> 3")
+    val _      = result should include("\"test\"")
     result should include("\u00A7101")
   }
 
@@ -123,10 +121,10 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     )
 
     val result = downloader.download(s"$baseUrl/text", "Formatted Text", correlationId).unsafeRunSync()
-    result should not include "<div"
-    result should not include "<span"
-    result should not include "<a "
-    result should include("Bold text")
+    val _      = result should not include "<div"
+    val _      = result should not include "<span"
+    val _      = result should not include "<a "
+    val _      = result should include("Bold text")
     result should include("Link")
   }
 
@@ -142,8 +140,8 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     )
 
     val result = downloader.download(s"$baseUrl/text", "Formatted Text", correlationId).unsafeRunSync()
-    result should include("Paragraph one.")
-    result should include("Paragraph two.")
+    val _      = result should include("Paragraph one.")
+    val _      = result should include("Paragraph two.")
     result should include("\n")
   }
 
@@ -165,10 +163,10 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     )
 
     val result = downloader.download(s"$baseUrl/text", "Formatted XML", correlationId).unsafeRunSync()
-    result should not include "<?xml"
-    result should not include "<bill>"
-    result should not include "<!--"
-    result should include("Section text here")
+    val _      = result should not include "<?xml"
+    val _      = result should not include "<bill>"
+    val _      = result should not include "<!--"
+    val _      = result should include("Section text here")
     result should include("Bill Title")
   }
 
@@ -249,28 +247,28 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
   }
 
   "extractText" should "handle Formatted Text format" in {
-    val html = "<p>Hello</p>"
+    val html   = "<p>Hello</p>"
     val result = downloader.extractText(html, "Formatted Text")
-    result should include("Hello")
+    val _      = result should include("Hello")
     result should not include "<p>"
   }
 
   it should "handle Formatted XML format" in {
-    val xml = "<root><child>Content</child></root>"
+    val xml    = "<root><child>Content</child></root>"
     val result = downloader.extractText(xml, "Formatted XML")
-    result should include("Content")
+    val _      = result should include("Content")
     result should not include "<root>"
   }
 
   it should "pass through PDF format" in {
     val pdfContent = "raw pdf bytes"
-    val result = downloader.extractText(pdfContent, "PDF")
+    val result     = downloader.extractText(pdfContent, "PDF")
     result shouldBe pdfContent
   }
 
   it should "pass through unrecognized format" in {
     val content = "some content"
-    val result = downloader.extractText(content, "Something Else")
+    val result  = downloader.extractText(content, "Something Else")
     result shouldBe content
   }
 
@@ -286,13 +284,13 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
 
   "stripXml" should "remove processing instructions" in {
     val result = downloader.stripXml("<?xml version=\"1.0\"?><root>data</root>")
-    result should not include "<?xml"
+    val _      = result should not include "<?xml"
     result should include("data")
   }
 
   it should "remove XML comments" in {
     val result = downloader.stripXml("<root><!-- comment -->data</root>")
-    result should not include "comment"
+    val _      = result should not include "comment"
     result should include("data")
   }
 

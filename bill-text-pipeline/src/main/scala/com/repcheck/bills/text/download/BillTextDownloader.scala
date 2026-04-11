@@ -37,9 +37,9 @@ class BillTextDownloader[F[_]: Async](
           TextDownloadFailed(textUrl, textFormat, s"Invalid URL: ${err.sanitized}", err)
         }
       )
-      _ <- logger.info(logCtx, s"Downloading bill text from $textUrl (format=$textFormat)")
+      _       <- logger.info(logCtx, s"Downloading bill text from $textUrl (format=$textFormat)")
       content <- executeDownload(uri, textUrl, textFormat)
-      _ <- validateSize(content, textUrl, textFormat)
+      _       <- validateSize(content, textUrl, textFormat)
       extracted = extractText(content, textFormat)
       _ <- logger.info(logCtx, s"Downloaded ${extracted.length} characters from $textUrl")
     } yield extracted
@@ -103,16 +103,15 @@ class BillTextDownloader[F[_]: Async](
     }
   }
 
-  private[download] def extractText(content: String, textFormat: String): String = {
+  private[download] def extractText(content: String, textFormat: String): String =
     textFormat match {
       case "Formatted Text" => stripHtml(content)
       case "Formatted XML"  => stripXml(content)
       case "PDF"            => content // PDF extraction would need PDFBox; for now pass through
       case _                => content
     }
-  }
 
-  private[download] def stripHtml(html: String): String = {
+  private[download] def stripHtml(html: String): String =
     html
       .replaceAll("<br\\s*/?>", "\n")
       .replaceAll("<p[^>]*>", "\n\n")
@@ -127,15 +126,13 @@ class BillTextDownloader[F[_]: Async](
       .replaceAll("(?m)^\\s+$", "")
       .replaceAll("\n{3,}", "\n\n")
       .trim
-  }
 
-  private[download] def stripXml(xml: String): String = {
+  private[download] def stripXml(xml: String): String =
     xml
       .replaceAll("<\\?[^?]*\\?>", "")
       .replaceAll("<!--[\\s\\S]*?-->", "")
       .replaceAll("<[^>]+>", " ")
       .replaceAll("\\s+", " ")
       .trim
-  }
 
 }
