@@ -137,8 +137,8 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       .thenReturn(IO.pure("msg-id-1"))
 
     val result = f.checker.checkBill(bill, correlationId).unsafeRunSync()
-    result.isSucceeded shouldBe true
-    result.entityId shouldBe "118-HR-1"
+    val _ = result.isSucceeded shouldBe true
+    val _ = result.entityId shouldBe "118-HR-1"
     verify(f.eventPublisher, times(1)).billTextAvailable(any[BillTextAvailableEvent], any[UUID])
   }
 
@@ -161,7 +161,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val captor = org.mockito.ArgumentCaptor.forClass(classOf[BillTextAvailableEvent])
     verify(f.eventPublisher).billTextAvailable(captor.capture(), any[UUID])
     val emittedEvent = captor.getValue
-    emittedEvent.previousVersionCode shouldBe Some("IH")
+    val _ = emittedEvent.previousVersionCode shouldBe Some("IH")
     emittedEvent.versionCode shouldBe "EH"
   }
 
@@ -244,11 +244,11 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val captor = org.mockito.ArgumentCaptor.forClass(classOf[BillTextAvailableEvent])
     verify(f.eventPublisher).billTextAvailable(captor.capture(), any[UUID])
     val event = captor.getValue
-    event.billId shouldBe "118-HR-5"
-    event.congress shouldBe 118
-    event.textUrl shouldBe "https://api.congress.gov/text/118/hr/5"
-    event.textFormat shouldBe "Formatted Text"
-    event.versionCode shouldBe "IH"
+    val _ = event.billId shouldBe "118-HR-5"
+    val _ = event.congress shouldBe 118
+    val _ = event.textUrl shouldBe "https://api.congress.gov/text/118/hr/5"
+    val _ = event.textFormat shouldBe "Formatted Text"
+    val _ = event.versionCode shouldBe "IH"
     event.previousVersionCode shouldBe None
   }
 
@@ -276,7 +276,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       .thenReturn(IO.pure(List.empty))
 
     val results = f.checker.checkAll(correlationId).compile.toList.unsafeRunSync()
-    results.size shouldBe 2
+    val _ = results.size shouldBe 2
     results.foreach(_.isSkipped shouldBe true)
   }
 
@@ -297,8 +297,8 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       .thenReturn(IO.pure(List.empty))
 
     val results = f.checker.checkAll(correlationId).compile.toList.unsafeRunSync()
-    results.size shouldBe 2
-    val _ = results.count(_.isFailed) shouldBe 1
+    val _  = results.size shouldBe 2
+    val __ = results.count(_.isFailed) shouldBe 1
     results.count(_.isSkipped) shouldBe 1
   }
 
