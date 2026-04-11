@@ -2,27 +2,17 @@ package com.repcheck.bills.textcheck.app
 
 import java.util.UUID
 
-import cats.effect.{Async, ExitCode, Resource, Sync}
+import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
 import org.http4s.client.Client
-import org.http4s.ember.client.EmberClientBuilder
-
-import fs2.io.net.Network
 
 import doobie.util.transactor.Transactor
 
-import pureconfig.ConfigSource
-
 import repcheck.ingestion.common.api.CongressGovClientConfig
-import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
-import repcheck.ingestion.common.events.{
-  DefaultIngestionEventPublisher,
-  EventPublisherConfig,
-  PubSubEventPublisher,
-  PubSubPublisherResource,
-}
-import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
+import repcheck.ingestion.common.db.DatabaseConfig
+import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
+import repcheck.ingestion.common.logging.PipelineLogger
 import repcheck.pipeline.models.errors.RetryWrapper
 
 import com.repcheck.bills.common.persistence.DoobieBillRepository
@@ -40,16 +30,6 @@ private[app] object BillTextCheckerPipeline {
     pipeline: BillTextCheckerConfig,
     eventPublisher: EventPublisherConfig,
   ) derives pureconfig.ConfigReader
-
-  def run[F[_]: Async: Network](args: List[String]): F[ExitCode] = {
-    val _ = args // args reserved for future CLI config override support
-    runWithFactories[F](
-      configLoader = Sync[F].delay(ConfigSource.default.loadOrThrow[AppConfig]),
-      loggerFactory = (name: String) => PipelineLoggerFactory.make[F](name),
-      resourceBuilder = (config: AppConfig) => buildResources[F](config),
-      checkerFactory = buildChecker[F],
-    )
-  }
 
   private[app] def runWithFactories[F[_]: Async](
     configLoader: F[AppConfig],
@@ -75,7 +55,7 @@ private[app] object BillTextCheckerPipeline {
       }
     } yield exitCode
 
-  private def buildChecker[F[_]: Async](
+  private[app] def buildChecker[F[_]: Async](
     httpClient: Client[F],
     xa: Transactor[F],
     pubSubPublisher: PubSubEventPublisher[F],
@@ -101,14 +81,5 @@ private[app] object BillTextCheckerPipeline {
       logger = logger,
     )
   }
-
-  private def buildResources[F[_]: Async: Network](
-    config: AppConfig
-  ): Resource[F, (Transactor[F], Client[F], PubSubEventPublisher[F])] =
-    for {
-      xa              <- TransactorResource.make[F](config.database)
-      httpClient      <- EmberClientBuilder.default[F].build
-      pubSubPublisher <- PubSubPublisherResource.make[F](config.eventPublisher)
-    } yield (xa, httpClient, pubSubPublisher)
 
 }

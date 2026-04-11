@@ -283,4 +283,19 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     }
   }
 
+  it should "fail with invalid base URL" in {
+    val config = CongressGovClientConfig(
+      apiKey = "test-api-key",
+      baseUrl = "not a valid url :::",
+      pageSize = 250,
+      pageDelay = Duration.Zero,
+      retry = RetryConfig(maxRetries = 0, initialBackoffMs = 1L),
+    )
+    val client = new BillTextApiClient[IO](config, httpClient, retryWrapper)
+    val ex = intercept[Exception] {
+      client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+    }
+    ex.getMessage should not be empty
+  }
+
 }
