@@ -5,6 +5,8 @@ import java.time.{Instant, LocalDate}
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
+import doobie.implicits._
+
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.shared.models.congress.bill.TextVersionCode
@@ -15,8 +17,8 @@ import com.repcheck.bills.common.testing.{DockerRequired, TransactorFixture}
 
 class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with TransactorFixture {
 
-  private lazy val billRepo        = new DoobieBillRepository[IO](xa)
-  private lazy val textVersionRepo = new DoobieBillTextVersionRepository[IO](xa)
+  private lazy val billRepo        = new DoobieBillRepository
+  private lazy val textVersionRepo = new DoobieBillTextVersionRepository
 
   private def insertBillAndGetId(): Long = {
     val bill = BillDO(
@@ -51,8 +53,8 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
       updatedAt = None,
       latestTextVersionId = None,
     )
-    billRepo.upsert(bill).unsafeRunSync()
-    billRepo.findByBillId("118-HR-400").unsafeRunSync() match {
+    val _ = billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    billRepo.findByBillId("118-HR-400").transact(xa).unsafeRunSync() match {
       case Some(bill) => bill.billId
       case None       => sys.error("Expected bill to be present after insert")
     }
@@ -77,10 +79,10 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
     val billId  = insertBillAndGetId()
     val version = makeVersion(billId, "IH", LocalDate.parse("2024-01-15"))
 
-    val returnedId = textVersionRepo.insertVersion(version).unsafeRunSync()
+    val returnedId = textVersionRepo.insertVersion(version).transact(xa).unsafeRunSync()
     val _          = returnedId should be > 0L
 
-    val found = textVersionRepo.findByBillId(billId).unsafeRunSync()
+    val found = textVersionRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found.size shouldBe 1
   }
 
@@ -88,8 +90,8 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
     val billId  = insertBillAndGetId()
     val version = makeVersion(billId, "RH", LocalDate.parse("2024-02-01"))
 
-    val _     = textVersionRepo.insertVersion(version).unsafeRunSync()
-    val found = textVersionRepo.findByBillId(billId).unsafeRunSync()
+    val _     = textVersionRepo.insertVersion(version).transact(xa).unsafeRunSync()
+    val found = textVersionRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found.headOption match {
       case Some(v) =>
         val _ = v.versionCode shouldBe "RH"
@@ -105,52 +107,79 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
     val longContent = "A" * 10000
     val version     = makeVersion(billId, "IH", LocalDate.parse("2024-01-15")).copy(content = Some(longContent))
 
-    val _     = textVersionRepo.insertVersion(version).unsafeRunSync()
-    val found = textVersionRepo.findByBillId(billId).unsafeRunSync()
+    val _     = textVersionRepo.insertVersion(version).transact(xa).unsafeRunSync()
+    val found = textVersionRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found.headOption.flatMap(_.content) shouldBe Some(longContent)
   }
 
   it should "allow multiple versions per bill (append-only)" taggedAs DockerRequired in {
     val billId = insertBillAndGetId()
 
-    val _ = textVersionRepo.insertVersion(makeVersion(billId, "IH", LocalDate.parse("2024-01-15"))).unsafeRunSync()
-    val _ = textVersionRepo.insertVersion(makeVersion(billId, "RH", LocalDate.parse("2024-02-01"))).unsafeRunSync()
-    val _ = textVersionRepo.insertVersion(makeVersion(billId, "EH", LocalDate.parse("2024-03-01"))).unsafeRunSync()
+    val _ = textVersionRepo
+      .insertVersion(makeVersion(billId, "IH", LocalDate.parse("2024-01-15")))
+      .transact(xa)
+      .unsafeRunSync()
+    val _ = textVersionRepo
+      .insertVersion(makeVersion(billId, "RH", LocalDate.parse("2024-02-01")))
+      .transact(xa)
+      .unsafeRunSync()
+    val _ = textVersionRepo
+      .insertVersion(makeVersion(billId, "EH", LocalDate.parse("2024-03-01")))
+      .transact(xa)
+      .unsafeRunSync()
 
-    val found = textVersionRepo.findByBillId(billId).unsafeRunSync()
+    val found = textVersionRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found.size shouldBe 3
   }
 
   "findByBillId" should "order by version_date descending" taggedAs DockerRequired in {
     val billId = insertBillAndGetId()
 
-    val _ = textVersionRepo.insertVersion(makeVersion(billId, "IH", LocalDate.parse("2024-01-15"))).unsafeRunSync()
-    val _ = textVersionRepo.insertVersion(makeVersion(billId, "EH", LocalDate.parse("2024-03-01"))).unsafeRunSync()
-    val _ = textVersionRepo.insertVersion(makeVersion(billId, "RH", LocalDate.parse("2024-02-01"))).unsafeRunSync()
+    val _ = textVersionRepo
+      .insertVersion(makeVersion(billId, "IH", LocalDate.parse("2024-01-15")))
+      .transact(xa)
+      .unsafeRunSync()
+    val _ = textVersionRepo
+      .insertVersion(makeVersion(billId, "EH", LocalDate.parse("2024-03-01")))
+      .transact(xa)
+      .unsafeRunSync()
+    val _ = textVersionRepo
+      .insertVersion(makeVersion(billId, "RH", LocalDate.parse("2024-02-01")))
+      .transact(xa)
+      .unsafeRunSync()
 
-    val found = textVersionRepo.findByBillId(billId).unsafeRunSync()
+    val found = textVersionRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found.map(_.versionCode) shouldBe List("EH", "RH", "IH")
   }
 
   it should "return empty for unknown bill" taggedAs DockerRequired in {
-    val found = textVersionRepo.findByBillId(99999L).unsafeRunSync()
+    val found = textVersionRepo.findByBillId(99999L).transact(xa).unsafeRunSync()
     found shouldBe empty
   }
 
   "findLatestByBillId" should "return most recent version" taggedAs DockerRequired in {
     val billId = insertBillAndGetId()
 
-    val _ = textVersionRepo.insertVersion(makeVersion(billId, "IH", LocalDate.parse("2024-01-15"))).unsafeRunSync()
-    val _ = textVersionRepo.insertVersion(makeVersion(billId, "RH", LocalDate.parse("2024-02-01"))).unsafeRunSync()
-    val _ = textVersionRepo.insertVersion(makeVersion(billId, "EH", LocalDate.parse("2024-03-01"))).unsafeRunSync()
+    val _ = textVersionRepo
+      .insertVersion(makeVersion(billId, "IH", LocalDate.parse("2024-01-15")))
+      .transact(xa)
+      .unsafeRunSync()
+    val _ = textVersionRepo
+      .insertVersion(makeVersion(billId, "RH", LocalDate.parse("2024-02-01")))
+      .transact(xa)
+      .unsafeRunSync()
+    val _ = textVersionRepo
+      .insertVersion(makeVersion(billId, "EH", LocalDate.parse("2024-03-01")))
+      .transact(xa)
+      .unsafeRunSync()
 
-    val latest = textVersionRepo.findLatestByBillId(billId).unsafeRunSync()
+    val latest = textVersionRepo.findLatestByBillId(billId).transact(xa).unsafeRunSync()
     val _      = latest shouldBe defined
     latest.map(_.versionCode) shouldBe Some("EH")
   }
 
   it should "return None for unknown bill" taggedAs DockerRequired in {
-    val latest = textVersionRepo.findLatestByBillId(99999L).unsafeRunSync()
+    val latest = textVersionRepo.findLatestByBillId(99999L).transact(xa).unsafeRunSync()
     latest shouldBe None
   }
 
@@ -158,13 +187,13 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
     val billId  = insertBillAndGetId()
     val version = makeVersion(billId, "ENR", LocalDate.parse("2024-04-01"))
 
-    val versionId = textVersionRepo.storeAndUpdateBill(version).unsafeRunSync()
+    val versionId = textVersionRepo.storeAndUpdateBill(version).transact(xa).unsafeRunSync()
     val _         = versionId should be > 0L
 
-    val versions = textVersionRepo.findByBillId(billId).unsafeRunSync()
+    val versions = textVersionRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     val _        = versions.size shouldBe 1
 
-    billRepo.findByBillId("118-HR-400").unsafeRunSync() match {
+    billRepo.findByBillId("118-HR-400").transact(xa).unsafeRunSync() match {
       case Some(bill) =>
         val _ = bill.textUrl shouldBe Some("https://congress.gov/text/ENR")
         val _ = bill.textFormat shouldBe Some(FormatType.FormattedText)
@@ -177,10 +206,10 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
     val billId  = insertBillAndGetId()
     val version = makeVersion(billId, "IH", LocalDate.parse("2024-01-15"))
 
-    val versionId = textVersionRepo.storeAndUpdateBill(version).unsafeRunSync()
+    val versionId = textVersionRepo.storeAndUpdateBill(version).transact(xa).unsafeRunSync()
     val _         = versionId should be > 0L
 
-    val bill = billRepo.findByBillId("118-HR-400").unsafeRunSync()
+    val bill = billRepo.findByBillId("118-HR-400").transact(xa).unsafeRunSync()
     bill.flatMap(_.latestTextVersionId) shouldBe Some(versionId)
   }
 
@@ -188,8 +217,8 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
     val billId  = insertBillAndGetId()
     val version = makeVersion(billId, "IH", LocalDate.parse("2024-01-15"))
 
-    val _     = textVersionRepo.insertVersion(version).unsafeRunSync()
-    val found = textVersionRepo.findByBillId(billId).unsafeRunSync()
+    val _     = textVersionRepo.insertVersion(version).transact(xa).unsafeRunSync()
+    val found = textVersionRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found.headOption.flatMap(_.embedding) shouldBe None
   }
 

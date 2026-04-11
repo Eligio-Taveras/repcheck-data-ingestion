@@ -1,10 +1,5 @@
 package com.repcheck.bills.common.persistence
 
-import java.time.Instant
-
-import cats.effect.kernel.MonadCancelThrow
-import cats.syntax.all._
-
 import doobie._
 import doobie.implicits._
 import doobie.postgres.implicits._
@@ -12,16 +7,14 @@ import doobie.postgres.implicits._
 import repcheck.pipeline.models.constants.Tables
 import repcheck.shared.models.congress.dos.bill.BillSubjectDO
 
-import com.repcheck.bills.common.errors.BillSubjectReplaceFailed
-
-class DoobieBillSubjectRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) extends BillSubjectRepository[F] {
+class DoobieBillSubjectRepository extends BillSubjectRepository[ConnectionIO] {
 
   private val table = Fragment.const(Tables.BillSubjects)
 
-  override def replaceAll(billId: Long, subjects: List[BillSubjectDO]): F[Unit] = {
+  override def replaceAll(billId: Long, subjects: List[BillSubjectDO]): ConnectionIO[Unit] = {
     val delete = sql"DELETE FROM $table WHERE bill_id = $billId".update.run
 
-    val insert = Update[(Long, String, Option[String], Option[Instant])](
+    val insert = Update[(Long, String, Option[String], Option[java.time.Instant])](
       s"INSERT INTO ${Tables.BillSubjects} (bill_id, subject_name, embedding, update_date) VALUES (?, ?, ?::vector, ?)"
     )
 
@@ -30,20 +23,15 @@ class DoobieBillSubjectRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) ext
       (s.billId, s.subjectName, embeddingStr, s.updateDate)
     }
 
-    val program = for {
+    for {
       _ <- delete
       _ <- insert.updateMany(rows)
     } yield ()
-
-    program.transact(xa).adaptErr {
-      case e =>
-        BillSubjectReplaceFailed(billId, e.getMessage, e)
-    }
   }
 
-  override def findByBillId(billId: Long): F[List[BillSubjectDO]] =
+  override def findByBillId(billId: Long): ConnectionIO[List[BillSubjectDO]] =
     sql"SELECT bill_id, subject_name, embedding::text, update_date FROM $table WHERE bill_id = $billId"
-      .query[(Long, String, Option[String], Option[Instant])]
+      .query[(Long, String, Option[String], Option[java.time.Instant])]
       .map {
         case (bId, name, embStr, upd) =>
           val embedding = embStr.map { s =>
@@ -54,6 +42,5 @@ class DoobieBillSubjectRepository[F[_]: MonadCancelThrow](xa: Transactor[F]) ext
           BillSubjectDO(billId = bId, subjectName = name, embedding = embedding, updateDate = upd)
       }
       .to[List]
-      .transact(xa)
 
 }

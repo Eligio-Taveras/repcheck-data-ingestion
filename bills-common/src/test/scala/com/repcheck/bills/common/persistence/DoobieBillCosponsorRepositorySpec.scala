@@ -5,6 +5,8 @@ import java.time.{Instant, LocalDate}
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
+import doobie.implicits._
+
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.shared.models.congress.common.BillType
@@ -14,8 +16,8 @@ import com.repcheck.bills.common.testing.{DockerRequired, TransactorFixture}
 
 class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with TransactorFixture {
 
-  private lazy val billRepo      = new DoobieBillRepository[IO](xa)
-  private lazy val cosponsorRepo = new DoobieBillCosponsorRepository[IO](xa)
+  private lazy val billRepo      = new DoobieBillRepository
+  private lazy val cosponsorRepo = new DoobieBillCosponsorRepository
 
   private def insertBillAndGetId(): Long = {
     val bill = BillDO(
@@ -50,8 +52,8 @@ class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with T
       updatedAt = None,
       latestTextVersionId = None,
     )
-    billRepo.upsert(bill).unsafeRunSync()
-    val found = billRepo.findByBillId("118-HR-100").unsafeRunSync()
+    val _     = billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    val found = billRepo.findByBillId("118-HR-100").transact(xa).unsafeRunSync()
     found match {
       case Some(bill) => bill.billId
       case None       => sys.error("Expected bill to be present after insert")
@@ -73,8 +75,8 @@ class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with T
     val m3         = memberIdByKey("TEST-M003")
     val cosponsors = List(makeCosponsor(billId, m1), makeCosponsor(billId, m2), makeCosponsor(billId, m3))
 
-    cosponsorRepo.replaceAll(billId, cosponsors).unsafeRunSync()
-    val found = cosponsorRepo.findByBillId(billId).unsafeRunSync()
+    cosponsorRepo.replaceAll(billId, cosponsors).transact(xa).unsafeRunSync()
+    val found = cosponsorRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found.size shouldBe 3
   }
 
@@ -87,29 +89,31 @@ class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with T
     val m5     = memberIdByKey("TEST-M005")
     cosponsorRepo
       .replaceAll(billId, List(makeCosponsor(billId, m1), makeCosponsor(billId, m2), makeCosponsor(billId, m3)))
+      .transact(xa)
       .unsafeRunSync()
 
     cosponsorRepo
       .replaceAll(billId, List(makeCosponsor(billId, m4), makeCosponsor(billId, m5)))
+      .transact(xa)
       .unsafeRunSync()
 
-    val found = cosponsorRepo.findByBillId(billId).unsafeRunSync()
+    val found = cosponsorRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found.size shouldBe 2
   }
 
   it should "handle empty list (clears all)" taggedAs DockerRequired in {
     val billId = insertBillAndGetId()
     val m1     = memberIdByKey("TEST-M001")
-    cosponsorRepo.replaceAll(billId, List(makeCosponsor(billId, m1))).unsafeRunSync()
+    cosponsorRepo.replaceAll(billId, List(makeCosponsor(billId, m1))).transact(xa).unsafeRunSync()
 
-    cosponsorRepo.replaceAll(billId, List.empty).unsafeRunSync()
+    cosponsorRepo.replaceAll(billId, List.empty).transact(xa).unsafeRunSync()
 
-    val found = cosponsorRepo.findByBillId(billId).unsafeRunSync()
+    val found = cosponsorRepo.findByBillId(billId).transact(xa).unsafeRunSync()
     found shouldBe empty
   }
 
   "findByBillId" should "return empty for unknown bill" taggedAs DockerRequired in {
-    val found = cosponsorRepo.findByBillId(99999L).unsafeRunSync()
+    val found = cosponsorRepo.findByBillId(99999L).transact(xa).unsafeRunSync()
     found shouldBe empty
   }
 

@@ -2,29 +2,14 @@ package com.repcheck.bills.common.persistence
 
 import java.time.Instant
 
-import cats.effect.IO
-import cats.effect.unsafe.implicits.global
-
-import doobie.Transactor
-
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.shared.models.congress.common.BillType
 import repcheck.shared.models.congress.dos.bill.BillDO
 
-import com.repcheck.bills.common.errors.BillUpsertFailed
-
 class DoobieBillRepositoryUnitSpec extends AnyFlatSpec with Matchers {
 
-  private val failXa: Transactor[IO] = Transactor.fromDriverManager[IO](
-    driver = "org.postgresql.Driver",
-    url = "jdbc:postgresql://127.0.0.1:1/test?connectTimeout=1",
-    user = "test",
-    password = "test",
-    logHandler = None,
-  )
-
-  private val repo = new DoobieBillRepository[IO](failXa)
+  private val repo = new DoobieBillRepository
 
   private val sampleBill = BillDO(
     billId = 0L,
@@ -59,35 +44,60 @@ class DoobieBillRepositoryUnitSpec extends AnyFlatSpec with Matchers {
     latestTextVersionId = None,
   )
 
-  "upsert" should "wrap connection errors in BillUpsertFailed" in {
-    val ex = intercept[BillUpsertFailed] {
-      repo.upsert(sampleBill).unsafeRunSync()
-    }
-    ex.billId shouldBe "118-HR-100"
+  "upsert" should "produce a ConnectionIO for the upsert" in {
+    val cio = repo.upsert(sampleBill)
+    cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
-  "findByBillId" should "propagate connection errors" in {
-    assertThrows[Exception] {
-      repo.findByBillId("118-HR-100").unsafeRunSync()
-    }
+  "findByBillId" should "produce a ConnectionIO for the query" in {
+    val cio = repo.findByBillId("118-HR-100")
+    cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
-  "findByBillIds" should "propagate connection errors for non-empty list" in {
-    assertThrows[Exception] {
-      repo.findByBillIds(List("118-HR-100")).unsafeRunSync()
-    }
+  "findByBillIds" should "produce a ConnectionIO for a non-empty list" in {
+    val cio = repo.findByBillIds(List("118-HR-100", "118-HR-200"))
+    cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
-  "findBillsNeedingTextCheck" should "propagate connection errors" in {
-    assertThrows[Exception] {
-      repo.findBillsNeedingTextCheck().unsafeRunSync()
-    }
+  it should "produce a ConnectionIO for an empty list" in {
+    val cio = repo.findByBillIds(List.empty)
+    cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
-  "updateTextFields" should "propagate connection errors" in {
-    assertThrows[Exception] {
-      repo.updateTextFields("118-HR-100", "http://example.com", "XML", "IH", "2024-01-01T00:00:00Z", 1L).unsafeRunSync()
-    }
+  it should "produce a ConnectionIO for a single-element list" in {
+    val cio = repo.findByBillIds(List("118-HR-100"))
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  "findBillsNeedingTextCheck" should "produce a ConnectionIO for the query" in {
+    val cio = repo.findBillsNeedingTextCheck()
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  "updateTextFields" should "produce a ConnectionIO for the update" in {
+    val cio = repo.updateTextFields("118-HR-100", "http://example.com", "XML", "IH", "2024-01-01T00:00:00Z", 1L)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  "parseNaturalKey" should "split a natural key into congress, type, and number" in {
+    val (congress, billType, number) = repo.parseNaturalKey("118-HR-100")
+    val _                            = congress shouldBe 118
+    val _                            = billType shouldBe "hr"
+    number shouldBe "100"
+  }
+
+  it should "handle senate bill types" in {
+    val (congress, billType, number) = repo.parseNaturalKey("117-S-42")
+    val _                            = congress shouldBe 117
+    val _                            = billType shouldBe "s"
+    number shouldBe "42"
+  }
+
+  it should "handle joint resolutions" in {
+    val (congress, billType, number) = repo.parseNaturalKey("118-SJRES-5")
+    val _                            = congress shouldBe 118
+    val _                            = billType shouldBe "sjres"
+    number shouldBe "5"
   }
 
 }

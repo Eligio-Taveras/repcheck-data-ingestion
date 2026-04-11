@@ -12,7 +12,7 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
 
   private val stubRepo: BillRepository[IO] = new BillRepository[IO] {
 
-    override def upsert(bill: BillDO): IO[Unit] = IO.unit
+    override def upsert(bill: BillDO): IO[Long] = IO.pure(1L)
 
     override def findByBillId(billId: String): IO[Option[BillDO]] = IO.pure(None)
 
@@ -67,7 +67,7 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
       updatedAt = None,
       latestTextVersionId = None,
     )
-    stubRepo.upsert(bill).unsafeRunSync() shouldBe (())
+    stubRepo.upsert(bill).unsafeRunSync() shouldBe 1L
   }
 
   it should "return None from findByBillId for a stub" in {

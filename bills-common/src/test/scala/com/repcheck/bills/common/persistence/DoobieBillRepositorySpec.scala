@@ -5,6 +5,8 @@ import java.time.{Instant, LocalDate}
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
+import doobie.implicits._
+
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.shared.models.congress.bill.TextVersionCode
@@ -15,8 +17,8 @@ import com.repcheck.bills.common.testing.{DockerRequired, TransactorFixture}
 
 class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with TransactorFixture {
 
-  private lazy val repo            = new DoobieBillRepository[IO](xa)
-  private lazy val textVersionRepo = new DoobieBillTextVersionRepository[IO](xa)
+  private lazy val repo            = new DoobieBillRepository
+  private lazy val textVersionRepo = new DoobieBillTextVersionRepository
 
   /** Insert a text version row and return its auto-generated id for FK-safe updateTextFields tests. */
   private def insertTextVersion(billId: Long): Long =
@@ -36,6 +38,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
           createdAt = None,
         )
       )
+      .transact(xa)
       .unsafeRunSync()
 
   private def makeBill(
@@ -79,9 +82,9 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
 
   "upsert" should "insert a new bill" taggedAs DockerRequired in {
     val bill = makeBill()
-    repo.upsert(bill).unsafeRunSync()
+    val _    = repo.upsert(bill).transact(xa).unsafeRunSync()
 
-    val found = repo.findByBillId("118-HR-1234").unsafeRunSync()
+    val found = repo.findByBillId("118-HR-1234").transact(xa).unsafeRunSync()
     val _     = found shouldBe defined
     found match {
       case Some(bill) =>
@@ -93,48 +96,54 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     }
   }
 
+  it should "return the generated bill id" taggedAs DockerRequired in {
+    val bill       = makeBill()
+    val returnedId = repo.upsert(bill).transact(xa).unsafeRunSync()
+    returnedId should be > 0L
+  }
+
   it should "update an existing bill on conflict" taggedAs DockerRequired in {
     val bill = makeBill()
-    repo.upsert(bill).unsafeRunSync()
+    val _    = repo.upsert(bill).transact(xa).unsafeRunSync()
 
     val updated = makeBill(title = "Updated Title")
-    repo.upsert(updated).unsafeRunSync()
+    val _       = repo.upsert(updated).transact(xa).unsafeRunSync()
 
-    val found = repo.findByBillId("118-HR-1234").unsafeRunSync()
+    val found = repo.findByBillId("118-HR-1234").transact(xa).unsafeRunSync()
     found.map(_.title) shouldBe Some("Updated Title")
   }
 
   it should "not create duplicate rows on conflict" taggedAs DockerRequired in {
     val bill = makeBill()
-    repo.upsert(bill).unsafeRunSync()
-    repo.upsert(bill).unsafeRunSync()
+    val _    = repo.upsert(bill).transact(xa).unsafeRunSync()
+    val _    = repo.upsert(bill).transact(xa).unsafeRunSync()
 
-    val all = repo.findByBillIds(List("118-HR-1234")).unsafeRunSync()
+    val all = repo.findByBillIds(List("118-HR-1234")).transact(xa).unsafeRunSync()
     all.size shouldBe 1
   }
 
   it should "set updated_at on conflict" taggedAs DockerRequired in {
-    val bill = makeBill()
-    repo.upsert(bill).unsafeRunSync()
-    val first = repo.findByBillId("118-HR-1234").unsafeRunSync()
+    val bill  = makeBill()
+    val _     = repo.upsert(bill).transact(xa).unsafeRunSync()
+    val first = repo.findByBillId("118-HR-1234").transact(xa).unsafeRunSync()
 
     Thread.sleep(50)
-    repo.upsert(makeBill(title = "Changed")).unsafeRunSync()
-    val second = repo.findByBillId("118-HR-1234").unsafeRunSync()
+    val _      = repo.upsert(makeBill(title = "Changed")).transact(xa).unsafeRunSync()
+    val second = repo.findByBillId("118-HR-1234").transact(xa).unsafeRunSync()
 
     second.flatMap(_.updatedAt) should not be first.flatMap(_.updatedAt)
   }
 
   "findByBillId" should "return None for missing bill" taggedAs DockerRequired in {
-    val found = repo.findByBillId("118-HR-9999").unsafeRunSync()
+    val found = repo.findByBillId("118-HR-9999").transact(xa).unsafeRunSync()
     found shouldBe None
   }
 
   it should "return stored bill with all fields" taggedAs DockerRequired in {
     val bill = makeBill()
-    repo.upsert(bill).unsafeRunSync()
+    val _    = repo.upsert(bill).transact(xa).unsafeRunSync()
 
-    val found = repo.findByBillId("118-HR-1234").unsafeRunSync()
+    val found = repo.findByBillId("118-HR-1234").transact(xa).unsafeRunSync()
     found match {
       case Some(bill) =>
         val _ = bill.originChamber shouldBe Some(Chamber.House)
@@ -145,56 +154,60 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
   }
 
   "findByBillIds" should "return matching bills" taggedAs DockerRequired in {
-    repo.upsert(makeBill(number = "1")).unsafeRunSync()
-    repo.upsert(makeBill(number = "2")).unsafeRunSync()
-    repo.upsert(makeBill(number = "3")).unsafeRunSync()
+    val _ = repo.upsert(makeBill(number = "1")).transact(xa).unsafeRunSync()
+    val _ = repo.upsert(makeBill(number = "2")).transact(xa).unsafeRunSync()
+    val _ = repo.upsert(makeBill(number = "3")).transact(xa).unsafeRunSync()
 
-    val found = repo.findByBillIds(List("118-HR-1", "118-HR-2")).unsafeRunSync()
+    val found = repo.findByBillIds(List("118-HR-1", "118-HR-2")).transact(xa).unsafeRunSync()
     found.size shouldBe 2
   }
 
   it should "ignore missing IDs" taggedAs DockerRequired in {
-    repo.upsert(makeBill(number = "1")).unsafeRunSync()
+    val _ = repo.upsert(makeBill(number = "1")).transact(xa).unsafeRunSync()
 
-    val found = repo.findByBillIds(List("118-HR-1", "118-HR-9999")).unsafeRunSync()
+    val found = repo.findByBillIds(List("118-HR-1", "118-HR-9999")).transact(xa).unsafeRunSync()
     found.size shouldBe 1
   }
 
   it should "return empty for empty input" taggedAs DockerRequired in {
-    val found = repo.findByBillIds(List.empty).unsafeRunSync()
+    val found = repo.findByBillIds(List.empty).transact(xa).unsafeRunSync()
     found shouldBe empty
   }
 
   "findBillsNeedingTextCheck" should "return bills without text" taggedAs DockerRequired in {
-    repo.upsert(makeBill(number = "1")).unsafeRunSync()
-    val found = repo.findBillsNeedingTextCheck().unsafeRunSync()
+    val _     = repo.upsert(makeBill(number = "1")).transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should contain("118-HR-1")
   }
 
   it should "include non-final text bills" taggedAs DockerRequired in {
     val bill = makeBill(number = "2")
-    repo.upsert(bill).unsafeRunSync()
-    val billId    = repo.findByBillId("118-HR-2").unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
+    val _    = repo.upsert(bill).transact(xa).unsafeRunSync()
+    val billId =
+      repo.findByBillId("118-HR-2").transact(xa).unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
     val versionId = insertTextVersion(billId)
 
     repo
       .updateTextFields("118-HR-2", "http://text", "Formatted Text", "IH", "2024-01-15T00:00:00Z", versionId)
+      .transact(xa)
       .unsafeRunSync()
 
-    val found = repo.findBillsNeedingTextCheck().unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should contain("118-HR-2")
   }
 
   "updateTextFields" should "set text columns without touching metadata" taggedAs DockerRequired in {
-    repo.upsert(makeBill()).unsafeRunSync()
-    val billId    = repo.findByBillId("118-HR-1234").unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
+    val _ = repo.upsert(makeBill()).transact(xa).unsafeRunSync()
+    val billId =
+      repo.findByBillId("118-HR-1234").transact(xa).unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
     val versionId = insertTextVersion(billId)
 
     repo
       .updateTextFields("118-HR-1234", "http://text.xml", "Formatted XML", "RH", "2024-02-01T00:00:00Z", versionId)
+      .transact(xa)
       .unsafeRunSync()
 
-    val found = repo.findByBillId("118-HR-1234").unsafeRunSync()
+    val found = repo.findByBillId("118-HR-1234").transact(xa).unsafeRunSync()
     found match {
       case Some(bill) =>
         val _ = bill.title shouldBe "Test Bill"

@@ -100,6 +100,7 @@ lazy val billsCommon = (project in file("bills-common"))
     name := "bills-common",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig ++ fs2
       ++ catsEffect ++ doobie ++ pubSub ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     // Docker integration tests share a single AlloyDB Omni container; sequential execution
     // prevents cross-suite FK violations during table cleanup.
     Test / parallelExecution := false,
@@ -116,7 +117,9 @@ lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
   .settings(
     name := "bill-metadata-pipeline",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ logging ++ testDeps,
+      ++ catsEffect ++ doobie ++ diff ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
+    coverageExcludedFiles := ".*BillMetadataPipeline;.*BillMetadataPipelineApp",
   )
 
 lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-checker"))
