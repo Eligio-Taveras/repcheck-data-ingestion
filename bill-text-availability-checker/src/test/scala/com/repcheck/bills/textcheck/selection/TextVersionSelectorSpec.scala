@@ -21,7 +21,7 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
 
   it should "select a single version" in {
     val versions = List(makeVersion())
-    val result = TextVersionSelector.selectBestVersion(versions)
+    val result   = TextVersionSelector.selectBestVersion(versions)
     result shouldBe defined
     result.foreach { sv =>
       sv.url shouldBe "https://example.com/text"
@@ -90,7 +90,7 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
 
   it should "handle version with no date" in {
     val versions = List(makeVersion(date = None))
-    val result = TextVersionSelector.selectBestVersion(versions)
+    val result   = TextVersionSelector.selectBestVersion(versions)
     result shouldBe defined
     result.foreach(_.date shouldBe None)
   }
@@ -112,16 +112,20 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
 
   it should "preserve versionType from selected version" in {
     val versions = List(makeVersion(type_ = Some("Enrolled Bill")))
-    val result = TextVersionSelector.selectBestVersion(versions)
+    val result   = TextVersionSelector.selectBestVersion(versions)
     result.foreach(_.versionType shouldBe Some("Enrolled Bill"))
   }
 
   it should "handle multiple formats on a single version" in {
-    val version = makeVersion(formats = Some(List(
-      FormatDTO("PDF", "https://example.com/pdf"),
-      FormatDTO("Formatted Text", "https://example.com/text"),
-      FormatDTO("Formatted XML", "https://example.com/xml"),
-    )))
+    val version = makeVersion(formats =
+      Some(
+        List(
+          FormatDTO("PDF", "https://example.com/pdf"),
+          FormatDTO("Formatted Text", "https://example.com/text"),
+          FormatDTO("Formatted XML", "https://example.com/xml"),
+        )
+      )
+    )
     val result = TextVersionSelector.selectBestVersion(List(version))
     result.foreach(_.formatType shouldBe "Formatted Text")
   }
@@ -139,17 +143,21 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "ignore unknown formats and select from recognized ones" in {
-    val version = makeVersion(formats = Some(List(
-      FormatDTO("Unknown Format", "https://example.com/unknown"),
-      FormatDTO("PDF", "https://example.com/pdf"),
-    )))
+    val version = makeVersion(formats =
+      Some(
+        List(
+          FormatDTO("Unknown Format", "https://example.com/unknown"),
+          FormatDTO("PDF", "https://example.com/pdf"),
+        )
+      )
+    )
     val result = TextVersionSelector.selectBestVersion(List(version))
     result.foreach(_.formatType shouldBe "PDF")
   }
 
   it should "handle version with None versionType" in {
     val versions = List(makeVersion(type_ = None))
-    val result = TextVersionSelector.selectBestVersion(versions)
+    val result   = TextVersionSelector.selectBestVersion(versions)
     result shouldBe defined
     result.foreach(_.versionType shouldBe None)
   }

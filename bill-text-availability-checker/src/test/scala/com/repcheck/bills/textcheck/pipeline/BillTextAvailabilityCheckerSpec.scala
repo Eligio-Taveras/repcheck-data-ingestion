@@ -36,7 +36,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
   )
 
   private val correlationId = UUID.randomUUID()
-  private val config = BillTextCheckerConfig(parallelism = 1)
+  private val config        = BillTextCheckerConfig(parallelism = 1)
 
   private case class TestFixture(
     textApiClient: BillTextApiClient[IO],
@@ -127,8 +127,8 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     )
 
   "checkBill" should "emit event and return Succeeded for bill with no prior text" in {
-    val f = createFixture()
-    val bill = makeBill(textVersionType = None, textUrl = None)
+    val f        = createFixture()
+    val bill     = makeBill(textVersionType = None, textUrl = None)
     val versions = List(makeTextVersion())
 
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
@@ -182,7 +182,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
   }
 
   it should "return Skipped when API returns empty text versions" in {
-    val f = createFixture()
+    val f    = createFixture()
     val bill = makeBill()
 
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
@@ -193,7 +193,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
   }
 
   it should "return Failed when API call throws an error" in {
-    val f = createFixture()
+    val f    = createFixture()
     val bill = makeBill()
 
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
@@ -205,8 +205,8 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
   }
 
   it should "propagate event publish error as Failed" in {
-    val f = createFixture()
-    val bill = makeBill(textVersionType = None)
+    val f        = createFixture()
+    val bill     = makeBill(textVersionType = None)
     val versions = List(makeTextVersion())
 
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
@@ -253,7 +253,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
   }
 
   it should "pass billType apiValue to the text API client" in {
-    val f = createFixture()
+    val f    = createFixture()
     val bill = makeBill(billType = BillType.S, number = "100", naturalKey = "118-S-100")
 
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))

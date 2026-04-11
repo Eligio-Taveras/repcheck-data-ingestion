@@ -6,8 +6,8 @@ object TextVersionSelector {
 
   private val FormatPriority: Map[String, Int] = Map(
     "Formatted Text" -> 0,
-    "Formatted XML" -> 1,
-    "PDF" -> 2,
+    "Formatted XML"  -> 1,
+    "PDF"            -> 2,
   )
 
   final case class SelectedVersion(
@@ -19,9 +19,9 @@ object TextVersionSelector {
 
   def selectBestVersion(versions: List[TextVersionDTO]): Option[SelectedVersion] = {
     val candidates: List[(Int, TextVersionDTO, FormatDTO)] = for {
-      version <- versions
-      formats <- version.formats.toList
-      format <- formats
+      version  <- versions
+      formats  <- version.formats.toList
+      format   <- formats
       priority <- FormatPriority.get(format.type_).toList
     } yield (priority, version, format)
 
@@ -36,13 +36,14 @@ object TextVersionSelector {
         bestFormatCandidates
           .sortBy { case (_, version, _) => version.date.getOrElse("") }
           .lastOption
-          .map { case (_, version, format) =>
-            SelectedVersion(
-              date = version.date,
-              versionType = version.type_,
-              formatType = format.type_,
-              url = format.url,
-            )
+          .map {
+            case (_, version, format) =>
+              SelectedVersion(
+                date = version.date,
+                versionType = version.type_,
+                formatType = format.type_,
+                url = format.url,
+              )
           }
       }
     }

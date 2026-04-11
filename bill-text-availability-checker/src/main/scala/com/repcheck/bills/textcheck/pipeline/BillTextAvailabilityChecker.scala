@@ -46,9 +46,7 @@ class BillTextAvailabilityChecker[F[_]: Async](
           .drain ++
           Stream
             .emits(bills)
-            .parEvalMap(config.parallelism) { bill =>
-              checkBill(bill, correlationId)
-            }
+            .parEvalMap(config.parallelism)(bill => checkBill(bill, correlationId))
       }
   }
 
