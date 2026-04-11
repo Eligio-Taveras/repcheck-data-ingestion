@@ -16,11 +16,7 @@ import pureconfig.ConfigSource
 
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
-import repcheck.ingestion.common.events.{
-  DefaultIngestionEventPublisher,
-  EventPublisherConfig,
-  PubSubEventPublisher,
-}
+import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
 import repcheck.pipeline.models.errors.RetryWrapper
 
@@ -67,9 +63,9 @@ private[app] object BillTextCheckerPipeline {
       logger <- loggerFactory(PipelineName)
       exitCode <- resourceBuilder(config).use {
         case (xa, httpClient, pubSubPublisher) =>
-          val checker = checkerFactory(httpClient, xa, pubSubPublisher, config, logger)
+          val checker       = checkerFactory(httpClient, xa, pubSubPublisher, config, logger)
           val correlationId = UUID.randomUUID()
-          val resultStream = checker.checkAll(correlationId)
+          val resultStream  = checker.checkAll(correlationId)
           PipelineExecutor.execute[F](resultStream, logger, PipelineName, correlationId)
       }
     } yield exitCode
@@ -81,9 +77,9 @@ private[app] object BillTextCheckerPipeline {
     config: AppConfig,
     logger: PipelineLogger[F],
   ): BillTextAvailabilityChecker[F] = {
-    val billRepo = new DoobieBillRepository
+    val billRepo     = new DoobieBillRepository
     val retryWrapper = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
-    val apiClient = new BillTextApiClient[F](config.congressApi, httpClient, retryWrapper)
+    val apiClient    = new BillTextApiClient[F](config.congressApi, httpClient, retryWrapper)
     val eventPublisher = new DefaultIngestionEventPublisher[F](
       publisher = pubSubPublisher,
       topicName = config.eventPublisher.topicName,
@@ -104,7 +100,7 @@ private[app] object BillTextCheckerPipeline {
     config: AppConfig
   ): Resource[F, (Transactor[F], Client[F], PubSubEventPublisher[F])] =
     for {
-      xa <- TransactorResource.make[F](config.database)
+      xa         <- TransactorResource.make[F](config.database)
       httpClient <- EmberClientBuilder.default[F].build
     } yield {
       // PubSubEventPublisher is a trait — in production, a concrete implementation would be

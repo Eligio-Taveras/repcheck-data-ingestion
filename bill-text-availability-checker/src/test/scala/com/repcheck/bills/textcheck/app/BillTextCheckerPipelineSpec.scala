@@ -2,21 +2,19 @@ package com.repcheck.bills.textcheck.app
 
 import java.util.UUID
 
-import cats.effect.{IO, Resource}
 import cats.effect.unsafe.implicits.global
+import cats.effect.{IO, Resource}
 
 import org.http4s.client.Client
 
 import doobie._
 
-import org.mockito.ArgumentMatchers.any
+import pureconfig.ConfigSource
+
 import org.mockito.Mockito.when
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
-
-import pureconfig.ConfigSource
-
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, IngestionEventPublisher, PubSubEventPublisher}
@@ -115,18 +113,20 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
   }
 
   "runWithFactories" should "complete successfully with no bills to process" in {
-    val logger = new StubPipelineLogger
+    val logger       = new StubPipelineLogger
     val emptyChecker = makeEmptyChecker(logger)
 
-    val exitCode = BillTextCheckerPipeline.runWithFactories[IO](
-      configLoader = IO.pure(testConfig),
-      loggerFactory = (_: String) => IO.pure(logger),
-      resourceBuilder = (_: AppConfig) =>
-        Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
-          (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
-        ),
-      checkerFactory = (_, _, _, _, _) => emptyChecker,
-    ).unsafeRunSync()
+    val exitCode = BillTextCheckerPipeline
+      .runWithFactories[IO](
+        configLoader = IO.pure(testConfig),
+        loggerFactory = (_: String) => IO.pure(logger),
+        resourceBuilder = (_: AppConfig) =>
+          Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
+            (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
+          ),
+        checkerFactory = (_, _, _, _, _) => emptyChecker,
+      )
+      .unsafeRunSync()
 
     exitCode.code shouldBe 0
   }
@@ -134,52 +134,58 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
   it should "propagate config loading failures" in {
     val logger = new StubPipelineLogger
 
-    val result = BillTextCheckerPipeline.runWithFactories[IO](
-      configLoader = IO.raiseError(new RuntimeException("Config load failed")),
-      loggerFactory = (_: String) => IO.pure(logger),
-      resourceBuilder = (_: AppConfig) =>
-        Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
-          (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
-        ),
-      checkerFactory = (_, _, _, _, _) =>
-        throw new RuntimeException("should not be called"),
-    ).attempt.unsafeRunSync()
+    val result = BillTextCheckerPipeline
+      .runWithFactories[IO](
+        configLoader = IO.raiseError(new RuntimeException("Config load failed")),
+        loggerFactory = (_: String) => IO.pure(logger),
+        resourceBuilder = (_: AppConfig) =>
+          Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
+            (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
+          ),
+        checkerFactory = (_, _, _, _, _) => mock[BillTextAvailabilityChecker[IO]],
+      )
+      .attempt
+      .unsafeRunSync()
 
     val _ = result.isLeft shouldBe true
     result.left.map(_.getMessage) shouldBe Left("Config load failed")
   }
 
   it should "return ExitCode.Error when checker stream contains failures" in {
-    val logger = new StubPipelineLogger
+    val logger       = new StubPipelineLogger
     val emptyChecker = makeEmptyChecker(logger)
 
     // With empty bills list, there are no failures so it should succeed
-    val exitCode = BillTextCheckerPipeline.runWithFactories[IO](
-      configLoader = IO.pure(testConfig),
-      loggerFactory = (_: String) => IO.pure(logger),
-      resourceBuilder = (_: AppConfig) =>
-        Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
-          (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
-        ),
-      checkerFactory = (_, _, _, _, _) => emptyChecker,
-    ).unsafeRunSync()
+    val exitCode = BillTextCheckerPipeline
+      .runWithFactories[IO](
+        configLoader = IO.pure(testConfig),
+        loggerFactory = (_: String) => IO.pure(logger),
+        resourceBuilder = (_: AppConfig) =>
+          Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
+            (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
+          ),
+        checkerFactory = (_, _, _, _, _) => emptyChecker,
+      )
+      .unsafeRunSync()
 
     exitCode.code shouldBe 0
   }
 
   it should "log pipeline summary after execution" in {
-    val logger = new StubPipelineLogger
+    val logger       = new StubPipelineLogger
     val emptyChecker = makeEmptyChecker(logger)
 
-    val _ = BillTextCheckerPipeline.runWithFactories[IO](
-      configLoader = IO.pure(testConfig),
-      loggerFactory = (_: String) => IO.pure(logger),
-      resourceBuilder = (_: AppConfig) =>
-        Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
-          (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
-        ),
-      checkerFactory = (_, _, _, _, _) => emptyChecker,
-    ).unsafeRunSync()
+    val _ = BillTextCheckerPipeline
+      .runWithFactories[IO](
+        configLoader = IO.pure(testConfig),
+        loggerFactory = (_: String) => IO.pure(logger),
+        resourceBuilder = (_: AppConfig) =>
+          Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
+            (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
+          ),
+        checkerFactory = (_, _, _, _, _) => emptyChecker,
+      )
+      .unsafeRunSync()
 
     val summaryLogs = logger.messages.filter(_.contains("Pipeline completed"))
     summaryLogs should not be empty
