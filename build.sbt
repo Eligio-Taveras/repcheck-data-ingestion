@@ -129,7 +129,7 @@ lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-
   .settings(
     name := "bill-text-availability-checker",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ logging ++ testDeps,
+      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
   )
 
 lazy val billTextPipeline = (project in file("bill-text-pipeline"))
