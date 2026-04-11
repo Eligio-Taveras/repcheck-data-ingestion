@@ -347,4 +347,129 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     }
   }
 
+  private def cosponsorJson(bioguideId: String, isOriginal: Boolean): String =
+    s"""{
+       |  "bioguideId": "$bioguideId",
+       |  "fullName": "Rep. Test $bioguideId",
+       |  "isOriginalCosponsor": $isOriginal,
+       |  "sponsorshipDate": "2024-01-15"
+       |}""".stripMargin
+
+  private def cosponsorListJson(cosponsors: List[String], nextUrl: Option[String] = None): String = {
+    val items = cosponsors.mkString(",")
+    val paginationPart = nextUrl match {
+      case Some(url) => s""", "pagination": {"count": ${cosponsors.size}, "next": "$url"}"""
+      case None      => s""", "pagination": {"count": ${cosponsors.size}}"""
+    }
+    s"""{"cosponsors": [$items]$paginationPart}"""
+  }
+
+  "fetchCosponsors" should "return a single page of cosponsors" in {
+    val c1 = cosponsorJson("A000001", isOriginal = true)
+    val c2 = cosponsorJson("B000002", isOriginal = false)
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/118/hr/1/cosponsors"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(cosponsorListJson(List(c1, c2)))
+        )
+    )
+
+    val client = makeClient()
+    val result = client
+      .fetchCosponsors(s"http://localhost:${wireMock.port()}/v3/bill/118/hr/1/cosponsors")
+      .unsafeRunSync()
+
+    val _ = result.size shouldBe 2
+    result.headOption.map(_.bioguideId) shouldBe Some("A000001")
+  }
+
+  it should "paginate across multiple pages of cosponsors" in {
+    val page1 = (1 to 250).map(i => cosponsorJson(s"M${"%06d".format(i)}", isOriginal = true)).toList
+    val page2 = (251 to 260).map(i => cosponsorJson(s"M${"%06d".format(i)}", isOriginal = false)).toList
+
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/118/hr/2/cosponsors"))
+        .withQueryParam("offset", absent())
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(
+              cosponsorListJson(
+                page1,
+                Some(s"http://localhost:${wireMock.port()}/v3/bill/118/hr/2/cosponsors?offset=250"),
+              )
+            )
+        )
+    )
+
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/118/hr/2/cosponsors"))
+        .withQueryParam("offset", equalTo("250"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(cosponsorListJson(page2))
+        )
+    )
+
+    val client = makeClient()
+    val result = client
+      .fetchCosponsors(s"http://localhost:${wireMock.port()}/v3/bill/118/hr/2/cosponsors")
+      .unsafeRunSync()
+
+    result.size shouldBe 260
+  }
+
+  it should "return empty list for bill with no cosponsors" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/118/hr/3/cosponsors"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(cosponsorListJson(List.empty))
+        )
+    )
+
+    val client = makeClient()
+    val result = client
+      .fetchCosponsors(s"http://localhost:${wireMock.port()}/v3/bill/118/hr/3/cosponsors")
+      .unsafeRunSync()
+
+    result shouldBe empty
+  }
+
+  it should "fail on HTTP 429 after retries" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/118/hr/4/cosponsors"))
+        .willReturn(aResponse().withStatus(429).withBody("Rate limited"))
+    )
+
+    val client = makeClient(RetryConfig(maxRetries = 1, initialBackoffMs = 10L))
+    val _ = intercept[BillFetchFailed] {
+      client
+        .fetchCosponsors(s"http://localhost:${wireMock.port()}/v3/bill/118/hr/4/cosponsors")
+        .unsafeRunSync()
+    }
+  }
+
+  it should "fail on HTTP 500 after retries" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/118/hr/5/cosponsors"))
+        .willReturn(aResponse().withStatus(500).withBody("Internal error"))
+    )
+
+    val client = makeClient(RetryConfig(maxRetries = 1, initialBackoffMs = 10L))
+    val _ = intercept[BillFetchFailed] {
+      client
+        .fetchCosponsors(s"http://localhost:${wireMock.port()}/v3/bill/118/hr/5/cosponsors")
+        .unsafeRunSync()
+    }
+  }
+
 }

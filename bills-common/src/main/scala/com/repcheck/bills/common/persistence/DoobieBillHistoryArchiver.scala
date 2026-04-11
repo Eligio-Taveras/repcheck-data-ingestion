@@ -1,23 +1,18 @@
 package com.repcheck.bills.common.persistence
 
-import cats.effect.kernel.MonadCancelThrow
-import cats.syntax.all._
-
 import doobie._
 import doobie.implicits._
 
 import repcheck.pipeline.models.constants.Tables
-
-import com.repcheck.bills.common.errors.BillArchiveFailed
 
 /**
  * Archive-before-overwrite pattern: snapshots the current bill state into history tables BEFORE the upsert writes new
  * data. The live bills table always holds the latest version; bill_history preserves each prior version. The caller is
  * responsible for calling archiveBill() before the upsert — the archiver does not modify the live bill row.
  */
-class DoobieBillHistoryArchiver[F[_]: MonadCancelThrow](xa: Transactor[F]) extends BillHistoryArchiver[F] {
+class DoobieBillHistoryArchiver extends BillHistoryArchiver[ConnectionIO] {
 
-  override def archiveBill(billId: String): F[Long] = {
+  override def archiveBill(billId: String): ConnectionIO[Long] = {
     val (congress, billType, number) = parseNaturalKey(billId)
 
     val billsTable    = Fragment.const(Tables.Bills)
@@ -27,7 +22,7 @@ class DoobieBillHistoryArchiver[F[_]: MonadCancelThrow](xa: Transactor[F]) exten
     val cospTable     = Fragment.const(Tables.BillCosponsors)
     val subjTable     = Fragment.const(Tables.BillSubjects)
 
-    val program = for {
+    for {
       historyId <- sql"""
         INSERT INTO $histTable (
           bill_id, congress, bill_type, number, title,
@@ -65,11 +60,6 @@ class DoobieBillHistoryArchiver[F[_]: MonadCancelThrow](xa: Transactor[F]) exten
         WHERE b.congress = $congress AND b.bill_type = $billType AND b.number = $number::int
       """.update.run
     } yield historyId
-
-    program.transact(xa).adaptErr {
-      case e =>
-        BillArchiveFailed(billId, e.getMessage, e)
-    }
   }
 
   private def parseNaturalKey(naturalKey: String): (Int, String, String) = {
