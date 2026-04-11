@@ -13,14 +13,13 @@ import org.mockito.Mockito.{never, times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
-
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.events.{BillTextAvailableEvent, BillTextIngestedEvent}
+import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.dos.bill.BillTextVersionDO
 
 import com.repcheck.bills.common.persistence.BillTextVersionRepository
-import com.repcheck.bills.text.config.BillTextPipelineConfig
 import com.repcheck.bills.text.download.BillTextDownloader
 import com.repcheck.bills.text.errors.{BillTextProcessingFailed, TextDownloadFailed}
 
@@ -35,7 +34,6 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   )
 
   private val correlationId = UUID.randomUUID()
-  private val config        = BillTextPipelineConfig(parallelism = 1, downloadTimeoutSeconds = 30, maxContentBytes = 1024 * 1024)
 
   private case class TestFixture(
     downloader: BillTextDownloader[IO],
@@ -50,7 +48,6 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         repository = repository,
         eventPublisher = eventPublisher,
         xa = testXa,
-        config = config,
         logger = logger,
       )
 
@@ -104,20 +101,22 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val _ = result.isSucceeded shouldBe true
     val _ = result.entityId shouldBe "118-HR-1"
-    result shouldBe a[repcheck.pipeline.models.metadata.ProcessingResult.Succeeded]
+    result shouldBe a[ProcessingResult.Succeeded]
   }
 
   it should "return Failed when download fails" in {
     val f     = createFixture()
     val event = makeEvent()
     when(f.downloader.download(anyString(), anyString(), any[UUID]))
-      .thenReturn(IO.raiseError(TextDownloadFailed(event.textUrl, event.textFormat, "HTTP 404", new RuntimeException("404"))))
+      .thenReturn(
+        IO.raiseError(TextDownloadFailed(event.textUrl, event.textFormat, "HTTP 404", new RuntimeException("404")))
+      )
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
     val _ = result.isFailed shouldBe true
     val _ = result.entityId shouldBe "118-HR-1"
-    verify(f.repository, never()).insertVersion(any[BillTextVersionDO])
+    val _ = verify(f.repository, never()).insertVersion(any[BillTextVersionDO])
     verify(f.eventPublisher, never()).billTextIngested(any[BillTextIngestedEvent], any[UUID])
   }
 
@@ -149,7 +148,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   }
 
   it should "populate BillTextVersionDO with correct fields" in {
-    val f     = createFixture()
+    val f = createFixture()
     val event = makeEvent(
       billId = "118-S-42",
       textUrl = "https://api.congress.gov/v3/bill/118/s/42/text/enr",
@@ -161,7 +160,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
     val captor = ArgumentCaptor.forClass(classOf[BillTextVersionDO])
-    verify(f.repository, times(1)).insertVersion(captor.capture())
+    val _ = verify(f.repository, times(1)).insertVersion(captor.capture())
     val stored = captor.getValue
 
     val _ = stored.versionCode shouldBe "enr"
@@ -173,7 +172,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   }
 
   it should "populate BillTextIngestedEvent with correct fields" in {
-    val f     = createFixture()
+    val f = createFixture()
     val event = makeEvent(
       billId = "118-HR-99",
       congress = 118,
@@ -185,7 +184,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
     val captor = ArgumentCaptor.forClass(classOf[BillTextIngestedEvent])
-    verify(f.eventPublisher, times(1)).billTextIngested(captor.capture(), any[UUID])
+    val _ = verify(f.eventPublisher, times(1)).billTextIngested(captor.capture(), any[UUID])
     val published = captor.getValue
 
     val _ = published.billId shouldBe "118-HR-99"
@@ -203,9 +202,11 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    result shouldBe a[repcheck.pipeline.models.metadata.ProcessingResult.Failed]
-    val failed = result.asInstanceOf[repcheck.pipeline.models.metadata.ProcessingResult.Failed]
-    failed.errorClass shouldBe "Transient"
+    val _ = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
   }
 
   it should "classify BillTextProcessingFailed as Systemic" in {
@@ -216,9 +217,11 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    result shouldBe a[repcheck.pipeline.models.metadata.ProcessingResult.Failed]
-    val failed = result.asInstanceOf[repcheck.pipeline.models.metadata.ProcessingResult.Failed]
-    failed.errorClass shouldBe "Systemic"
+    val _ = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Systemic"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
   }
 
   it should "not publish event when download fails" in {
@@ -248,9 +251,10 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    result shouldBe a[repcheck.pipeline.models.metadata.ProcessingResult.Succeeded]
-    val succeeded = result.asInstanceOf[repcheck.pipeline.models.metadata.ProcessingResult.Succeeded]
-    succeeded.eventEmitted shouldBe true
+    result match {
+      case ProcessingResult.Succeeded(_, eventEmitted) => eventEmitted shouldBe true
+      case other                                       => fail(s"Expected Succeeded but got $other")
+    }
   }
 
 }

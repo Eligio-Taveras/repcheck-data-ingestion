@@ -16,7 +16,6 @@ import repcheck.shared.models.congress.common.FormatType
 import repcheck.shared.models.congress.dos.bill.BillTextVersionDO
 
 import com.repcheck.bills.common.persistence.{BillTextVersionRepository, TransactionRunner}
-import com.repcheck.bills.text.config.BillTextPipelineConfig
 import com.repcheck.bills.text.download.BillTextDownloader
 import com.repcheck.bills.text.errors.BillTextProcessingFailed
 
@@ -25,7 +24,6 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
   repository: BillTextVersionRepository[ConnectionIO],
   eventPublisher: IngestionEventPublisher[F],
   xa: Transactor[F],
-  config: BillTextPipelineConfig,
   logger: PipelineLogger[F],
 ) {
 
@@ -50,23 +48,21 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
     event: BillTextAvailableEvent,
     correlationId: UUID,
     logCtx: LogContext,
-  ): F[ProcessingResult] = {
+  ): F[ProcessingResult] =
     for {
       _       <- logger.info(logCtx, s"Processing bill text for ${event.billId} (format=${event.textFormat})")
       content <- downloadText(event, correlationId)
       version <- buildVersion(event, content)
       _       <- storeVersion(version)
-      _       <- publishEvent(event, version, correlationId)
+      _       <- publishEvent(event, correlationId)
       _       <- logger.info(logCtx, s"Successfully processed bill text for ${event.billId}")
     } yield ProcessingResult.Succeeded(event.billId, eventEmitted = true)
-  }
 
   private[pipeline] def downloadText(
     event: BillTextAvailableEvent,
     correlationId: UUID,
-  ): F[String] = {
+  ): F[String] =
     downloader.download(event.textUrl, event.textFormat, correlationId)
-  }
 
   private[pipeline] def buildVersion(
     event: BillTextAvailableEvent,
@@ -92,13 +88,11 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
 
   private[pipeline] def storeVersion(
     version: BillTextVersionDO
-  ): F[Long] = {
+  ): F[Long] =
     TransactionRunner.run(xa)(repository.insertVersion(version))
-  }
 
   private[pipeline] def publishEvent(
     event: BillTextAvailableEvent,
-    version: BillTextVersionDO,
     correlationId: UUID,
   ): F[String] = {
     val ingestedEvent = BillTextIngestedEvent(
@@ -112,15 +106,14 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
     eventPublisher.billTextIngested(ingestedEvent, correlationId)
   }
 
-  private[pipeline] def classifyError(error: Throwable): String = {
+  private[pipeline] def classifyError(error: Throwable): String =
     error match {
-      case _: BillTextProcessingFailed => "Systemic"
+      case _: BillTextProcessingFailed        => "Systemic"
       case _: java.net.SocketTimeoutException => "Transient"
-      case _: java.net.ConnectException => "Transient"
-      case _: java.io.IOException => "Transient"
-      case _: java.sql.SQLTransientException => "Transient"
-      case _ => "Systemic"
+      case _: java.net.ConnectException       => "Transient"
+      case _: java.io.IOException             => "Transient"
+      case _: java.sql.SQLTransientException  => "Transient"
+      case _                                  => "Systemic"
     }
-  }
 
 }
