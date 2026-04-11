@@ -139,7 +139,7 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
   .settings(
     name := "bill-text-pipeline",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ pubSub ++ logging ++ testDeps,
+      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
   )
 
 // `dockerTest` runs only the DB-backed integration tests against a local AlloyDB Omni
