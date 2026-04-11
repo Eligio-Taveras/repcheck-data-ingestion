@@ -12,6 +12,7 @@ import doobie.util.transactor.Transactor
 
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.pipeline.models.events.BillTextAvailableEvent
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.dos.bill.BillDO
@@ -19,12 +20,14 @@ import repcheck.shared.models.congress.dos.bill.BillDO
 import com.repcheck.bills.common.persistence.{BillRepository, TransactionRunner}
 import com.repcheck.bills.textcheck.api.BillTextApiClient
 import com.repcheck.bills.textcheck.config.BillTextCheckerConfig
+import com.repcheck.bills.textcheck.errors.{BillTextCheckFailed, EventPublishErrorClassifier}
 import com.repcheck.bills.textcheck.selection.TextVersionSelector
 
 class BillTextAvailabilityChecker[F[_]: Async](
   textApiClient: BillTextApiClient[F],
   billRepo: BillRepository[ConnectionIO],
   eventPublisher: IngestionEventPublisher[F],
+  retryWrapper: RetryWrapper[F],
   xa: Transactor[F],
   config: BillTextCheckerConfig,
   logger: PipelineLogger[F],
@@ -142,7 +145,13 @@ class BillTextAvailabilityChecker[F[_]: Async](
       versionCode = versionCode,
       previousVersionCode = previousVersionCode,
     )
-    eventPublisher.billTextAvailable(event, correlationId) *>
+    retryWrapper.withRetry(
+      operation = eventPublisher.billTextAvailable(event, correlationId),
+      config = config.eventPublishRetry,
+      classifier = EventPublishErrorClassifier,
+      errorFactory = (msg, cause) => BillTextCheckFailed(billId, msg, cause),
+      correlationId = correlationId,
+    ) *>
       logger.info(logCtx, s"Emitted BillTextAvailableEvent for bill $billId (version=$versionCode)") *>
       Async[F].pure(ProcessingResult.Succeeded(entityId = billId, eventEmitted = true))
   }

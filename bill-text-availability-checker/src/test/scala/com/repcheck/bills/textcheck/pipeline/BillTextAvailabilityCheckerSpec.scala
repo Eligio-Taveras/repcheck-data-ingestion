@@ -14,6 +14,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.bill.TextVersionCode
@@ -36,7 +37,12 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
   )
 
   private val correlationId = UUID.randomUUID()
-  private val config        = BillTextCheckerConfig(parallelism = 1)
+
+  private val testRetryConfig =
+    RetryConfig(maxRetries = 1, initialBackoffMs = 1L, maxBackoffMs = 10L, backoffMultiplier = 1.0)
+
+  private val config       = BillTextCheckerConfig(parallelism = 1, eventPublishRetry = testRetryConfig)
+  private val retryWrapper = new RetryWrapper[IO]((_, _, _, _, _, _) => IO.unit)
 
   private case class TestFixture(
     textApiClient: BillTextApiClient[IO],
@@ -50,6 +56,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
         textApiClient = textApiClient,
         billRepo = billRepo,
         eventPublisher = eventPublisher,
+        retryWrapper = retryWrapper,
         xa = testXa,
         config = config,
         logger = logger,
