@@ -44,7 +44,7 @@ lazy val commonSettings = Seq(
   libraryDependencies ++= Seq(
     "com.repcheck" %% "repchecksharedmodels"       % "0.1.15",
     "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.12",
-    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.5",
+    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.9",
     "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.9" % Test,
   ),
   semanticdbEnabled := true,
@@ -130,6 +130,7 @@ lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-
     name := "bill-text-availability-checker",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
+    coverageExcludedFiles := ".*BillTextAvailabilityCheckerApp",
   )
 
 lazy val billTextPipeline = (project in file("bill-text-pipeline"))
@@ -139,7 +140,10 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
   .settings(
     name := "bill-text-pipeline",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
+      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ xml ++ htmlParsing ++ logging ++ testDeps,
+    coverageExcludedFiles := ".*BillTextPipelineApp",
+    // WireMock-based tests share a dynamic port; sequential prevents port contention
+    Test / parallelExecution := false,
   )
 
 // `dockerTest` runs only the DB-backed integration tests against a local AlloyDB Omni
