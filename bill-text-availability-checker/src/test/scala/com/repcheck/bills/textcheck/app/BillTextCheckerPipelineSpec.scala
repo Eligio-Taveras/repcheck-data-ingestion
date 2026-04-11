@@ -60,6 +60,7 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
     ),
     pipeline = BillTextCheckerConfig(parallelism = 1),
     eventPublisher = EventPublisherConfig(
+      projectId = "test-project",
       topicName = "test-topic",
       source = "test-source",
     ),

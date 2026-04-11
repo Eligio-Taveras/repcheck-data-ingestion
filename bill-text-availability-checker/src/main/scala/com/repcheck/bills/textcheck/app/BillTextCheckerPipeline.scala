@@ -16,7 +16,12 @@ import pureconfig.ConfigSource
 
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
-import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
+import repcheck.ingestion.common.events.{
+  DefaultIngestionEventPublisher,
+  EventPublisherConfig,
+  PubSubEventPublisher,
+  PubSubPublisherResource,
+}
 import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
 import repcheck.pipeline.models.errors.RetryWrapper
 
@@ -100,17 +105,9 @@ private[app] object BillTextCheckerPipeline {
     config: AppConfig
   ): Resource[F, (Transactor[F], Client[F], PubSubEventPublisher[F])] =
     for {
-      xa         <- TransactorResource.make[F](config.database)
-      httpClient <- EmberClientBuilder.default[F].build
-    } yield {
-      // PubSubEventPublisher is a trait — in production, a concrete implementation would be
-      // provided here. For now, a no-op stub is used as the Pub/Sub infrastructure is not
-      // yet wired. This will be replaced when the Pub/Sub resource builder is implemented.
-      val pubSubPublisher = new PubSubEventPublisher[F] {
-        def publish(topic: String, data: String, attributes: Map[String, String]): F[String] =
-          Async[F].pure(s"stub-message-id-${UUID.randomUUID()}")
-      }
-      (xa, httpClient, pubSubPublisher)
-    }
+      xa              <- TransactorResource.make[F](config.database)
+      httpClient      <- EmberClientBuilder.default[F].build
+      pubSubPublisher <- PubSubPublisherResource.make[F](config.eventPublisher)
+    } yield (xa, httpClient, pubSubPublisher)
 
 }
