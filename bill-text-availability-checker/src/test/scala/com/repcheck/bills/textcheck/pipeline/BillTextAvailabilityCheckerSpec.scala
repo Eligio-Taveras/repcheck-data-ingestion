@@ -137,8 +137,8 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       .thenReturn(IO.pure("msg-id-1"))
 
     val result = f.checker.checkBill(bill, correlationId).unsafeRunSync()
-    val _ = result.isSucceeded shouldBe true
-    val _ = result.entityId shouldBe "118-HR-1"
+    val _      = result.isSucceeded shouldBe true
+    val _      = result.entityId shouldBe "118-HR-1"
     verify(f.eventPublisher, times(1)).billTextAvailable(any[BillTextAvailableEvent], any[UUID])
   }
 
@@ -156,12 +156,12 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       .thenReturn(IO.pure("msg-id-2"))
 
     val result = f.checker.checkBill(bill, correlationId).unsafeRunSync()
-    val _ = result.isSucceeded shouldBe true
+    val _      = result.isSucceeded shouldBe true
 
-    val captor = org.mockito.ArgumentCaptor.forClass(classOf[BillTextAvailableEvent])
-    val _ = verify(f.eventPublisher).billTextAvailable(captor.capture(), any[UUID])
+    val captor       = org.mockito.ArgumentCaptor.forClass(classOf[BillTextAvailableEvent])
+    val _            = verify(f.eventPublisher).billTextAvailable(captor.capture(), any[UUID])
     val emittedEvent = captor.getValue
-    val _ = emittedEvent.previousVersionCode shouldBe Some("IH")
+    val _            = emittedEvent.previousVersionCode shouldBe Some("IH")
     emittedEvent.versionCode shouldBe "EH"
   }
 
@@ -177,7 +177,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       .thenReturn(IO.pure(versions))
 
     val result = f.checker.checkBill(bill, correlationId).unsafeRunSync()
-    val _ = result.isSkipped shouldBe true
+    val _      = result.isSkipped shouldBe true
     verify(f.eventPublisher, never()).billTextAvailable(any[BillTextAvailableEvent], any[UUID])
   }
 
@@ -200,7 +200,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       .thenReturn(IO.raiseError(new RuntimeException("API unavailable")))
 
     val result = f.checker.checkBill(bill, correlationId).unsafeRunSync()
-    val _ = result.isFailed shouldBe true
+    val _      = result.isFailed shouldBe true
     result.entityId shouldBe "118-HR-1"
   }
 
@@ -242,13 +242,13 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val _ = f.checker.checkBill(bill, correlationId).unsafeRunSync()
 
     val captor = org.mockito.ArgumentCaptor.forClass(classOf[BillTextAvailableEvent])
-    val _ = verify(f.eventPublisher).billTextAvailable(captor.capture(), any[UUID])
-    val event = captor.getValue
-    val _ = event.billId shouldBe "118-HR-5"
-    val _ = event.congress shouldBe 118
-    val _ = event.textUrl shouldBe "https://api.congress.gov/text/118/hr/5"
-    val _ = event.textFormat shouldBe "Formatted Text"
-    val _ = event.versionCode shouldBe "IH"
+    val _      = verify(f.eventPublisher).billTextAvailable(captor.capture(), any[UUID])
+    val event  = captor.getValue
+    val _      = event.billId shouldBe "118-HR-5"
+    val _      = event.congress shouldBe 118
+    val _      = event.textUrl shouldBe "https://api.congress.gov/text/118/hr/5"
+    val _      = event.textFormat shouldBe "Formatted Text"
+    val _      = event.versionCode shouldBe "IH"
     event.previousVersionCode shouldBe None
   }
 
@@ -276,7 +276,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       .thenReturn(IO.pure(List.empty))
 
     val results = f.checker.checkAll(correlationId).compile.toList.unsafeRunSync()
-    val _ = results.size shouldBe 2
+    val _       = results.size shouldBe 2
     results.foreach(_.isSkipped shouldBe true)
   }
 
@@ -297,8 +297,8 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       .thenReturn(IO.pure(List.empty))
 
     val results = f.checker.checkAll(correlationId).compile.toList.unsafeRunSync()
-    val _ = results.size shouldBe 2
-    val _ = results.count(_.isFailed) shouldBe 1
+    val _       = results.size shouldBe 2
+    val _       = results.count(_.isFailed) shouldBe 1
     results.count(_.isSkipped) shouldBe 1
   }
 

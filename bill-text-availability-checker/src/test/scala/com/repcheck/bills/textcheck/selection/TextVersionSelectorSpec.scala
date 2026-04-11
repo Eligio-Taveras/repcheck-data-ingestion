@@ -22,7 +22,7 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
   it should "select a single version" in {
     val versions = List(makeVersion())
     val result   = TextVersionSelector.selectBestVersion(versions)
-    val _ = result shouldBe defined
+    val _        = result shouldBe defined
     result.foreach { sv =>
       val _ = sv.url shouldBe "https://example.com/text"
       sv.formatType shouldBe "Formatted Text"
@@ -91,7 +91,7 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
   it should "handle version with no date" in {
     val versions = List(makeVersion(date = None))
     val result   = TextVersionSelector.selectBestVersion(versions)
-    val _ = result shouldBe defined
+    val _        = result shouldBe defined
     result.foreach(_.date shouldBe None)
   }
 
@@ -135,7 +135,7 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
       makeVersion(formats = Some(List(FormatDTO("PDF", "https://example.com/pdf"))))
     )
     val result = TextVersionSelector.selectBestVersion(versions)
-    val _ = result shouldBe defined
+    val _      = result shouldBe defined
     result.foreach { sv =>
       val _ = sv.formatType shouldBe "PDF"
       sv.url shouldBe "https://example.com/pdf"
@@ -158,7 +158,7 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
   it should "handle version with None versionType" in {
     val versions = List(makeVersion(type_ = None))
     val result   = TextVersionSelector.selectBestVersion(versions)
-    val _ = result shouldBe defined
+    val _        = result shouldBe defined
     result.foreach(_.versionType shouldBe None)
   }
 
