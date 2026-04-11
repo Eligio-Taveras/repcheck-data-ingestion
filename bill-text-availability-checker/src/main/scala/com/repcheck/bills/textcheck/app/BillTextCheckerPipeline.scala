@@ -68,10 +68,10 @@ private[app] object BillTextCheckerPipeline {
       logger <- loggerFactory(PipelineName)
       exitCode <- resourceBuilder(config).use {
         case (xa, httpClient, pubSubPublisher) =>
-          val checker       = checkerFactory(httpClient, xa, pubSubPublisher, config, logger)
-          val correlationId = UUID.randomUUID()
-          val resultStream  = checker.checkAll(correlationId)
-          PipelineExecutor.execute[F](resultStream, logger, PipelineName, correlationId)
+          val checker      = checkerFactory(httpClient, xa, pubSubPublisher, config, logger)
+          val runId        = UUID.randomUUID()
+          val resultStream = checker.checkAll(runId)
+          PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId)
       }
     } yield exitCode
 
