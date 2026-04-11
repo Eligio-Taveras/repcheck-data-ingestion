@@ -5,6 +5,7 @@ import cats.effect.unsafe.implicits.global
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import repcheck.shared.models.congress.common.FormatType
 import repcheck.shared.models.congress.dos.bill.BillTextVersionDO
 
 class BillTextVersionRepositorySpec extends AnyFlatSpec with Matchers {
@@ -26,7 +27,7 @@ class BillTextVersionRepositorySpec extends AnyFlatSpec with Matchers {
     versionCode = "IH",
     versionType = "Introduced in House",
     versionDate = None,
-    formatType = Some("XML"),
+    formatType = Some(FormatType.FormattedXml),
     url = Some("https://example.com/text"),
     content = None,
     embedding = None,

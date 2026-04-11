@@ -1,10 +1,13 @@
 package com.repcheck.bills.common.persistence
 
+import java.time.{Instant, LocalDate}
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import repcheck.shared.models.congress.common.BillType
 import repcheck.shared.models.congress.dos.bill.{BillCosponsorDO, BillDO}
 
 import com.repcheck.bills.common.testing.{DockerRequired, TransactorFixture}
@@ -19,7 +22,7 @@ class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with T
       billId = 0L,
       naturalKey = "118-HR-100",
       congress = 118,
-      billType = "hr",
+      billType = BillType.HR,
       number = "100",
       title = "Cosponsor Test Bill",
       originChamber = None,
@@ -39,7 +42,7 @@ class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with T
       summaryText = None,
       summaryActionDesc = None,
       summaryActionDate = None,
-      updateDate = Some("2024-01-01T00:00:00Z"),
+      updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")),
       updateDateIncludingText = None,
       legislationUrl = None,
       apiUrl = None,
@@ -60,7 +63,7 @@ class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with T
       billId = billId,
       memberId = memberId,
       isOriginalCosponsor = Some(true),
-      sponsorshipDate = Some("2024-01-15"),
+      sponsorshipDate = Some(LocalDate.parse("2024-01-15")),
     )
 
   "replaceAll" should "insert cosponsors for a new bill" taggedAs DockerRequired in {
