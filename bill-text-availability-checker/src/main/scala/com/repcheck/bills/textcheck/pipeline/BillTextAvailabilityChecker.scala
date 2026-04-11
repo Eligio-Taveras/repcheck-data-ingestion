@@ -5,10 +5,10 @@ import java.util.UUID
 import cats.effect.Async
 import cats.syntax.all._
 
+import fs2.Stream
+
 import doobie.ConnectionIO
 import doobie.util.transactor.Transactor
-
-import fs2.Stream
 
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}

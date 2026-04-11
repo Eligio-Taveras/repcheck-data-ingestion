@@ -2,7 +2,6 @@ package com.repcheck.bills.textcheck.selection
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-
 import repcheck.shared.models.congress.dto.bill.{FormatDTO, TextVersionDTO}
 
 import com.repcheck.bills.textcheck.selection.TextVersionSelector.SelectedVersion

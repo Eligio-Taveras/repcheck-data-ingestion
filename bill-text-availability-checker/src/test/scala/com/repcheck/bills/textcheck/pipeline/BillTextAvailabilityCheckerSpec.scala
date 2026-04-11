@@ -12,7 +12,6 @@ import org.mockito.Mockito.{never, times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
-
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
