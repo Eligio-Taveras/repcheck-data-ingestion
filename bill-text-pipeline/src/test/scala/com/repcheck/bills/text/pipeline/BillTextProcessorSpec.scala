@@ -160,7 +160,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
     val captor = ArgumentCaptor.forClass(classOf[BillTextVersionDO])
-    val _ = verify(f.repository, times(1)).insertVersion(captor.capture())
+    val _      = verify(f.repository, times(1)).insertVersion(captor.capture())
     val stored = captor.getValue
 
     val _ = stored.versionCode shouldBe "enr"
@@ -183,8 +183,8 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    val captor = ArgumentCaptor.forClass(classOf[BillTextIngestedEvent])
-    val _ = verify(f.eventPublisher, times(1)).billTextIngested(captor.capture(), any[UUID])
+    val captor    = ArgumentCaptor.forClass(classOf[BillTextIngestedEvent])
+    val _         = verify(f.eventPublisher, times(1)).billTextIngested(captor.capture(), any[UUID])
     val published = captor.getValue
 
     val _ = published.billId shouldBe "118-HR-99"
