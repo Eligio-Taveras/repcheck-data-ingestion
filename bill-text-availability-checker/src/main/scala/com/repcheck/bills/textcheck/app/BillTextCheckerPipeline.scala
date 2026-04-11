@@ -95,6 +95,7 @@ private[app] object BillTextCheckerPipeline {
       textApiClient = apiClient,
       billRepo = billRepo,
       eventPublisher = eventPublisher,
+      retryWrapper = retryWrapper,
       xa = xa,
       config = config.pipeline,
       logger = logger,

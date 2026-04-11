@@ -19,7 +19,7 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, IngestionEventPublisher, PubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.RetryConfig
+import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.shared.models.congress.dos.bill.BillDO
 
 import com.repcheck.bills.common.persistence.BillRepository
@@ -58,7 +58,15 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
         backoffMultiplier = 1.0,
       ),
     ),
-    pipeline = BillTextCheckerConfig(parallelism = 1),
+    pipeline = BillTextCheckerConfig(
+      parallelism = 1,
+      eventPublishRetry = RetryConfig(
+        maxRetries = 1,
+        initialBackoffMs = 1,
+        maxBackoffMs = 10,
+        backoffMultiplier = 1.0,
+      ),
+    ),
     eventPublisher = EventPublisherConfig(
       projectId = "test-project",
       topicName = "test-topic",
@@ -108,12 +116,23 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
     when(billRepo.findBillsNeedingTextCheck())
       .thenReturn(doobie.free.connection.pure(List.empty[BillDO]))
 
+    val retryWrapper = new RetryWrapper[IO]((_, _, _, _, _, _) => IO.unit)
+
     new BillTextAvailabilityChecker[IO](
       textApiClient = mock[BillTextApiClient[IO]],
       billRepo = billRepo,
       eventPublisher = mock[IngestionEventPublisher[IO]],
+      retryWrapper = retryWrapper,
       xa = testXa,
-      config = BillTextCheckerConfig(parallelism = 1),
+      config = BillTextCheckerConfig(
+        parallelism = 1,
+        eventPublishRetry = RetryConfig(
+          maxRetries = 1,
+          initialBackoffMs = 1,
+          maxBackoffMs = 10,
+          backoffMultiplier = 1.0,
+        ),
+      ),
       logger = logger,
     )
   }
