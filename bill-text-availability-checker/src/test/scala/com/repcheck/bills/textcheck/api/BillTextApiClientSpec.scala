@@ -22,7 +22,8 @@ import com.repcheck.bills.textcheck.errors.BillTextCheckFailed
 class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
   private val wireMock = new WireMockServer(
-    WireMockConfiguration.options()
+    WireMockConfiguration
+      .options()
       .bindAddress("127.0.0.1")
       .dynamicPort()
   )
