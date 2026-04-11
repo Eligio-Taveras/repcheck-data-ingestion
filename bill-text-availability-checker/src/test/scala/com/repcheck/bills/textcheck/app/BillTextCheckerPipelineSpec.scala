@@ -93,7 +93,7 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
   }
 
   "AppConfig" should "load from PureConfig reference configuration" in {
-    val result = ConfigSource.default.load[AppConfig]
+    val result = ConfigSource.resources("application-test.conf").load[AppConfig]
     result.isRight shouldBe true
   }
 
