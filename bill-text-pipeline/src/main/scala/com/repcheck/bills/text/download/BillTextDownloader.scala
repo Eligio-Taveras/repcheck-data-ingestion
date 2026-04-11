@@ -3,6 +3,7 @@ package com.repcheck.bills.text.download
 import java.util.UUID
 
 import scala.concurrent.duration._
+import scala.xml.XML
 
 import cats.effect.Async
 import cats.syntax.all._
@@ -10,10 +11,11 @@ import cats.syntax.all._
 import org.http4s.client.Client
 import org.http4s.{Request, Status, Uri}
 
+import org.jsoup.Jsoup
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 import com.repcheck.bills.text.config.BillTextPipelineConfig
-import com.repcheck.bills.text.errors.TextDownloadFailed
+import com.repcheck.bills.text.errors.{InvalidTextUrl, TextContentTooLarge, TextDownloadFailed, TextDownloadTimedOut}
 
 class BillTextDownloader[F[_]: Async](
   client: Client[F],
@@ -32,20 +34,21 @@ class BillTextDownloader[F[_]: Async](
     )
 
     for {
-      uri <- Async[F].fromEither(
-        Uri.fromString(textUrl).leftMap { err =>
-          TextDownloadFailed(textUrl, textFormat, s"Invalid URL: ${err.sanitized}", err)
-        }
-      )
-      _       <- logger.info(logCtx, s"Downloading bill text from $textUrl (format=$textFormat)")
-      content <- executeDownload(uri, textUrl, textFormat)
-      _       <- validateSize(content, textUrl, textFormat)
-      extracted = extractText(content, textFormat)
-      _ <- logger.info(logCtx, s"Downloaded ${extracted.length} characters from $textUrl")
+      uri       <- parseUrl(textUrl)
+      _         <- logger.info(logCtx, s"Downloading bill text from $textUrl (format=$textFormat)")
+      content   <- executeDownload(uri, textUrl, textFormat)
+      _         <- validateSize(content, textUrl)
+      extracted <- extractText(content, textFormat)
+      _         <- logger.info(logCtx, s"Downloaded ${extracted.length} characters from $textUrl")
     } yield extracted
   }
 
-  private def executeDownload(uri: Uri, textUrl: String, textFormat: String): F[String] = {
+  private[download] def parseUrl(textUrl: String): F[Uri] =
+    Async[F].fromEither(
+      Uri.fromString(textUrl).leftMap(err => InvalidTextUrl(textUrl, err.sanitized))
+    )
+
+  private[download] def executeDownload(uri: Uri, textUrl: String, textFormat: String): F[String] = {
     val timeout = config.downloadTimeoutSeconds.seconds
 
     Async[F].timeoutTo(
@@ -53,86 +56,81 @@ class BillTextDownloader[F[_]: Async](
         response.status match {
           case Status.NotFound =>
             Async[F].raiseError[String](
-              TextDownloadFailed(
-                textUrl,
-                textFormat,
-                "HTTP 404 - bill text not found",
-                new RuntimeException("404"),
-              )
+              TextDownloadFailed(textUrl, textFormat, "HTTP 404 - bill text not found")
             )
           case status if status.isSuccess =>
             response.as[String]
           case status =>
             response.as[String].flatMap { body =>
               Async[F].raiseError[String](
-                TextDownloadFailed(
-                  textUrl,
-                  textFormat,
-                  s"HTTP ${status.code}: $body",
-                  new RuntimeException(s"HTTP ${status.code}"),
-                )
+                TextDownloadFailed(textUrl, textFormat, s"HTTP ${status.code}: $body")
               )
             }
         }
       },
       duration = timeout,
       fallback = Async[F].raiseError(
-        TextDownloadFailed(
-          textUrl,
-          textFormat,
-          s"Download timed out after ${config.downloadTimeoutSeconds}s",
-          new RuntimeException("timeout"),
-        )
+        TextDownloadTimedOut(textUrl, config.downloadTimeoutSeconds)
       ),
     )
   }
 
-  private def validateSize(content: String, textUrl: String, textFormat: String): F[Unit] = {
+  private[download] def validateSize(content: String, textUrl: String): F[Unit] = {
     val sizeBytes = content.getBytes("UTF-8").length.toLong
     if (sizeBytes > config.maxContentBytes) {
       Async[F].raiseError(
-        TextDownloadFailed(
-          textUrl,
-          textFormat,
-          s"Content size $sizeBytes exceeds maximum ${config.maxContentBytes} bytes",
-          new RuntimeException("size exceeded"),
-        )
+        TextContentTooLarge(textUrl, sizeBytes, config.maxContentBytes)
       )
     } else {
       Async[F].unit
     }
   }
 
-  private[download] def extractText(content: String, textFormat: String): String =
-    textFormat match {
-      case "Formatted Text" => stripHtml(content)
-      case "Formatted XML"  => stripXml(content)
-      case "PDF"            => content // PDF extraction would need PDFBox; for now pass through
-      case _                => content
+  private[download] def extractText(content: String, textFormat: String): F[String] =
+    Async[F].delay {
+      textFormat match {
+        case "Formatted Text" => extractHtmlText(content)
+        case "Formatted XML"  => extractXmlText(content)
+        case "PDF"            => content
+        case _                => content
+      }
     }
 
-  private[download] def stripHtml(html: String): String =
-    html
-      .replaceAll("<br\\s*/?>", "\n")
-      .replaceAll("<p[^>]*>", "\n\n")
-      .replaceAll("</p>", "")
-      .replaceAll("<[^>]+>", "")
-      .replaceAll("&amp;", "&")
-      .replaceAll("&lt;", "<")
-      .replaceAll("&gt;", ">")
-      .replaceAll("&quot;", "\"")
-      .replaceAll("&#167;", "\u00A7")
-      .replaceAll("&nbsp;", " ")
-      .replaceAll("(?m)^\\s+$", "")
-      .replaceAll("\n{3,}", "\n\n")
-      .trim
+  /**
+   * Extract bill text from Congress.gov "Formatted Text" HTML.
+   *
+   * The HTML structure is: `<html><body><pre>...bill text...</pre></body></html>` The `<pre>` tag contains the actual
+   * bill text as pre-formatted plain text with HTML entities encoded. Jsoup parses the HTML and extracts the text
+   * content from the `<pre>` element, decoding entities automatically.
+   */
+  private[download] def extractHtmlText(html: String): String = {
+    val doc         = Jsoup.parse(html)
+    val preElements = doc.select("pre")
+    if (preElements.isEmpty) {
+      doc.body().text()
+    } else {
+      preElements.text()
+    }
+  }
 
-  private[download] def stripXml(xml: String): String =
-    xml
-      .replaceAll("<\\?[^?]*\\?>", "")
-      .replaceAll("<!--[\\s\\S]*?-->", "")
-      .replaceAll("<[^>]+>", " ")
-      .replaceAll("\\s+", " ")
-      .trim
+  /**
+   * Extract bill text from Congress.gov "Formatted XML" (USLM format).
+   *
+   * The XML follows the United States Legislative Markup schema with key elements:
+   *   - `<legis-body>`: contains the actual legislative text (sections, subsections, paragraphs)
+   *   - `<metadata>` / `<dublinCore>`: document metadata (title, date, publisher) — excluded
+   *   - `<form>`: header/intro block (congress, session, sponsors) — excluded
+   *
+   * We extract text only from `<legis-body>` to get the actual bill content without metadata or header boilerplate.
+   */
+  private[download] def extractXmlText(xmlContent: String): String = {
+    val xml       = XML.loadString(xmlContent)
+    val legisBody = xml \\ "legis-body"
+    if (legisBody.isEmpty) {
+      xml.text.replaceAll("\\s+", " ").trim
+    } else {
+      legisBody.text.replaceAll("\\s+", " ").trim
+    }
+  }
 
 }
