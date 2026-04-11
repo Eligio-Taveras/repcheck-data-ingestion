@@ -20,7 +20,7 @@ import com.repcheck.bills.text.download.BillTextDownloader
 import com.repcheck.bills.text.embedding.{EmbeddingGenerationFailed, EmbeddingService}
 import com.repcheck.bills.text.errors.{BillNotFoundForText, BillTextProcessingFailed}
 
-class BillTextProcessor[F[_]: Async] private[pipeline] (
+class BillTextProcessor[F[_]: Async] private[text] (
   downloader: BillTextDownloader[F],
   billRepository: BillRepository[ConnectionIO],
   textVersionRepository: BillTextVersionRepository[ConnectionIO],
