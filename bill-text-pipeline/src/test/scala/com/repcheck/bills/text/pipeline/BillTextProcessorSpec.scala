@@ -77,7 +77,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   }
 
   private def makeEvent(
-    billId: String = "118-HR-1",
+    naturalKey: String = "118-HR-1",
     congress: Int = 118,
     textUrl: String = "https://api.congress.gov/v3/bill/118/hr/1/text/ih",
     textFormat: String = "Formatted Text",
@@ -85,7 +85,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     previousVersionCode: Option[String] = None,
   ): BillTextAvailableEvent =
     BillTextAvailableEvent(
-      billId = billId,
+      naturalKey = naturalKey,
       congress = congress,
       textUrl = textUrl,
       textFormat = textFormat,
@@ -126,7 +126,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
   it should "return Failed when bill not found in DB" in {
     val f     = createFixture()
-    val event = makeEvent(billId = "999-HR-0")
+    val event = makeEvent(naturalKey = "999-HR-0")
     when(f.billRepository.findByBillId("999-HR-0"))
       .thenReturn(doobie.free.connection.pure(Option.empty[BillDO]))
 
@@ -191,7 +191,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   it should "populate BillTextVersionDO with correct fields including DB bill ID" in {
     val f = createFixture()
     val event = makeEvent(
-      billId = "118-S-42",
+      naturalKey = "118-S-42",
       textUrl = "https://api.congress.gov/v3/bill/118/s/42/text/enr",
       textFormat = "Formatted XML",
       versionCode = "enr",
@@ -249,7 +249,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   it should "populate BillTextIngestedEvent with correct fields" in {
     val f = createFixture()
     val event = makeEvent(
-      billId = "118-HR-99",
+      naturalKey = "118-HR-99",
       congress = 118,
       versionCode = "rh",
       previousVersionCode = Some("ih"),
@@ -262,7 +262,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _         = verify(f.eventPublisher, times(1)).billTextIngested(captor.capture(), any[UUID])
     val published = captor.getValue
 
-    val _ = published.billId shouldBe "118-HR-99"
+    val _ = published.naturalKey shouldBe "118-HR-99"
     val _ = published.congress shouldBe 118
     val _ = published.versionCode shouldBe "rh"
     published.previousVersionCode shouldBe Some("ih")
@@ -302,7 +302,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
   it should "classify BillNotFoundForText as Systemic" in {
     val f     = createFixture()
-    val event = makeEvent(billId = "999-HR-0")
+    val event = makeEvent(naturalKey = "999-HR-0")
     when(f.billRepository.findByBillId("999-HR-0"))
       .thenReturn(doobie.free.connection.pure(Option.empty[BillDO]))
 

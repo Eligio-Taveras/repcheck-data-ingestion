@@ -269,7 +269,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val captor = org.mockito.ArgumentCaptor.forClass(classOf[BillTextAvailableEvent])
     val _      = verify(f.eventPublisher).billTextAvailable(captor.capture(), any[UUID])
     val event  = captor.getValue
-    val _      = event.billId shouldBe "118-HR-5"
+    val _      = event.naturalKey shouldBe "118-HR-5"
     val _      = event.congress shouldBe 118
     val _      = event.textUrl shouldBe "https://api.congress.gov/text/118/hr/5"
     val _      = event.textFormat shouldBe "Formatted Text"

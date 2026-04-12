@@ -37,13 +37,13 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
       runId = correlationId.toString,
       stepName = StepName,
       correlationId = Some(correlationId),
-      entityId = Some(event.billId),
+      entityId = Some(event.naturalKey),
     )
 
     processEventInternal(event, correlationId, logCtx).handleErrorWith { error =>
       val errorClass = classifyError(error)
-      logger.error(logCtx, s"Failed to process bill text for ${event.billId}: ${error.getMessage}", Some(error)) *>
-        Async[F].pure(ProcessingResult.Failed(event.billId, error.getMessage, errorClass))
+      logger.error(logCtx, s"Failed to process bill text for ${event.naturalKey}: ${error.getMessage}", Some(error)) *>
+        Async[F].pure(ProcessingResult.Failed(event.naturalKey, error.getMessage, errorClass))
     }
   }
 
@@ -53,15 +53,15 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
     logCtx: LogContext,
   ): F[ProcessingResult] =
     for {
-      _         <- logger.info(logCtx, s"Processing bill text for ${event.billId} (format=${event.textFormat})")
-      dbBillId  <- lookupBillId(event.billId)
+      _         <- logger.info(logCtx, s"Processing bill text for ${event.naturalKey} (format=${event.textFormat})")
+      dbBillId  <- lookupBillId(event.naturalKey)
       content   <- downloadText(event, correlationId)
       embedding <- embeddingService.generateEmbedding(content)
       version   <- buildTextVersion(event, dbBillId, content, embedding)
       _         <- storeVersion(version)
       _         <- publishEvent(event, correlationId)
-      _         <- logger.info(logCtx, s"Successfully processed bill text for ${event.billId}")
-    } yield ProcessingResult.Succeeded(event.billId, eventEmitted = true)
+      _         <- logger.info(logCtx, s"Successfully processed bill text for ${event.naturalKey}")
+    } yield ProcessingResult.Succeeded(event.naturalKey, eventEmitted = true)
 
   private[pipeline] def lookupBillId(billNaturalKey: String): F[Long] =
     TransactionRunner.run(xa)(billRepository.findByBillId(billNaturalKey)).flatMap {
@@ -109,7 +109,7 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
     correlationId: UUID,
   ): F[String] = {
     val ingestedEvent = BillTextIngestedEvent(
-      billId = event.billId,
+      naturalKey = event.naturalKey,
       versionId = correlationId,
       congress = event.congress,
       versionCode = event.versionCode,
