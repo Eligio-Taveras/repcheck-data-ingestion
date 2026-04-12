@@ -17,7 +17,7 @@ import repcheck.ingestion.common.logging.PipelineLogger
  * Calls the Ollama `/api/embed` endpoint to generate embeddings using a configurable model and dimension. The Ollama
  * instance can be local (dev) or a Cloud Run sidecar (prod).
  */
-class OllamaEmbeddingService[F[_]: Async] private[embedding] (
+class OllamaEmbeddingService[F[_]: Async] private[text] (
   client: Client[F],
   config: EmbeddingConfig,
   logger: PipelineLogger[F],

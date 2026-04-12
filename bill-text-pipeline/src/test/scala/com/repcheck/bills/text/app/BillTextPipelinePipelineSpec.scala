@@ -20,6 +20,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 import com.repcheck.bills.text.app.BillTextPipelinePipeline.AppConfig
 import com.repcheck.bills.text.config.BillTextPipelineConfig
+import com.repcheck.bills.text.embedding.EmbeddingConfig
 import com.repcheck.bills.text.pipeline.BillTextProcessor
 
 class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with MockitoSugar {
@@ -47,8 +48,15 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       maxContentBytes = 1048576L,
     ),
     eventPublisher = EventPublisherConfig(
+      projectId = "repcheck-test",
       topicName = "test-topic",
       source = "test-source",
+    ),
+    embedding = EmbeddingConfig(
+      baseUrl = "http://localhost:11434",
+      modelName = "qwen3-embedding",
+      dimensions = 1536,
+      timeoutSeconds = 5,
     ),
   )
 
@@ -144,6 +152,50 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
 
     val summaryLogs = logger.messages.filter(_.contains("Pipeline completed"))
     summaryLogs should not be empty
+  }
+
+  "buildProcessor" should "construct a BillTextProcessor with all dependencies" in {
+    val logger     = new StubPipelineLogger
+    val httpClient = Client.fromHttpApp[IO](org.http4s.HttpApp.notFound[IO])
+
+    val processor = BillTextPipelinePipeline.buildProcessor[IO](
+      httpClient,
+      testXa,
+      stubPubSub,
+      testConfig,
+      logger,
+    )
+
+    processor.toString should not be empty
+  }
+
+  it should "use config values for downloader and embedding service" in {
+    val logger     = new StubPipelineLogger
+    val httpClient = Client.fromHttpApp[IO](org.http4s.HttpApp.notFound[IO])
+
+    val customConfig = testConfig.copy(
+      pipeline = BillTextPipelineConfig(
+        parallelism = 8,
+        downloadTimeoutSeconds = 120,
+        maxContentBytes = 999999L,
+      ),
+      embedding = EmbeddingConfig(
+        baseUrl = "http://custom-ollama:11434",
+        modelName = "custom-model",
+        dimensions = 768,
+        timeoutSeconds = 60,
+      ),
+    )
+
+    val processor = BillTextPipelinePipeline.buildProcessor[IO](
+      httpClient,
+      testXa,
+      stubPubSub,
+      customConfig,
+      logger,
+    )
+
+    processor.toString should not be empty
   }
 
 }
