@@ -15,13 +15,16 @@ import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.common.FormatType
 import repcheck.shared.models.congress.dos.bill.BillTextVersionDO
 
-import com.repcheck.bills.common.persistence.{BillTextVersionRepository, TransactionRunner}
+import com.repcheck.bills.common.persistence.{BillRepository, BillTextVersionRepository, TransactionRunner}
 import com.repcheck.bills.text.download.BillTextDownloader
-import com.repcheck.bills.text.errors.BillTextProcessingFailed
+import com.repcheck.bills.text.embedding.EmbeddingService
+import com.repcheck.bills.text.errors.{BillNotFoundForText, BillTextProcessingFailed}
 
 class BillTextProcessor[F[_]: Async] private[pipeline] (
   downloader: BillTextDownloader[F],
-  repository: BillTextVersionRepository[ConnectionIO],
+  billRepository: BillRepository[ConnectionIO],
+  textVersionRepository: BillTextVersionRepository[ConnectionIO],
+  embeddingService: EmbeddingService[F],
   eventPublisher: IngestionEventPublisher[F],
   xa: Transactor[F],
   logger: PipelineLogger[F],
@@ -50,13 +53,21 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
     logCtx: LogContext,
   ): F[ProcessingResult] =
     for {
-      _       <- logger.info(logCtx, s"Processing bill text for ${event.billId} (format=${event.textFormat})")
-      content <- downloadText(event, correlationId)
-      version <- buildVersion(event, content)
-      _       <- storeVersion(version)
-      _       <- publishEvent(event, correlationId)
-      _       <- logger.info(logCtx, s"Successfully processed bill text for ${event.billId}")
+      _         <- logger.info(logCtx, s"Processing bill text for ${event.billId} (format=${event.textFormat})")
+      dbBillId  <- lookupBillId(event.billId)
+      content   <- downloadText(event, correlationId)
+      embedding <- embeddingService.generateEmbedding(content)
+      version   <- buildTextVersion(event, dbBillId, content, embedding)
+      _         <- storeVersion(version)
+      _         <- publishEvent(event, correlationId)
+      _         <- logger.info(logCtx, s"Successfully processed bill text for ${event.billId}")
     } yield ProcessingResult.Succeeded(event.billId, eventEmitted = true)
+
+  private[pipeline] def lookupBillId(billNaturalKey: String): F[Long] =
+    TransactionRunner.run(xa)(billRepository.findByBillId(billNaturalKey)).flatMap {
+      case Some(bill) => Async[F].pure(bill.billId)
+      case None       => Async[F].raiseError(BillNotFoundForText(billNaturalKey))
+    }
 
   private[pipeline] def downloadText(
     event: BillTextAvailableEvent,
@@ -64,22 +75,24 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
   ): F[String] =
     downloader.download(event.textUrl, event.textFormat, correlationId)
 
-  private[pipeline] def buildVersion(
+  private[pipeline] def buildTextVersion(
     event: BillTextAvailableEvent,
+    dbBillId: Long,
     content: String,
+    embedding: Option[Array[Float]],
   ): F[BillTextVersionDO] = {
     val formatType = FormatType.fromString(event.textFormat).toOption
     Async[F].delay {
       BillTextVersionDO(
         id = 0L,
-        billId = 0L,
+        billId = dbBillId,
         versionCode = event.versionCode,
         versionType = event.textFormat,
         versionDate = None,
         formatType = formatType,
         url = Some(event.textUrl),
         content = Some(content),
-        embedding = None,
+        embedding = embedding,
         fetchedAt = Some(Instant.now()),
         createdAt = None,
       )
@@ -89,8 +102,15 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
   private[pipeline] def storeVersion(
     version: BillTextVersionDO
   ): F[Long] =
-    TransactionRunner.run(xa)(repository.insertVersion(version))
+    TransactionRunner.run(xa)(textVersionRepository.insertVersion(version))
 
+  /**
+   * Publishes a BillTextIngestedEvent downstream.
+   *
+   * committeeCode is not available in the text pipeline context — bill-to-committee relationships are tracked
+   * separately in the bill metadata pipeline. Downstream consumers that need committee context should join against the
+   * bills table.
+   */
   private[pipeline] def publishEvent(
     event: BillTextAvailableEvent,
     correlationId: UUID,
@@ -108,6 +128,7 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
 
   private[pipeline] def classifyError(error: Throwable): String =
     error match {
+      case _: BillNotFoundForText             => "Systemic"
       case _: BillTextProcessingFailed        => "Systemic"
       case _: java.net.SocketTimeoutException => "Transient"
       case _: java.net.ConnectException       => "Transient"
