@@ -21,7 +21,7 @@ import repcheck.shared.models.congress.dos.bill.{BillDO, BillTextVersionDO}
 
 import com.repcheck.bills.common.persistence.{BillRepository, BillTextVersionRepository}
 import com.repcheck.bills.text.download.BillTextDownloader
-import com.repcheck.bills.text.embedding.EmbeddingService
+import com.repcheck.bills.text.embedding.{EmbeddingGenerationFailed, EmbeddingService}
 import com.repcheck.bills.text.errors.{BillTextProcessingFailed, TextDownloadFailed}
 
 class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
@@ -362,6 +362,87 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val _ = result.isFailed shouldBe true
     result.entityId shouldBe "118-HR-1"
+  }
+
+  it should "classify EmbeddingGenerationFailed as Transient" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure("some content"))
+    when(f.embeddingService.generateEmbedding(anyString()))
+      .thenReturn(IO.raiseError(EmbeddingGenerationFailed("model unavailable", 12)))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
+  }
+
+  it should "classify SocketTimeoutException as Transient" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    when(f.downloader.download(anyString(), anyString(), any[UUID]))
+      .thenReturn(IO.raiseError(new java.net.SocketTimeoutException("timeout")))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
+  }
+
+  it should "classify ConnectException as Transient" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    when(f.downloader.download(anyString(), anyString(), any[UUID]))
+      .thenReturn(IO.raiseError(new java.net.ConnectException("connection refused")))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
+  }
+
+  it should "classify SQLTransientException as Transient" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    when(f.downloader.download(anyString(), anyString(), any[UUID]))
+      .thenReturn(IO.raiseError(new java.sql.SQLTransientConnectionException("db connection lost")))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
+  }
+
+  it should "classify unknown exceptions as Systemic by default" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    when(f.downloader.download(anyString(), anyString(), any[UUID]))
+      .thenReturn(IO.raiseError(new RuntimeException("unexpected error")))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Systemic"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
   }
 
 }
