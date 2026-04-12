@@ -104,13 +104,6 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
   ): F[Long] =
     TransactionRunner.run(xa)(textVersionRepository.insertVersion(version))
 
-  /**
-   * Publishes a BillTextIngestedEvent downstream.
-   *
-   * committeeCode is not available in the text pipeline context — bill-to-committee relationships are tracked
-   * separately in the bill metadata pipeline. Downstream consumers that need committee context should join against the
-   * bills table.
-   */
   private[pipeline] def publishEvent(
     event: BillTextAvailableEvent,
     correlationId: UUID,
@@ -121,7 +114,6 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
       congress = event.congress,
       versionCode = event.versionCode,
       previousVersionCode = event.previousVersionCode,
-      committeeCode = None,
     )
     eventPublisher.billTextIngested(ingestedEvent, correlationId)
   }

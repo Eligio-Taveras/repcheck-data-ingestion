@@ -265,8 +265,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = published.billId shouldBe "118-HR-99"
     val _ = published.congress shouldBe 118
     val _ = published.versionCode shouldBe "rh"
-    val _ = published.previousVersionCode shouldBe Some("ih")
-    published.committeeCode shouldBe None
+    published.previousVersionCode shouldBe Some("ih")
   }
 
   it should "classify IO exceptions as Transient" in {
