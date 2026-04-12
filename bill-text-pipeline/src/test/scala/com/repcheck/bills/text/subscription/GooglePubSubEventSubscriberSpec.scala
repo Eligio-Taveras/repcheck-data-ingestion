@@ -299,4 +299,60 @@ class GooglePubSubEventSubscriberSpec extends AnyFlatSpec with Matchers with Moc
     }
   }
 
+  // --- PubSubSubscriberResource tests ---
+
+  "PubSubSubscriberResource.make" should "create a PubSubEventSubscriber from a stub factory" in {
+    val logger   = new StubPipelineLogger
+    val stubMock = mock[SubscriberStub]
+    val config   = EventSubscriberConfig("test-project", "test-subscription", 10)
+
+    val pullCallable  = mock[UnaryCallable[PullRequest, PullResponse]]
+    val emptyResponse = PullResponse.newBuilder().build()
+    when(stubMock.pullCallable()).thenReturn(pullCallable)
+    when(pullCallable.call(any[PullRequest]())).thenReturn(emptyResponse)
+
+    val subscriber = PubSubSubscriberResource
+      .make[IO](config, logger, () => stubMock)
+      .use(sub => sub.pull(5).map(result => result shouldBe empty))
+      .unsafeRunSync()
+
+    val _ = subscriber
+    verify(stubMock).pullCallable()
+  }
+
+  it should "close the stub on resource release" in {
+    val logger   = new StubPipelineLogger
+    val stubMock = mock[SubscriberStub]
+    val config   = EventSubscriberConfig("test-project", "test-subscription", 10)
+
+    val _ = PubSubSubscriberResource
+      .make[IO](config, logger, () => stubMock)
+      .use(_ => IO.unit)
+      .unsafeRunSync()
+
+    verify(stubMock).close()
+  }
+
+  it should "build correct subscription name from config" in {
+    val logger   = new StubPipelineLogger
+    val stubMock = mock[SubscriberStub]
+    val config   = EventSubscriberConfig("my-gcp-project", "my-sub-id", 25)
+
+    val pullCallable  = mock[UnaryCallable[PullRequest, PullResponse]]
+    val emptyResponse = PullResponse.newBuilder().build()
+    when(stubMock.pullCallable()).thenReturn(pullCallable)
+    when(pullCallable.call(any[PullRequest]())).thenReturn(emptyResponse)
+
+    val _ = PubSubSubscriberResource
+      .make[IO](config, logger, () => stubMock)
+      .use(sub => sub.pull(1))
+      .unsafeRunSync()
+
+    // The PullRequest should contain the correctly formatted subscription name
+    val captor = org.mockito.ArgumentCaptor.forClass(classOf[PullRequest])
+    verify(pullCallable).call(captor.capture())
+    val capturedRequest = captor.getValue
+    capturedRequest.getSubscription shouldBe "projects/my-gcp-project/subscriptions/my-sub-id"
+  }
+
 }

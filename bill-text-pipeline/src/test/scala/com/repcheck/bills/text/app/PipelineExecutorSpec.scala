@@ -7,12 +7,17 @@ import cats.effect.unsafe.implicits.global
 
 import fs2.Stream
 
+import org.mockito.ArgumentCaptor
+import org.mockito.ArgumentMatchers.{any, eq => eqTo}
+import org.mockito.Mockito.{verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import org.scalatestplus.mockito.MockitoSugar
+import repcheck.ingestion.common.execution.WorkflowStateUpdater
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
-class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
+class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
   private val correlationId = UUID.fromString("00000000-0000-0000-0000-000000000001")
   private val pipelineName  = "test-pipeline"
@@ -114,6 +119,130 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
 
     val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).attempt.unsafeRunSync()
     result.isLeft shouldBe true
+  }
+
+  // --- WorkflowStateUpdater integration tests ---
+
+  private def buildMockUpdater(): WorkflowStateUpdater[IO] = {
+    val mockUpdater = mock[WorkflowStateUpdater[IO]]
+    when(mockUpdater.recordStepStarted(any[String](), any[String]())).thenReturn(IO.unit)
+    when(mockUpdater.recordStepCompleted(any[String](), any[String]())).thenReturn(IO.unit)
+    when(mockUpdater.recordStepFailed(any[String](), any[String](), any[String]())).thenReturn(IO.unit)
+    mockUpdater
+  }
+
+  it should "call recordStepStarted when WorkflowStateUpdater is provided" in {
+    val logger      = new StubPipelineLogger
+    val mockUpdater = buildMockUpdater()
+    val stream      = Stream.emit(ProcessingResult.Succeeded("bill-1"))
+
+    val _ = PipelineExecutor
+      .execute[IO](
+        stream,
+        logger,
+        pipelineName,
+        correlationId,
+        workflowStateUpdater = Some(mockUpdater),
+        workflowRunId = Some("12345"),
+      )
+      .unsafeRunSync()
+
+    verify(mockUpdater).recordStepStarted(eqTo("12345"), eqTo("test-pipeline"))
+  }
+
+  it should "call recordStepCompleted when all results succeed" in {
+    val logger      = new StubPipelineLogger
+    val mockUpdater = buildMockUpdater()
+    val stream = Stream.emits(
+      List(
+        ProcessingResult.Succeeded("bill-1"),
+        ProcessingResult.Succeeded("bill-2"),
+      )
+    )
+
+    val _ = PipelineExecutor
+      .execute[IO](
+        stream,
+        logger,
+        pipelineName,
+        correlationId,
+        workflowStateUpdater = Some(mockUpdater),
+        workflowRunId = Some("12345"),
+      )
+      .unsafeRunSync()
+
+    verify(mockUpdater).recordStepCompleted(eqTo("12345"), eqTo("test-pipeline"))
+  }
+
+  it should "call recordStepFailed when any result fails" in {
+    val logger      = new StubPipelineLogger
+    val mockUpdater = buildMockUpdater()
+    val stream = Stream.emits(
+      List(
+        ProcessingResult.Succeeded("bill-1"),
+        ProcessingResult.Failed("bill-2", "conversion error"),
+      )
+    )
+
+    val _ = PipelineExecutor
+      .execute[IO](
+        stream,
+        logger,
+        pipelineName,
+        correlationId,
+        workflowStateUpdater = Some(mockUpdater),
+        workflowRunId = Some("12345"),
+      )
+      .unsafeRunSync()
+
+    verify(mockUpdater).recordStepFailed(
+      eqTo("12345"),
+      eqTo("test-pipeline"),
+      eqTo("1 of 2 items failed"),
+    )
+  }
+
+  it should "use provided workflowRunId for state updates" in {
+    val logger      = new StubPipelineLogger
+    val mockUpdater = buildMockUpdater()
+    val stream      = Stream.emit(ProcessingResult.Succeeded("bill-1"))
+
+    val _ = PipelineExecutor
+      .execute[IO](
+        stream,
+        logger,
+        pipelineName,
+        correlationId,
+        workflowStateUpdater = Some(mockUpdater),
+        workflowRunId = Some("99999"),
+      )
+      .unsafeRunSync()
+
+    val _ = verify(mockUpdater).recordStepStarted(eqTo("99999"), eqTo("test-pipeline"))
+    val _ = verify(mockUpdater).recordStepCompleted(eqTo("99999"), eqTo("test-pipeline"))
+  }
+
+  it should "generate a numeric runId when workflowRunId is not provided but updater is set" in {
+    val logger      = new StubPipelineLogger
+    val mockUpdater = buildMockUpdater()
+    val stream      = Stream.emit(ProcessingResult.Succeeded("bill-1"))
+
+    val captorStarted = ArgumentCaptor.forClass(classOf[String])
+
+    val _ = PipelineExecutor
+      .execute[IO](
+        stream,
+        logger,
+        pipelineName,
+        correlationId,
+        workflowStateUpdater = Some(mockUpdater),
+        workflowRunId = None,
+      )
+      .unsafeRunSync()
+
+    val _             = verify(mockUpdater).recordStepStarted(captorStarted.capture(), eqTo("test-pipeline"))
+    val capturedRunId = captorStarted.getValue
+    capturedRunId.toLongOption should not be empty
   }
 
 }

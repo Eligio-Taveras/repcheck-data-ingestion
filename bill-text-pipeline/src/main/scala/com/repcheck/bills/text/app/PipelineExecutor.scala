@@ -29,7 +29,7 @@ private[app] object PipelineExecutor {
     workflowRunId: Option[String] = None,
   ): F[ExitCode] = {
     val logCtx = LogContext(runId = correlationId.toString, stepName = pipelineName)
-    val runId  = workflowRunId.getOrElse(correlationId.toString)
+    val runId  = workflowRunId.getOrElse(System.currentTimeMillis().toString)
 
     for {
       _           <- recordStepStarted(workflowStateUpdater, runId, pipelineName)

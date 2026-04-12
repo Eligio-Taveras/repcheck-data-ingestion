@@ -1,27 +1,18 @@
 package com.repcheck.bills.text.app
 
-import cats.effect.{Async, ExitCode, Resource, Sync}
+import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
 import org.http4s.client.Client
-import org.http4s.ember.client.EmberClientBuilder
 
 import fs2.Stream
-import fs2.io.net.Network
 
 import doobie.util.transactor.Transactor
 
-import pureconfig.ConfigSource
-
-import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
-import repcheck.ingestion.common.events.{
-  DefaultIngestionEventPublisher,
-  EventPublisherConfig,
-  PubSubEventPublisher,
-  PubSubPublisherResource,
-}
+import repcheck.ingestion.common.db.DatabaseConfig
+import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.execution.{PipelineFailureHandlerConfig, WorkflowStateUpdater}
-import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
+import repcheck.ingestion.common.logging.PipelineLogger
 import repcheck.pipeline.models.metadata.ProcessingResult
 
 import com.repcheck.bills.common.persistence.{DoobieBillRepository, DoobieBillTextVersionRepository}
@@ -29,12 +20,7 @@ import com.repcheck.bills.text.config.BillTextPipelineConfig
 import com.repcheck.bills.text.download.BillTextDownloader
 import com.repcheck.bills.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
 import com.repcheck.bills.text.pipeline.BillTextProcessor
-import com.repcheck.bills.text.subscription.{
-  EventSubscriberConfig,
-  PubSubEventSubscriber,
-  PubSubSubscriberResource,
-  ReceivedEvent,
-}
+import com.repcheck.bills.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 
 private[app] object BillTextPipelinePipeline {
 
@@ -56,18 +42,6 @@ private[app] object BillTextPipelinePipeline {
     pubSubPublisher: PubSubEventPublisher[F],
     pubSubSubscriber: PubSubEventSubscriber[F],
   )
-
-  def run[F[_]: Async: Network](args: List[String]): F[ExitCode] = {
-    val _ = args // args reserved for future CLI config override support
-    runWithFactories[F](
-      configLoader = Sync[F].delay(ConfigSource.default.loadOrThrow[AppConfig]),
-      loggerFactory = (name: String) => PipelineLoggerFactory.make[F](name),
-      resourceBuilder = (config: AppConfig, logger: PipelineLogger[F]) => buildResources[F](config, logger),
-      processorFactory = buildProcessor[F],
-      streamFactory = buildStream[F],
-      workflowStateUpdaterFactory = (xa, cfg) => Some(new WorkflowStateUpdater[F](xa, cfg)),
-    )
-  }
 
   private[app] def runWithFactories[F[_]: Async](
     configLoader: F[AppConfig],
@@ -180,15 +154,19 @@ private[app] object BillTextPipelinePipeline {
     }
   }
 
-  private[app] def buildResources[F[_]: Async: Network](
+  private[app] def buildResources[F[_]](
     config: AppConfig,
     logger: PipelineLogger[F],
+    transactorFactory: DatabaseConfig => Resource[F, Transactor[F]],
+    httpClientFactory: Resource[F, Client[F]],
+    pubSubPublisherFactory: EventPublisherConfig => Resource[F, PubSubEventPublisher[F]],
+    pubSubSubscriberFactory: (EventSubscriberConfig, PipelineLogger[F]) => Resource[F, PubSubEventSubscriber[F]],
   ): Resource[F, PipelineResources[F]] =
     for {
-      xa               <- TransactorResource.make[F](config.database)
-      httpClient       <- EmberClientBuilder.default[F].build
-      pubSubPublisher  <- PubSubPublisherResource.make[F](config.eventPublisher)
-      pubSubSubscriber <- PubSubSubscriberResource.make[F](config.eventSubscriber, logger)
+      xa               <- transactorFactory(config.database)
+      httpClient       <- httpClientFactory
+      pubSubPublisher  <- pubSubPublisherFactory(config.eventPublisher)
+      pubSubSubscriber <- pubSubSubscriberFactory(config.eventSubscriber, logger)
     } yield PipelineResources(xa, httpClient, pubSubPublisher, pubSubSubscriber)
 
 }

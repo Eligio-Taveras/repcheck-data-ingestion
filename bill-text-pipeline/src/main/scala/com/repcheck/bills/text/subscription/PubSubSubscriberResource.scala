@@ -2,7 +2,7 @@ package com.repcheck.bills.text.subscription
 
 import cats.effect.{Async, Resource}
 
-import com.google.cloud.pubsub.v1.stub.{GrpcSubscriberStub, SubscriberStubSettings}
+import com.google.cloud.pubsub.v1.stub.SubscriberStub
 import com.google.pubsub.v1.SubscriptionName
 
 import repcheck.ingestion.common.logging.PipelineLogger
@@ -16,18 +16,16 @@ import repcheck.ingestion.common.logging.PipelineLogger
  */
 object PubSubSubscriberResource {
 
-  def make[F[_]: Async](
+  private[text] def make[F[_]: Async](
     config: EventSubscriberConfig,
     logger: PipelineLogger[F],
+    stubFactory: () => SubscriberStub,
   ): Resource[F, PubSubEventSubscriber[F]] = {
     val subscriptionName = SubscriptionName.of(config.projectId, config.subscriptionId).toString
 
     Resource
       .make(
-        Async[F].blocking {
-          val settings = SubscriberStubSettings.newBuilder().build()
-          GrpcSubscriberStub.create(settings)
-        }
+        Async[F].blocking(stubFactory())
       )(stub => Async[F].blocking(stub.close()))
       .map(stub => new GooglePubSubEventSubscriber[F](stub, subscriptionName, logger))
   }

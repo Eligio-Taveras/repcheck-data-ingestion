@@ -392,4 +392,83 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     capturedCorrelationId.get() shouldBe correlationId
   }
 
+  // --- buildResources tests ---
+
+  "buildResources" should "create PipelineResources from factory functions" in {
+    val logger     = new StubPipelineLogger
+    val httpClient = Client.fromHttpApp[IO](org.http4s.HttpApp.notFound[IO])
+
+    val resources = BillTextPipelinePipeline
+      .buildResources[IO](
+        config = testConfig,
+        logger = logger,
+        transactorFactory = (_: DatabaseConfig) => Resource.pure[IO, Transactor[IO]](testXa),
+        httpClientFactory = Resource.pure[IO, Client[IO]](httpClient),
+        pubSubPublisherFactory = (_: EventPublisherConfig) => Resource.pure[IO, PubSubEventPublisher[IO]](stubPubSub),
+        pubSubSubscriberFactory = (_: EventSubscriberConfig, _: PipelineLogger[IO]) =>
+          Resource.pure[IO, PubSubEventSubscriber[IO]](emptySubscriber),
+      )
+      .use { res =>
+        IO {
+          val _ = res.xa.toString should not be empty
+          val _ = res.httpClient.toString should not be empty
+          val _ = res.pubSubPublisher.toString should not be empty
+          res.pubSubSubscriber.toString should not be empty
+        }
+      }
+      .unsafeRunSync()
+
+    val _ = resources
+  }
+
+  it should "pass correct config sections to each factory" in {
+    val logger = new StubPipelineLogger
+
+    val capturedDbConfig =
+      new java.util.concurrent.atomic.AtomicReference[DatabaseConfig](
+        DatabaseConfig("", 0, "", "", "", 0)
+      )
+    val capturedPublisherConfig =
+      new java.util.concurrent.atomic.AtomicReference[EventPublisherConfig](
+        EventPublisherConfig("", "", "")
+      )
+    val capturedSubscriberConfig =
+      new java.util.concurrent.atomic.AtomicReference[EventSubscriberConfig](
+        EventSubscriberConfig("", "", 0)
+      )
+
+    val httpClient = Client.fromHttpApp[IO](org.http4s.HttpApp.notFound[IO])
+
+    val _ = BillTextPipelinePipeline
+      .buildResources[IO](
+        config = testConfig,
+        logger = logger,
+        transactorFactory = (dbCfg: DatabaseConfig) => {
+          capturedDbConfig.set(dbCfg)
+          Resource.pure[IO, Transactor[IO]](testXa)
+        },
+        httpClientFactory = Resource.pure[IO, Client[IO]](httpClient),
+        pubSubPublisherFactory = (pubCfg: EventPublisherConfig) => {
+          capturedPublisherConfig.set(pubCfg)
+          Resource.pure[IO, PubSubEventPublisher[IO]](stubPubSub)
+        },
+        pubSubSubscriberFactory = (subCfg: EventSubscriberConfig, _: PipelineLogger[IO]) => {
+          capturedSubscriberConfig.set(subCfg)
+          Resource.pure[IO, PubSubEventSubscriber[IO]](emptySubscriber)
+        },
+      )
+      .use(_ => IO.unit)
+      .unsafeRunSync()
+
+    val _ = capturedDbConfig.get().host shouldBe "localhost"
+    val _ = capturedDbConfig.get().port shouldBe 5432
+    val _ = capturedDbConfig.get().database shouldBe "repcheck_test"
+
+    val _ = capturedPublisherConfig.get().projectId shouldBe "repcheck-test"
+    val _ = capturedPublisherConfig.get().topicName shouldBe "test-topic"
+
+    val _ = capturedSubscriberConfig.get().projectId shouldBe "repcheck-test"
+    capturedSubscriberConfig.get().subscriptionId shouldBe "test-sub"
+  }
+
 }
