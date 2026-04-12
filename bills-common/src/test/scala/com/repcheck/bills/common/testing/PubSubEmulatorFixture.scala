@@ -1,12 +1,15 @@
 package com.repcheck.bills.common.testing
 
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 import scala.jdk.CollectionConverters._
+import scala.util.Try
 
 import com.google.api.gax.core.{CredentialsProvider, NoCredentialsProvider}
 import com.google.api.gax.grpc.GrpcTransportChannel
 import com.google.api.gax.rpc.{FixedTransportChannelProvider, TransportChannelProvider}
+import com.google.cloud.pubsub.v1.stub.{GrpcSubscriberStub, SubscriberStubSettings}
 import com.google.cloud.pubsub.v1.{
   Publisher,
   SubscriptionAdminClient,
@@ -15,21 +18,20 @@ import com.google.cloud.pubsub.v1.{
   TopicAdminSettings,
 }
 import com.google.protobuf.ByteString
-import com.google.pubsub.v1.{PubsubMessage, PullRequest, SubscriptionName, TopicName}
+import com.google.pubsub.v1.{AcknowledgeRequest, PubsubMessage, PullRequest, SubscriptionName, TopicName}
 
 import io.grpc.ManagedChannelBuilder
 import org.scalatest.{BeforeAndAfterAll, Suite}
 
 /**
- * Provides Pub/Sub emulator infrastructure for integration tests. Creates an ephemeral topic and subscription per test
- * suite, with automatic cleanup in `afterAll()`.
- *
- * Requires the Pub/Sub emulator to be running. Set `PUBSUB_EMULATOR_HOST` (e.g., `localhost:8085`).
+ * Provides Pub/Sub emulator infrastructure for integration tests. Automatically starts a Pub/Sub emulator Docker
+ * container (shared across all suites via [[SharedDockerPubSub]]) and creates an ephemeral topic and subscription per
+ * test suite, with automatic cleanup in `afterAll()`.
  */
 trait PubSubEmulatorFixture extends BeforeAndAfterAll { self: Suite =>
 
-  protected val emulatorHost: String =
-    sys.env.getOrElse("PUBSUB_EMULATOR_HOST", "localhost:8085")
+  protected lazy val emulatorInfo: PubSubEmulatorInfo = SharedDockerPubSub.info
+  protected lazy val emulatorHost: String             = emulatorInfo.endpoint
 
   protected val emulatorProjectId: String = "repcheck-test"
 
@@ -70,6 +72,16 @@ trait PubSubEmulatorFixture extends BeforeAndAfterAll { self: Suite =>
         .build()
     )
 
+  // Shared subscriber stub — reused across pullMessages calls to avoid connection overhead
+  private lazy val subscriberStub: GrpcSubscriberStub =
+    GrpcSubscriberStub.create(
+      SubscriberStubSettings
+        .newBuilder()
+        .setTransportChannelProvider(channelProvider)
+        .setCredentialsProvider(credentialsProvider)
+        .build()
+    )
+
   protected lazy val publisher: Publisher =
     Publisher
       .newBuilder(topicName)
@@ -84,48 +96,46 @@ trait PubSubEmulatorFixture extends BeforeAndAfterAll { self: Suite =>
       .setData(ByteString.copyFromUtf8(data))
       .putAllAttributes(attributes.asJava)
       .build()
-    publisher.publish(message).get()
+    publisher.publish(message).get(10, TimeUnit.SECONDS)
+  }
+
+  /**
+   * Drains all pending messages from the subscription. Call in beforeEach to isolate tests. Silently ignores errors so
+   * it never breaks test setup.
+   */
+  protected def drainMessages(): Unit = {
+    val _ = Try(pullMessages(100))
   }
 
   /** Pulls messages from the test subscription. */
   protected def pullMessages(maxMessages: Int = 10): List[PubsubMessage] = {
-    import com.google.cloud.pubsub.v1.stub.{GrpcSubscriberStub, SubscriberStubSettings}
-
-    val stubSettings = SubscriberStubSettings
+    val pullRequest = PullRequest
       .newBuilder()
-      .setTransportChannelProvider(channelProvider)
-      .setCredentialsProvider(credentialsProvider)
+      .setSubscription(subscriptionName.toString)
+      .setMaxMessages(maxMessages)
       .build()
 
-    val stub = GrpcSubscriberStub.create(stubSettings)
-    try {
-      val pullRequest = PullRequest
+    val response = subscriberStub.pullCallable().call(pullRequest)
+    val messages = response.getReceivedMessagesList.asScala.toList
+
+    // Auto-ack all pulled messages
+    if (messages.nonEmpty) {
+      val ackIds = messages.map(_.getAckId).asJava
+      val ackRequest = AcknowledgeRequest
         .newBuilder()
         .setSubscription(subscriptionName.toString)
-        .setMaxMessages(maxMessages)
+        .addAllAckIds(ackIds)
         .build()
+      val _ = subscriberStub.acknowledgeCallable().call(ackRequest)
+    }
 
-      val response = stub.pullCallable().call(pullRequest)
-      val messages = response.getReceivedMessagesList.asScala.toList
-
-      // Auto-ack all pulled messages
-      if (messages.nonEmpty) {
-        val ackIds = messages.map(_.getAckId).asJava
-        import com.google.pubsub.v1.AcknowledgeRequest
-        val ackRequest = AcknowledgeRequest
-          .newBuilder()
-          .setSubscription(subscriptionName.toString)
-          .addAllAckIds(ackIds)
-          .build()
-        val _ = stub.acknowledgeCallable().call(ackRequest)
-      }
-
-      messages.map(_.getMessage)
-    } finally stub.close()
+    messages.map(_.getMessage)
   }
 
-  override protected def beforeAll(): Unit = {
+  override def beforeAll(): Unit = {
     super.beforeAll()
+    // Force emulator container to start before creating topic/subscription
+    val _ = emulatorHost
     val _ = topicAdminClient.createTopic(topicName)
     val _ = subscriptionAdminClient.createSubscription(
       subscriptionName,
@@ -135,7 +145,7 @@ trait PubSubEmulatorFixture extends BeforeAndAfterAll { self: Suite =>
     )
   }
 
-  override protected def afterAll(): Unit = {
+  override def afterAll(): Unit = {
     try
       subscriptionAdminClient.deleteSubscription(subscriptionName)
     catch { case _: Exception => () }
@@ -143,6 +153,8 @@ trait PubSubEmulatorFixture extends BeforeAndAfterAll { self: Suite =>
       topicAdminClient.deleteTopic(topicName)
     catch { case _: Exception => () }
     try publisher.shutdown()
+    catch { case _: Exception => () }
+    try subscriberStub.close()
     catch { case _: Exception => () }
     try topicAdminClient.close()
     catch { case _: Exception => () }

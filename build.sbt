@@ -10,6 +10,9 @@ val isScala212: Def.Initialize[Boolean] = Def.setting {
 
 ThisBuild / dynverSonatypeSnapshots := true
 
+// Prevent concurrent test execution across subprojects — integration tests share Docker containers
+ThisBuild / concurrentRestrictions += Tags.limit(Tags.Test, 1)
+
 // Common settings for all sub-projects
 lazy val commonSettings = Seq(
   organization := "com.repcheck",

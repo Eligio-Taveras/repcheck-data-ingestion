@@ -82,6 +82,11 @@ class MetadataToCheckerIntegrationSpec
     super.afterAll()
   }
 
+  override def beforeEach(): Unit = {
+    super.beforeEach()
+    drainMessages()
+  }
+
   override def afterEach(): Unit = {
     wireMock.resetAll()
     super.afterEach()

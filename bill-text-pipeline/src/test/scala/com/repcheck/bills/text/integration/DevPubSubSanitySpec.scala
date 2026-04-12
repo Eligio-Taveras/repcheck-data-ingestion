@@ -5,7 +5,14 @@ import java.util.concurrent.TimeUnit
 
 import scala.jdk.CollectionConverters._
 
-import com.google.cloud.pubsub.v1.{Publisher, SubscriptionAdminClient, TopicAdminClient}
+import com.google.auth.oauth2.{GoogleCredentials, ImpersonatedCredentials}
+import com.google.cloud.pubsub.v1.{
+  Publisher,
+  SubscriptionAdminClient,
+  SubscriptionAdminSettings,
+  TopicAdminClient,
+  TopicAdminSettings,
+}
 import com.google.protobuf.ByteString
 import com.google.pubsub.v1.{PubsubMessage, PullRequest, SubscriptionName, TopicName}
 
@@ -18,14 +25,20 @@ import com.repcheck.bills.common.testing.E2ETest
  * Sanity tests for the real GCP dev Pub/Sub environment. Validates that the dev project's Pub/Sub topics and
  * subscriptions are functional.
  *
- * These tests require: - `GOOGLE_CLOUD_PROJECT` env var set to the dev GCP project - Valid GCP credentials (gcloud auth
- * or service account) - Dev Pub/Sub topics/subscriptions already created
+ * Uses service account impersonation: the caller's ADC impersonates `integration-test@repcheck-dev` to ensure tests run
+ * with scoped permissions rather than owner-level credentials.
+ *
+ * These tests require: - Valid GCP credentials (gcloud auth or service account) with
+ * `roles/iam.serviceAccountTokenCreator` on the integration-test SA - Dev Pub/Sub topics/subscriptions already created
  *
  * Run with: `sbt "testOnly -- -n com.repcheck.tags.E2ETest"`
  */
 class DevPubSubSanitySpec extends AnyFlatSpec with Matchers {
 
   private val projectId = sys.env.getOrElse("GOOGLE_CLOUD_PROJECT", "repcheck-dev")
+
+  private val serviceAccountEmail =
+    sys.env.getOrElse("INTEGRATION_TEST_SA", s"integration-test@$projectId.iam.gserviceaccount.com")
 
   // Use a test-specific ephemeral topic/subscription to avoid polluting real queues
   private val testPrefix     = s"sanity-test-${UUID.randomUUID().toString.take(8)}"
@@ -34,18 +47,42 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers {
   private lazy val topicName = TopicName.of(projectId, testTopicId)
   private lazy val subName   = SubscriptionName.of(projectId, testSubId)
 
+  /** Builds impersonated credentials scoped to Pub/Sub. */
+  private def impersonatedCredentials(): ImpersonatedCredentials = {
+    val sourceCredentials = GoogleCredentials.getApplicationDefault()
+    ImpersonatedCredentials
+      .newBuilder()
+      .setSourceCredentials(sourceCredentials)
+      .setTargetPrincipal(serviceAccountEmail)
+      .setScopes(java.util.Arrays.asList("https://www.googleapis.com/auth/pubsub"))
+      .setLifetime(300) // 5 min token lifetime
+      .build()
+  }
+
   private def isGcpAvailable: Boolean =
     try {
-      val topicAdmin = TopicAdminClient.create()
+      val creds = impersonatedCredentials()
+      val topicAdmin =
+        TopicAdminClient.create(TopicAdminSettings.newBuilder().setCredentialsProvider(() => creds).build())
       topicAdmin.close()
       true
     } catch { case _: Exception => false }
 
+  private def createTopicAdmin(): TopicAdminClient = {
+    val creds = impersonatedCredentials()
+    TopicAdminClient.create(TopicAdminSettings.newBuilder().setCredentialsProvider(() => creds).build())
+  }
+
+  private def createSubAdmin(): SubscriptionAdminClient = {
+    val creds = impersonatedCredentials()
+    SubscriptionAdminClient.create(SubscriptionAdminSettings.newBuilder().setCredentialsProvider(() => creds).build())
+  }
+
   "Dev Pub/Sub" should "create topic, publish message, and pull it back" taggedAs E2ETest in {
     val _ = assume(isGcpAvailable, "GCP credentials not available — skipping dev Pub/Sub test")
 
-    val topicAdmin = TopicAdminClient.create()
-    val subAdmin   = SubscriptionAdminClient.create()
+    val topicAdmin = createTopicAdmin()
+    val subAdmin   = createSubAdmin()
 
     try {
       // Create ephemeral topic and subscription
@@ -58,7 +95,8 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers {
       )
 
       // Publish a test message
-      val publisher = Publisher.newBuilder(topicName).build()
+      val creds     = impersonatedCredentials()
+      val publisher = Publisher.newBuilder(topicName).setCredentialsProvider(() => creds).build()
       try {
         val message = PubsubMessage
           .newBuilder()
@@ -73,7 +111,10 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers {
 
         // Pull the message back
         val stub = com.google.cloud.pubsub.v1.stub.GrpcSubscriberStub.create(
-          com.google.cloud.pubsub.v1.stub.SubscriberStubSettings.newBuilder().build()
+          com.google.cloud.pubsub.v1.stub.SubscriberStubSettings
+            .newBuilder()
+            .setCredentialsProvider(() => creds)
+            .build()
         )
         try {
           val pullRequest = PullRequest
@@ -105,8 +146,8 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers {
   it should "handle message attributes correctly" taggedAs E2ETest in {
     val _ = assume(isGcpAvailable, "GCP credentials not available — skipping dev Pub/Sub test")
 
-    val topicAdmin = TopicAdminClient.create()
-    val subAdmin   = SubscriptionAdminClient.create()
+    val topicAdmin = createTopicAdmin()
+    val subAdmin   = createSubAdmin()
 
     try {
       val _ = topicAdmin.createTopic(topicName)
@@ -117,7 +158,8 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers {
         10,
       )
 
-      val publisher = Publisher.newBuilder(topicName).build()
+      val creds     = impersonatedCredentials()
+      val publisher = Publisher.newBuilder(topicName).setCredentialsProvider(() => creds).build()
       try {
         val message = PubsubMessage
           .newBuilder()
@@ -130,7 +172,10 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers {
         Thread.sleep(2000L)
 
         val stub = com.google.cloud.pubsub.v1.stub.GrpcSubscriberStub.create(
-          com.google.cloud.pubsub.v1.stub.SubscriberStubSettings.newBuilder().build()
+          com.google.cloud.pubsub.v1.stub.SubscriberStubSettings
+            .newBuilder()
+            .setCredentialsProvider(() => creds)
+            .build()
         )
         try {
           val pullRequest = PullRequest
@@ -164,7 +209,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers {
   it should "verify dev project topic exists and is accessible" taggedAs E2ETest in {
     val _ = assume(isGcpAvailable, "GCP credentials not available — skipping dev Pub/Sub test")
 
-    val topicAdmin = TopicAdminClient.create()
+    val topicAdmin = createTopicAdmin()
     try {
       // List topics in dev project — verify we can access them
       val topics = topicAdmin.listTopics(s"projects/$projectId").iterateAll().asScala.toList
