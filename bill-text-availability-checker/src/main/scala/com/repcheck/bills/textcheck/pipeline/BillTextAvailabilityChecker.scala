@@ -138,7 +138,7 @@ class BillTextAvailabilityChecker[F[_]: Async](
     val billId              = bill.naturalKey
     val previousVersionCode = bill.textVersionType.map(_.toString)
     val event = BillTextAvailableEvent(
-      billId = billId,
+      naturalKey = billId,
       congress = bill.congress,
       textUrl = sv.url,
       textFormat = sv.formatType,
