@@ -18,6 +18,7 @@ import repcheck.shared.models.congress.dos.bill.BillTextVersionDO
 import com.repcheck.bills.common.persistence.{BillRepository, BillTextVersionRepository, TransactionRunner}
 import com.repcheck.bills.text.download.BillTextDownloader
 import com.repcheck.bills.text.embedding.EmbeddingService
+import com.repcheck.bills.text.embedding.EmbeddingGenerationFailed
 import com.repcheck.bills.text.errors.{BillNotFoundForText, BillTextProcessingFailed}
 
 class BillTextProcessor[F[_]: Async] private[pipeline] (
@@ -122,6 +123,7 @@ class BillTextProcessor[F[_]: Async] private[pipeline] (
     error match {
       case _: BillNotFoundForText             => "Systemic"
       case _: BillTextProcessingFailed        => "Systemic"
+      case _: EmbeddingGenerationFailed       => "Transient"
       case _: java.net.SocketTimeoutException => "Transient"
       case _: java.net.ConnectException       => "Transient"
       case _: java.io.IOException             => "Transient"
