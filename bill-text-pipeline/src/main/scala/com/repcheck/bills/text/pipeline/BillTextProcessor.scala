@@ -17,8 +17,7 @@ import repcheck.shared.models.congress.dos.bill.BillTextVersionDO
 
 import com.repcheck.bills.common.persistence.{BillRepository, BillTextVersionRepository, TransactionRunner}
 import com.repcheck.bills.text.download.BillTextDownloader
-import com.repcheck.bills.text.embedding.EmbeddingService
-import com.repcheck.bills.text.embedding.EmbeddingGenerationFailed
+import com.repcheck.bills.text.embedding.{EmbeddingGenerationFailed, EmbeddingService}
 import com.repcheck.bills.text.errors.{BillNotFoundForText, BillTextProcessingFailed}
 
 class BillTextProcessor[F[_]: Async] private[pipeline] (
