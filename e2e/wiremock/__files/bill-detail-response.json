@@ -1,0 +1,54 @@
+{
+  "bill": {
+    "congress": 118,
+    "number": "1",
+    "originChamber": "House",
+    "originChamberCode": "H",
+    "title": "E2E Test Healthcare Reform Act",
+    "type": "HR",
+    "updateDate": "2024-06-15T12:00:00Z",
+    "introducedDate": "2024-01-10",
+    "constitutionalAuthorityStatementText": "Article I, Section 8",
+    "sponsors": [
+      {
+        "bioguideId": "T000001",
+        "fullName": "Rep. Test Sponsor",
+        "firstName": "Test",
+        "lastName": "Sponsor",
+        "party": "D",
+        "state": "CA",
+        "district": 1,
+        "isByRequest": "N"
+      }
+    ],
+    "cosponsors": {
+      "url": "https://api.congress.gov/v3/bill/118/hr/1/cosponsors",
+      "count": 0
+    },
+    "subjects": {
+      "legislativeSubjects": [
+        {"name": "Health care coverage and access"},
+        {"name": "Medicare"}
+      ],
+      "policyArea": {
+        "name": "Health"
+      }
+    },
+    "summaries": {
+      "url": "https://api.congress.gov/v3/bill/118/hr/1/summaries",
+      "count": 0
+    },
+    "textVersions": {
+      "url": "https://api.congress.gov/v3/bill/118/hr/1/text",
+      "count": 1
+    },
+    "actions": {
+      "url": "https://api.congress.gov/v3/bill/118/hr/1/actions",
+      "count": 1
+    },
+    "latestAction": {
+      "actionDate": "2024-06-15",
+      "text": "Referred to the Committee on Energy and Commerce."
+    }
+  }
+}

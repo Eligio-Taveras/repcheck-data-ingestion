@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/v3/bill/118/hr/1/text",
+    "queryParameters": {
+      "api_key": { "equalTo": "e2e-test-key" }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "bodyFileName": "bill-text-versions-response.json"
+  }
+}

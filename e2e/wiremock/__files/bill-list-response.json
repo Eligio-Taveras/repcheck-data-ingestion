@@ -1,0 +1,23 @@
+{
+  "bills": [
+    {
+      "congress": 118,
+      "number": "1",
+      "originChamber": "House",
+      "originChamberCode": "H",
+      "title": "E2E Test Healthcare Reform Act",
+      "type": "HR",
+      "updateDate": "2024-06-15",
+      "updateDateIncludingText": "2024-06-15T12:00:00Z",
+      "url": "https://api.congress.gov/v3/bill/118/hr/1",
+      "latestAction": {
+        "actionDate": "2024-06-15",
+        "text": "Referred to the Committee on Energy and Commerce."
+      }
+    }
+  ],
+  "pagination": {
+    "count": 1,
+    "next": null
+  }
+}
