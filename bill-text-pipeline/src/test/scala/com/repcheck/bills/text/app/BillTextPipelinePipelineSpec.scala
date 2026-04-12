@@ -1,11 +1,14 @@
 package com.repcheck.bills.text.app
 
+import java.time.Instant
 import java.util.UUID
 
 import cats.effect.unsafe.implicits.global
 import cats.effect.{IO, Resource}
 
 import org.http4s.client.Client
+
+import fs2.Stream
 
 import doobie._
 
@@ -16,12 +19,16 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
+import repcheck.ingestion.common.execution.PipelineFailureHandlerConfig
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.pipeline.models.events.{BillTextAvailableEvent, PipelineEvent}
+import repcheck.pipeline.models.metadata.ProcessingResult
 
-import com.repcheck.bills.text.app.BillTextPipelinePipeline.AppConfig
+import com.repcheck.bills.text.app.BillTextPipelinePipeline.{AppConfig, PipelineResources}
 import com.repcheck.bills.text.config.BillTextPipelineConfig
 import com.repcheck.bills.text.embedding.EmbeddingConfig
 import com.repcheck.bills.text.pipeline.BillTextProcessor
+import com.repcheck.bills.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 
 class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -52,12 +59,18 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       topicName = "test-topic",
       source = "test-source",
     ),
+    eventSubscriber = EventSubscriberConfig(
+      projectId = "repcheck-test",
+      subscriptionId = "test-sub",
+      maxMessages = 10,
+    ),
     embedding = EmbeddingConfig(
       baseUrl = "http://localhost:11434",
       modelName = "qwen3-embedding",
       dimensions = 1536,
       timeoutSeconds = 5,
     ),
+    failureHandler = PipelineFailureHandlerConfig(maxRetries = 1),
   )
 
   private class StubPipelineLogger extends PipelineLogger[IO] {
@@ -87,6 +100,19 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       IO.pure(s"stub-msg-${UUID.randomUUID()}")
   }
 
+  private val emptySubscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
+    def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.pure(List.empty)
+    def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
+  }
+
+  private def stubResources(subscriber: PubSubEventSubscriber[IO] = emptySubscriber): PipelineResources[IO] =
+    PipelineResources(
+      xa = testXa,
+      httpClient = Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]),
+      pubSubPublisher = stubPubSub,
+      pubSubSubscriber = subscriber,
+    )
+
   "AppConfig" should "load from PureConfig reference configuration" in {
     val result = ConfigSource
       .resources("application-test.conf")
@@ -97,18 +123,18 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     )
   }
 
-  "runWithFactories" should "complete successfully with empty event stream" in {
+  "runWithFactories" should "complete successfully with empty subscriber" in {
     val logger = new StubPipelineLogger
 
     val exitCode = BillTextPipelinePipeline
       .runWithFactories[IO](
         configLoader = IO.pure(testConfig),
         loggerFactory = (_: String) => IO.pure(logger),
-        resourceBuilder = (_: AppConfig) =>
-          Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
-            (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
-          ),
+        resourceBuilder =
+          (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[BillTextProcessor[IO]],
+        streamFactory = (_, _, _, _) => Stream.empty,
+        workflowStateUpdaterFactory = (_, _) => None,
       )
       .unsafeRunSync()
 
@@ -122,11 +148,11 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       .runWithFactories[IO](
         configLoader = IO.raiseError(new RuntimeException("Config load failed")),
         loggerFactory = (_: String) => IO.pure(logger),
-        resourceBuilder = (_: AppConfig) =>
-          Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
-            (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
-          ),
+        resourceBuilder =
+          (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[BillTextProcessor[IO]],
+        streamFactory = (_, _, _, _) => Stream.empty,
+        workflowStateUpdaterFactory = (_, _) => None,
       )
       .attempt
       .unsafeRunSync()
@@ -142,11 +168,11 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       .runWithFactories[IO](
         configLoader = IO.pure(testConfig),
         loggerFactory = (_: String) => IO.pure(logger),
-        resourceBuilder = (_: AppConfig) =>
-          Resource.pure[IO, (Transactor[IO], Client[IO], PubSubEventPublisher[IO])](
-            (testXa, Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]), stubPubSub)
-          ),
+        resourceBuilder =
+          (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[BillTextProcessor[IO]],
+        streamFactory = (_, _, _, _) => Stream.empty,
+        workflowStateUpdaterFactory = (_, _) => None,
       )
       .unsafeRunSync()
 
@@ -169,33 +195,201 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     processor.toString should not be empty
   }
 
-  it should "use config values for downloader and embedding service" in {
-    val logger     = new StubPipelineLogger
-    val httpClient = Client.fromHttpApp[IO](org.http4s.HttpApp.notFound[IO])
+  "buildStream" should "produce results from subscriber events" in {
+    val logger        = new StubPipelineLogger
+    val testEventId   = UUID.randomUUID()
+    val correlationId = UUID.randomUUID()
 
-    val customConfig = testConfig.copy(
-      pipeline = BillTextPipelineConfig(
-        parallelism = 8,
-        downloadTimeoutSeconds = 120,
-        maxContentBytes = 999999L,
-      ),
-      embedding = EmbeddingConfig(
-        baseUrl = "http://custom-ollama:11434",
-        modelName = "custom-model",
-        dimensions = 768,
-        timeoutSeconds = 60,
-      ),
+    val testEvent = BillTextAvailableEvent(
+      naturalKey = "118-HR-1",
+      congress = 118,
+      textUrl = "https://example.com/text",
+      textFormat = "Formatted Text",
+      versionCode = "IH",
+      previousVersionCode = None,
     )
 
-    val processor = BillTextPipelinePipeline.buildProcessor[IO](
-      httpClient,
-      testXa,
-      stubPubSub,
-      customConfig,
-      logger,
+    val pipelineEvent = PipelineEvent(
+      eventType = "bill.text.available",
+      payload = testEvent,
+      timestamp = Instant.now(),
+      eventId = testEventId,
+      correlationId = correlationId,
+      source = "test",
     )
 
-    processor.toString should not be empty
+    val subscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
+      def pull(maxMessages: Int): IO[List[ReceivedEvent]] =
+        IO.pure(List(ReceivedEvent(pipelineEvent, "ack-1")))
+      def acknowledge(ackIds: List[String]): IO[Unit] = IO.unit
+    }
+
+    val processor = mock[BillTextProcessor[IO]]
+    org.mockito.Mockito
+      .when(
+        processor.processEvent(
+          org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
+          org.mockito.ArgumentMatchers.any[UUID],
+        )
+      )
+      .thenReturn(IO.pure(ProcessingResult.Succeeded("118-HR-1")))
+
+    val stream  = BillTextPipelinePipeline.buildStream[IO](subscriber, processor, testConfig, logger)
+    val results = stream.compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 1
+    results.headOption.map(_.isSucceeded) shouldBe Some(true)
+  }
+
+  it should "produce empty stream when subscriber has no messages" in {
+    val logger    = new StubPipelineLogger
+    val processor = mock[BillTextProcessor[IO]]
+
+    val stream  = BillTextPipelinePipeline.buildStream[IO](emptySubscriber, processor, testConfig, logger)
+    val results = stream.compile.toList.unsafeRunSync()
+
+    results shouldBe empty
+  }
+
+  "processAndAck" should "acknowledge successfully processed events" in {
+    val logger        = new StubPipelineLogger
+    val ackedIds      = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
+    val correlationId = UUID.randomUUID()
+
+    val subscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
+      def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.pure(List.empty)
+      def acknowledge(ackIds: List[String]): IO[Unit] = IO {
+        val _ = ackedIds.updateAndGet(ids => ids ++ ackIds)
+      }
+    }
+
+    val testEvent = BillTextAvailableEvent(
+      naturalKey = "118-HR-1",
+      congress = 118,
+      textUrl = "https://example.com/text",
+      textFormat = "Formatted Text",
+      versionCode = "IH",
+      previousVersionCode = None,
+    )
+
+    val pipelineEvent = PipelineEvent(
+      eventType = "bill.text.available",
+      payload = testEvent,
+      timestamp = Instant.now(),
+      eventId = UUID.randomUUID(),
+      correlationId = correlationId,
+      source = "test",
+    )
+
+    val processor = mock[BillTextProcessor[IO]]
+    org.mockito.Mockito
+      .when(
+        processor.processEvent(
+          org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
+          org.mockito.ArgumentMatchers.any[UUID],
+        )
+      )
+      .thenReturn(IO.pure(ProcessingResult.Succeeded("118-HR-1")))
+
+    val result = BillTextPipelinePipeline
+      .processAndAck[IO](subscriber, processor, ReceivedEvent(pipelineEvent, "ack-42"), logger)
+      .unsafeRunSync()
+
+    val _ = result.isSucceeded shouldBe true
+    ackedIds.get() shouldBe List("ack-42")
+  }
+
+  it should "not acknowledge failed processing results" in {
+    val logger        = new StubPipelineLogger
+    val ackedIds      = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
+    val correlationId = UUID.randomUUID()
+
+    val subscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
+      def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.pure(List.empty)
+      def acknowledge(ackIds: List[String]): IO[Unit] = IO {
+        val _ = ackedIds.updateAndGet(ids => ids ++ ackIds)
+      }
+    }
+
+    val testEvent = BillTextAvailableEvent(
+      naturalKey = "118-HR-1",
+      congress = 118,
+      textUrl = "https://example.com/text",
+      textFormat = "Formatted Text",
+      versionCode = "IH",
+      previousVersionCode = None,
+    )
+
+    val pipelineEvent = PipelineEvent(
+      eventType = "bill.text.available",
+      payload = testEvent,
+      timestamp = Instant.now(),
+      eventId = UUID.randomUUID(),
+      correlationId = correlationId,
+      source = "test",
+    )
+
+    val processor = mock[BillTextProcessor[IO]]
+    org.mockito.Mockito
+      .when(
+        processor.processEvent(
+          org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
+          org.mockito.ArgumentMatchers.any[UUID],
+        )
+      )
+      .thenReturn(IO.pure(ProcessingResult.Failed("118-HR-1", "download error")))
+
+    val result = BillTextPipelinePipeline
+      .processAndAck[IO](subscriber, processor, ReceivedEvent(pipelineEvent, "ack-99"), logger)
+      .unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    ackedIds.get() shouldBe empty
+  }
+
+  it should "extract correlationId from the PipelineEvent envelope" in {
+    val logger        = new StubPipelineLogger
+    val correlationId = UUID.fromString("11111111-2222-3333-4444-555555555555")
+
+    val testEvent = BillTextAvailableEvent(
+      naturalKey = "118-HR-1",
+      congress = 118,
+      textUrl = "https://example.com/text",
+      textFormat = "Formatted Text",
+      versionCode = "IH",
+      previousVersionCode = None,
+    )
+
+    val pipelineEvent = PipelineEvent(
+      eventType = "bill.text.available",
+      payload = testEvent,
+      timestamp = Instant.now(),
+      eventId = UUID.randomUUID(),
+      correlationId = correlationId,
+      source = "test",
+    )
+
+    val capturedCorrelationId = new java.util.concurrent.atomic.AtomicReference[UUID](UUID.randomUUID())
+
+    val processor = mock[BillTextProcessor[IO]]
+    org.mockito.Mockito
+      .when(
+        processor.processEvent(
+          org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
+          org.mockito.ArgumentMatchers.any[UUID],
+        )
+      )
+      .thenAnswer { invocation =>
+        val cid = invocation.getArgument[UUID](1)
+        capturedCorrelationId.set(cid)
+        IO.pure(ProcessingResult.Succeeded("118-HR-1"))
+      }
+
+    val _ = BillTextPipelinePipeline
+      .processAndAck[IO](emptySubscriber, processor, ReceivedEvent(pipelineEvent, "ack-1"), logger)
+      .unsafeRunSync()
+
+    capturedCorrelationId.get() shouldBe correlationId
   }
 
 }
