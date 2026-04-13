@@ -39,8 +39,11 @@ jobs:
       - name: Check Scalafix rules
         run: sbt "scalafixAll --check"
 
-      - name: Pull AlloyDB Omni image (cached for DB-backed integration tests)
-        run: docker pull google/alloydbomni:16.8.0
+      - name: Pull Docker images for integration tests
+        run: |
+          docker pull google/alloydbomni:16.8.0 &
+          docker pull gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators &
+          wait
 
       - name: Run non-Docker tests with coverage
         run: sbt coverage test coverageReport
@@ -74,6 +77,8 @@ jobs:
           flags: integration
           files: |
             bills-common/target/scala-3.7.3/scoverage-report/scoverage.xml
+            bill-text-availability-checker/target/scala-3.7.3/scoverage-report/scoverage.xml
+            bill-text-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
 
   doc-generator:
     runs-on: ubuntu-latest
