@@ -1,12 +1,22 @@
 package com.repcheck.bills.text.app
 
-import cats.effect.{ExitCode, IO, IOApp, Sync}
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
+import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Sync, Temporal}
+import cats.effect.std.Semaphore
+import cats.syntax.all._
+
+import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
 
 import pureconfig.ConfigSource
 
+import com.google.api.gax.core.NoCredentialsProvider
+import com.google.api.gax.grpc.GrpcTransportChannel
+import com.google.api.gax.rpc.FixedTransportChannelProvider
 import com.google.cloud.pubsub.v1.stub.{GrpcSubscriberStub, SubscriberStubSettings}
+
+import io.grpc.ManagedChannelBuilder
 
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.events.PubSubPublisherResource
@@ -28,22 +38,49 @@ object BillTextPipelineApp extends IOApp {
           config,
           logger,
           TransactorResource.make[IO](_),
-          EmberClientBuilder.default[IO].build,
+          rateLimitedClient[IO](
+            EmberClientBuilder
+              .default[IO]
+              .withTimeout(120.seconds)
+              .withIdleConnectionTime(120.seconds)
+              .build,
+            config.pipeline.pageDelay,
+          ),
           PubSubPublisherResource.make[IO](_),
           (subConfig, log) =>
             PubSubSubscriberResource.make[IO](
               subConfig,
               log,
               () => {
-                val settings = SubscriberStubSettings.newBuilder().build()
-                GrpcSubscriberStub.create(settings)
+                val builder = SubscriberStubSettings.newBuilder()
+                sys.env.get("PUBSUB_EMULATOR_HOST").foreach { host =>
+                  val channel         = ManagedChannelBuilder.forTarget(host).usePlaintext().build()
+                  val channelProvider = FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel))
+                  builder.setTransportChannelProvider(channelProvider)
+                  builder.setCredentialsProvider(NoCredentialsProvider.create())
+                }
+                GrpcSubscriberStub.create(builder.build())
               },
             ),
         ),
       processorFactory = BillTextPipelinePipeline.buildProcessor[IO],
       streamFactory = BillTextPipelinePipeline.buildStream[IO],
-      workflowStateUpdaterFactory = (xa, cfg) => Some(new WorkflowStateUpdater[IO](xa, cfg)),
+      workflowStateUpdaterFactory = (xa, cfg) =>
+        sys.env.get("WORKFLOW_RUN_ID").map(_ => new WorkflowStateUpdater[IO](xa, cfg)),
     )
   }
+
+  private def rateLimitedClient[F[_]: Async](
+    underlying: Resource[F, Client[F]],
+    pageDelay: FiniteDuration,
+  ): Resource[F, Client[F]] =
+    underlying.flatMap { raw =>
+      Resource.eval(Semaphore[F](1)).map { sem =>
+        Client[F] { request =>
+          Resource.make(sem.acquire)(_ => Temporal[F].sleep(pageDelay) >> sem.release) >>
+            raw.run(request)
+        }
+      }
+    }
 
 }

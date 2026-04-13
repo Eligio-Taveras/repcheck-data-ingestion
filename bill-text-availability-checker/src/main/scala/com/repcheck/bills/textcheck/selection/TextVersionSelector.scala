@@ -10,6 +10,32 @@ object TextVersionSelector {
     "PDF"            -> 2,
   )
 
+  /** Maps Congress.gov descriptive version type strings to the short codes used in the DB enum. */
+  private val VersionTypeToCode: Map[String, String] = Map(
+    "Introduced in House"          -> "IH",
+    "Introduced in Senate"         -> "IS",
+    "Reported in House"            -> "RH",
+    "Reported in Senate"           -> "RS",
+    "Referred in House"            -> "RFH",
+    "Referred in Senate"           -> "RFS",
+    "Engrossed in House"           -> "EH",
+    "Engrossed in Senate"          -> "ES",
+    "Enrolled Bill"                -> "ENR",
+    "Considered and Passed House"  -> "CPH",
+    "Considered and Passed Senate" -> "CPS",
+    "Public Law"                   -> "PL",
+    "Received in Senate"           -> "RDS",
+    "Received in House"            -> "RDH",
+    "Agreed to Senate"             -> "ATS",
+    "Agreed to House"              -> "ATH",
+    "Placed on Calendar Senate"    -> "PCS",
+    "Placed on Calendar House"     -> "PCH",
+  )
+
+  /** Returns the short code for a known descriptive string, or the input unchanged if not recognized. */
+  private[selection] def toVersionCode(descriptive: String): String =
+    VersionTypeToCode.getOrElse(descriptive, descriptive)
+
   final case class SelectedVersion(
     date: Option[String],
     versionType: Option[String],
@@ -40,7 +66,7 @@ object TextVersionSelector {
           case (_, version, format) =>
             SelectedVersion(
               date = version.date,
-              versionType = version.type_,
+              versionType = version.type_.map(toVersionCode),
               formatType = format.type_,
               url = format.url,
             )

@@ -56,13 +56,21 @@ class BillMetadataProcessor[F[_]: Async](
   def streamAll(correlationId: UUID): Stream[F, ProcessingResult] = {
     val fromDateTime = Instant.now().minus(config.lookbackDays.toLong, ChronoUnit.DAYS)
     val params       = repcheck.ingestion.common.api.FetchParams(fromDateTime = Some(fromDateTime))
+    val logCtx       = LogContext(correlationId.toString, stepName)
 
     apiClient
       .fetchAll(params)
+      .handleErrorWith { e =>
+        Stream.eval(
+          logger.error(logCtx, s"Page fetch failed, completing with partial results: ${e.getMessage}", Some(e))
+        ) *> Stream.empty
+      }
       .parEvalMap(config.parallelism) { listItem =>
-        processListItem(listItem, correlationId).handleError { e =>
-          val naturalKey = buildNaturalKey(listItem)
-          ProcessingResult.Failed(naturalKey, e.getMessage)
+        val naturalKey = buildNaturalKey(listItem)
+        val logCtxItem = LogContext(correlationId.toString, stepName, Some(correlationId), Some(naturalKey))
+        processListItem(listItem, correlationId).handleErrorWith { e =>
+          logger.error(logCtxItem, s"Failed to process $naturalKey: ${e.getMessage}", Some(e)) *>
+            Async[F].pure(ProcessingResult.Failed(naturalKey, e.getMessage))
         }
       }
   }

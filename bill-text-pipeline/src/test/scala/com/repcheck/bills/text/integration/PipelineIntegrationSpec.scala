@@ -63,6 +63,7 @@ class PipelineIntegrationSpec
     parallelism = 1,
     downloadTimeoutSeconds = 10,
     maxContentBytes = 10485760L,
+    pageDelay = 100.millis,
   )
 
   private lazy val (httpClient, httpShutdown) = EmberClientBuilder

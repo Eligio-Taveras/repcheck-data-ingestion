@@ -18,18 +18,32 @@ until curl -sf "http://${EMULATOR_HOST}/" > /dev/null 2>&1; do
 done
 echo "Pub/Sub emulator is ready."
 
+# Create a topic or subscription, ignoring 409 (already exists)
+create_resource() {
+  local url="$1"
+  shift
+  local http_code
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$url" "$@")
+  if [ "$http_code" = "200" ] || [ "$http_code" = "409" ]; then
+    return 0
+  else
+    echo "ERROR: PUT $url returned HTTP $http_code"
+    return 1
+  fi
+}
+
 # Topic: bill-text-available (checker → text pipeline)
 echo "Creating topic: bill-text-available"
-curl -sf -X PUT "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/bill-text-available" > /dev/null
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/bill-text-available"
 
 # Subscription: bill-text-available-sub (text pipeline reads from this)
 echo "Creating subscription: bill-text-available-sub"
-curl -sf -X PUT "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions/bill-text-available-sub" \
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions/bill-text-available-sub" \
   -H "Content-Type: application/json" \
-  -d "{\"topic\":\"projects/${PROJECT_ID}/topics/bill-text-available\",\"ackDeadlineSeconds\":60}" > /dev/null
+  -d "{\"topic\":\"projects/${PROJECT_ID}/topics/bill-text-available\",\"ackDeadlineSeconds\":60}"
 
 # Topic: bill-text-ingested (text pipeline publishes downstream events)
 echo "Creating topic: bill-text-ingested"
-curl -sf -X PUT "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/bill-text-ingested" > /dev/null
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/bill-text-ingested"
 
 echo "Pub/Sub topics and subscriptions created successfully."

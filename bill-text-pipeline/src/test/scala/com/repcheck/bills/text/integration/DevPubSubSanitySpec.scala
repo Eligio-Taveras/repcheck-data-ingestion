@@ -270,7 +270,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
 
   private def buildProcessorWithOllama(): BillTextProcessor[IO] = {
     val r              = gcpResources.getOrElse(fail("GCP resources not available"))
-    val pipelineConfig = BillTextPipelineConfig(1, 10, 10485760L)
+    val pipelineConfig = BillTextPipelineConfig(1, 10, 10485760L, 100.millis)
     val downloader     = new BillTextDownloader[IO](httpClient, pipelineConfig, testLogger)
     val embeddingConfig = EmbeddingConfig(
       baseUrl = s"http://127.0.0.1:${wireMock.port().toString}",
@@ -533,12 +533,12 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val _       = results.size shouldBe 2
 
     // Pull messages with retry — Pub/Sub may not deliver all messages in one pull
-    var messages = List.empty[PubsubMessage]
-    var attempts = 0
-    while (messages.size < 2 && attempts < 5) {
-      Thread.sleep(3000L)
-      messages = messages ++ pullGcpMessages(10)
-      attempts += 1
+    val (messages, attempts) = (1 to 5).foldLeft((List.empty[PubsubMessage], 0)) { case ((msgs, att), _) =>
+      if (msgs.size >= 2) (msgs, att)
+      else {
+        Thread.sleep(3000L)
+        (msgs ++ pullGcpMessages(10), att + 1)
+      }
     }
 
     // Process bill 702 with embedding1

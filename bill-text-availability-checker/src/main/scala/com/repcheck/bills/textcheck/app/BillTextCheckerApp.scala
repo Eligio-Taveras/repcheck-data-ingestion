@@ -1,11 +1,15 @@
 package com.repcheck.bills.textcheck.app
 
-import cats.effect.{ExitCode, IO, IOApp, Sync}
+import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Sync, Temporal}
+import cats.effect.std.Semaphore
+import cats.syntax.all._
 
+import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
 
 import pureconfig.ConfigSource
 
+import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.events.PubSubPublisherResource
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
@@ -24,12 +28,25 @@ object BillTextCheckerApp extends IOApp {
           config,
           logger,
           TransactorResource.make[IO](_),
-          EmberClientBuilder.default[IO].build,
+          rateLimitedClient[IO](EmberClientBuilder.default[IO].build, config.congressApi),
           PubSubPublisherResource.make[IO](_),
         ),
       checkerFactory = BillTextCheckerPipeline.buildChecker[IO],
       streamFactory = BillTextCheckerPipeline.buildStream[IO],
     )
   }
+
+  private def rateLimitedClient[F[_]: Async](
+    underlying: Resource[F, Client[F]],
+    config: CongressGovClientConfig,
+  ): Resource[F, Client[F]] =
+    underlying.flatMap { raw =>
+      Resource.eval(Semaphore[F](1)).map { sem =>
+        Client[F] { request =>
+          Resource.make(sem.acquire)(_ => Temporal[F].sleep(config.pageDelay) >> sem.release) >>
+            raw.run(request)
+        }
+      }
+    }
 
 }

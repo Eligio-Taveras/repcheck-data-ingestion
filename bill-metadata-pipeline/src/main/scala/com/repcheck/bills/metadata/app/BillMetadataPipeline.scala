@@ -4,8 +4,11 @@ import java.time.Instant
 import java.util.UUID
 
 import cats.effect.{Async, ExitCode, Resource, Sync}
+import cats.effect.std.Semaphore
+import cats.effect.Temporal
 import cats.syntax.all._
 
+import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
 
 import fs2.io.net.Network
@@ -135,12 +138,27 @@ private[app] object BillMetadataPipeline {
     } yield exitCode
   }
 
+  /** Wraps an HTTP client with a global rate limiter: a semaphore ensures only one request
+    * is in-flight at a time, with `pageDelay` inserted after each request completes.
+    */
+  private def rateLimitedClient[F[_]: Async](
+    underlying: Client[F],
+    config: CongressGovClientConfig,
+  ): Resource[F, Client[F]] =
+    Resource.eval(Semaphore[F](1)).map { sem =>
+      Client[F] { request =>
+        Resource.make(sem.acquire)(_ => Temporal[F].sleep(config.pageDelay) >> sem.release) >>
+          underlying.run(request)
+      }
+    }
+
   private def buildResources[F[_]: Async: Network](
     config: AppConfig
-  ): Resource[F, (Transactor[F], org.http4s.client.Client[F])] =
+  ): Resource[F, (Transactor[F], Client[F])] =
     for {
-      xa         <- TransactorResource.make[F](config.database)
-      httpClient <- EmberClientBuilder.default[F].build
-    } yield (xa, httpClient)
+      xa              <- TransactorResource.make[F](config.database)
+      rawClient       <- EmberClientBuilder.default[F].build
+      throttledClient <- rateLimitedClient(rawClient, config.congressApi)
+    } yield (xa, throttledClient)
 
 }

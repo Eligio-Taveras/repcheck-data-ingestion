@@ -67,7 +67,8 @@ services:
 
   # Run database migrations before any pipeline starts
   db-migrations:
-    image: repcheck/db-migrations:latest
+    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.12
+    entrypoint: ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "/opt/docker/lib/*", "repcheck.db.migrations.MigrationApp"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -107,11 +108,20 @@ services:
       PUBSUB_PROJECT_ID: repcheck-local
 
   ollama:
-    image: ollama/ollama:latest
+    build:
+      context: ./ollama
+      dockerfile: Dockerfile
     ports:
       - "11434:11434"
     volumes:
       - ollamadata:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 10s
@@ -135,11 +145,10 @@ services:
         condition: service_completed_successfully
       ollama:
         condition: service_healthy
-    command: daemon --docker
+    command: daemon --config=/etc/ofelia/config.ini
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    labels:
-      ofelia.enabled: "true"
+      - //var/run/docker.sock:/var/run/docker.sock:ro
+      - ./ofelia-config.ini:/etc/ofelia/config.ini:ro
 
   # ---------------------------------------------------------------------------
   # Pipeline Containers (started by Ofelia on schedule)
@@ -164,11 +173,7 @@ services:
       DB_PASSWORD: repcheck
       CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
       PIPELINE_LOOKBACK_DAYS: ${PIPELINE_LOOKBACK_DAYS:-30}
-      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
-    labels:
-      ofelia.enabled: "true"
-      ofelia.job-run.bill-metadata.schedule: "${BILL_METADATA_SCHEDULE:-0 */6 * * *}"
-      ofelia.job-run.bill-metadata.container: "bill-metadata-pipeline"
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
     restart: "no"
 
   bill-text-availability-checker:
@@ -192,10 +197,6 @@ services:
       PUBSUB_PROJECT_ID: repcheck-local
       PUBSUB_TOPIC_NAME: bill-text-available
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
-    labels:
-      ofelia.enabled: "true"
-      ofelia.job-run.bill-checker.schedule: "${BILL_TEXT_AVAILABILITY_SCHEDULE:-0 1,7,13,19 * * *}"
-      ofelia.job-run.bill-checker.container: "bill-text-availability-checker"
     restart: "no"
 
   bill-text-pipeline:
@@ -225,10 +226,6 @@ services:
       OLLAMA_EMBEDDING_DIMENSIONS: "1536"
       OLLAMA_TIMEOUT_SECONDS: "60"
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
-    labels:
-      ofelia.enabled: "true"
-      ofelia.job-run.bill-text.schedule: "${BILL_TEXT_PIPELINE_SCHEDULE:-0 2,8,14,20 * * *}"
-      ofelia.job-run.bill-text.container: "bill-text-pipeline"
     restart: "no"
 
 volumes:

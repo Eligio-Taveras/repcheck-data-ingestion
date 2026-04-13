@@ -125,7 +125,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     date: Option[String] = Some("2024-01-15T00:00:00Z"),
     formatType: String = "Formatted Text",
     url: String = "https://api.congress.gov/text",
-    versionType: Option[String] = Some("IH"),
+    versionType: Option[String] = Some("Introduced in House"),
   ): TextVersionDTO =
     TextVersionDTO(
       date = date,
@@ -155,7 +155,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       textVersionType = Some(TextVersionCode.IH),
       textUrl = Some("https://old-url.com"),
     )
-    val versions = List(makeTextVersion(versionType = Some("EH"), url = "https://new-url.com"))
+    val versions = List(makeTextVersion(versionType = Some("Engrossed in House"), url = "https://new-url.com"))
 
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
       .thenReturn(IO.pure(versions))
@@ -196,7 +196,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       textVersionType = Some(TextVersionCode.IH),
       textUrl = Some("https://example.com/text"),
     )
-    val versions = List(makeTextVersion(versionType = Some("IH")))
+    val versions = List(makeTextVersion(versionType = Some("Introduced in House")))
 
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
       .thenReturn(IO.pure(versions))
@@ -253,7 +253,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     )
     val versions = List(
       makeTextVersion(
-        versionType = Some("IH"),
+        versionType = Some("Introduced in House"),
         url = "https://api.congress.gov/text/118/hr/5",
         formatType = "Formatted Text",
       )

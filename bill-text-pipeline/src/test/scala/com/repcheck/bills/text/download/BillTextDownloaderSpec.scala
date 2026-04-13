@@ -33,6 +33,7 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     parallelism = 1,
     downloadTimeoutSeconds = 5,
     maxContentBytes = 10485760L,
+    pageDelay = 100.millis,
   )
 
   private val noopLogger: PipelineLogger[IO] = new PipelineLogger[IO] {
@@ -208,6 +209,7 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
       parallelism = 1,
       downloadTimeoutSeconds = 5,
       maxContentBytes = 10L,
+      pageDelay = 100.millis,
     )
     val smallDownloader = new BillTextDownloader[IO](httpClient, smallConfig, noopLogger)
 

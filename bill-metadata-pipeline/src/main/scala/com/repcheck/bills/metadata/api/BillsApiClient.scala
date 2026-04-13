@@ -11,9 +11,10 @@ import cats.syntax.all._
 
 import io.circe.Decoder
 
-import org.http4s.Uri
+import org.http4s.{MediaType, Uri}
 import org.http4s.circe.CirceEntityDecoder._
 import org.http4s.client.Client
+import org.http4s.headers.Accept
 
 import repcheck.ingestion.common.api.{
   CongressGovApiException,
@@ -65,6 +66,7 @@ class BillsApiClient[F[_]](
       val uri = {
         val withBase = baseUri
           .withQueryParam("api_key", config.apiKey)
+          .withQueryParam("format", "json")
           .withQueryParam("offset", params.offset)
           .withQueryParam("limit", params.pageSize)
           .withQueryParam("sort", params.sort.queryValue)
@@ -78,7 +80,8 @@ class BillsApiClient[F[_]](
         params.toDateTime.fold(withFrom)(dt => withFrom.withQueryParam("toDateTime", isoFormatter.format(dt)))
       }
 
-      val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
+      val request   = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
+      val operation = client.run(request).use { response =>
         if (response.status.isSuccess) {
           response.as[BillListResponseDTO].map { listResponse =>
             PagedResponse(
@@ -110,9 +113,10 @@ class BillsApiClient[F[_]](
 
   def fetchDetail(detailUrl: String): F[BillDetailDTO] =
     parseUri(detailUrl).flatMap { baseUri =>
-      val uri = baseUri.withQueryParam("api_key", config.apiKey)
+      val uri = baseUri.withQueryParam("api_key", config.apiKey).withQueryParam("format", "json")
 
-      val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
+      val request   = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
+      val operation = client.run(request).use { response =>
         if (response.status.isSuccess) {
           response.as[BillDetailWrapper].map(_.bill)
         } else {
@@ -146,9 +150,11 @@ class BillsApiClient[F[_]](
     parseUri(url).flatMap { baseUri =>
       val uri = baseUri
         .withQueryParam("api_key", config.apiKey)
+        .withQueryParam("format", "json")
         .withQueryParam("limit", pageSize)
 
-      val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
+      val request   = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
+      val operation = client.run(request).use { response =>
         if (response.status.isSuccess) {
           response.as[CosponsorListResponseDTO]
         } else {
