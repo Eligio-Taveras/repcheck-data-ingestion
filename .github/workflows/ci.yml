@@ -83,6 +83,9 @@ jobs:
   e2e-gcp:
     runs-on: ubuntu-latest
     needs: build
+    concurrency:
+      group: e2e-gcp-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       packages: read
       contents: read

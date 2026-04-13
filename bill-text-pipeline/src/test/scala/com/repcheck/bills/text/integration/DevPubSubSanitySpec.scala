@@ -532,14 +532,20 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val results = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
     val _       = results.size shouldBe 2
 
-    Thread.sleep(2000L)
-    val messages = pullGcpMessages(10)
+    // Pull messages with retry — Pub/Sub may not deliver all messages in one pull
+    var messages = List.empty[PubsubMessage]
+    var attempts = 0
+    while (messages.size < 2 && attempts < 5) {
+      Thread.sleep(3000L)
+      messages = messages ++ pullGcpMessages(10)
+      attempts += 1
+    }
 
     // Process bill 702 with embedding1
     val processor = buildProcessorWithOllama()
     val msg702 = messages
       .find(m => extractPayloadField(m.getData.toStringUtf8, "naturalKey").contains("118-HR-702"))
-      .getOrElse(fail("No event for bill 702"))
+      .getOrElse(fail(s"No event for bill 702 after $attempts pulls (got ${messages.size} messages)"))
     val _ = processor.processEvent(parseEvent(msg702), UUID.randomUUID()).unsafeRunSync()
 
     // Switch to embedding2 for bill 703
