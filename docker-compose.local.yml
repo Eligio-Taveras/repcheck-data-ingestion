@@ -8,7 +8,8 @@
 # Prerequisites:
 #   1. Copy .env.example to .env and set CONGRESS_GOV_API_KEY
 #   2. Docker Desktop running
-#   3. Build pipeline images first:
+#   3. Build fat JARs and Docker images:
+#        sbt "billMetadataPipeline/assembly" "billTextAvailabilityChecker/assembly" "billTextPipeline/assembly"
 #        docker compose -f docker-compose.local.yml build
 #
 # Usage:
@@ -71,14 +72,14 @@ services:
       alloydb:
         condition: service_healthy
     environment:
-      DB_HOST: alloydb
-      DB_PORT: "5432"
-      DB_NAME: repcheck
-      DB_USERNAME: repcheck
-      DB_PASSWORD: repcheck
+      DATABASE_HOST: alloydb
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: repcheck
+      DATABASE_USER: repcheck
+      DATABASE_PASSWORD: repcheck
 
   pubsub-emulator:
-    image: google/cloud-sdk:slim
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
     command: >
       gcloud beta emulators pubsub start
       --host-port=0.0.0.0:8085
@@ -126,7 +127,7 @@ services:
   # and Ofelia restarts them on the next scheduled tick.
 
   ofelia:
-    image: mcuadros/ofelia:v0.3.13
+    image: mcuadros/ofelia:0.3.16
     depends_on:
       db-migrations:
         condition: service_completed_successfully

@@ -120,7 +120,7 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           INTEGRATION_TEST_SA: ${{ secrets.GCP_INTEGRATION_TEST_SA }}
         run: |
-          sbt "billTextPipeline / testOnly * -- -n com.repcheck.tags.E2ETest"
+          sbt 'set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "com.repcheck.tags.E2ETest"))' 'billTextPipeline / test'
 
   doc-generator:
     runs-on: ubuntu-latest
