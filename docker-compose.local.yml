@@ -1,25 +1,29 @@
 # =============================================================================
-# Docker Compose — Local Development Stack (Real Congress.gov API)
+# Docker Compose — Local Development Stack (Cron-Scheduled, Long-Running)
 # =============================================================================
-# Runs the full bill ingestion pipeline locally against the real Congress.gov
-# API. Infrastructure runs in Docker; apps are built and run as containers.
+# Simulates the full production pipeline locally. Infrastructure services run
+# continuously; Ofelia triggers each pipeline on a cron schedule, just like
+# Cloud Scheduler would in GCP.
 #
 # Prerequisites:
 #   1. Copy .env.example to .env and set CONGRESS_GOV_API_KEY
 #   2. Docker Desktop running
+#   3. Build pipeline images first:
+#        docker compose -f docker-compose.local.yml build
 #
 # Usage:
-#   # Start infrastructure + all pipelines:
-#   docker compose -f docker-compose.local.yml up --build
+#   # Start everything (long-running, cron-scheduled):
+#   docker compose -f docker-compose.local.yml up -d
 #
-#   # Run only infrastructure (DB + Pub/Sub + Ollama), run apps via sbt:
-#   docker compose -f docker-compose.local.yml up alloydb pubsub-emulator pubsub-init ollama
+#   # Watch pipeline logs:
+#   docker compose -f docker-compose.local.yml logs -f ofelia
+#   docker compose -f docker-compose.local.yml logs -f bill-metadata-pipeline
 #
-#   # Run just the metadata pipeline (first step):
-#   docker compose -f docker-compose.local.yml up --build alloydb bill-metadata-pipeline
+#   # Run only infrastructure (DB + Pub/Sub + Ollama):
+#   docker compose -f docker-compose.local.yml up -d alloydb pubsub-emulator pubsub-init ollama
 #
-#   # Then run checker + text pipeline (after metadata is in DB):
-#   docker compose -f docker-compose.local.yml up --build bill-text-availability-checker bill-text-pipeline
+#   # Trigger a one-off pipeline run (outside the schedule):
+#   docker compose -f docker-compose.local.yml up bill-metadata-pipeline
 #
 #   # Tear down (preserves data volumes):
 #   docker compose -f docker-compose.local.yml down
@@ -27,10 +31,15 @@
 #   # Tear down and delete all data:
 #   docker compose -f docker-compose.local.yml down -v
 #
-# Pipeline execution order:
-#   1. bill-metadata-pipeline  — fetches bill metadata from Congress.gov → DB
+# Pipeline execution order (enforced by Ofelia schedule offsets):
+#   1. bill-metadata-pipeline       — fetches bill metadata from Congress.gov → DB
 #   2. bill-text-availability-checker — scans DB for bills needing text → Pub/Sub
-#   3. bill-text-pipeline — subscribes to Pub/Sub → downloads text → embedding → DB
+#   3. bill-text-pipeline            — subscribes to Pub/Sub → downloads text → DB
+#
+# Schedule defaults (override via .env):
+#   BILL_METADATA_SCHEDULE         = 0 */6 * * *   (every 6 hours)
+#   BILL_TEXT_AVAILABILITY_SCHEDULE = 0 1,7,13,19 * * * (every 6 hours, offset +1h)
+#   BILL_TEXT_PIPELINE_SCHEDULE     = 0 2,8,14,20 * * * (every 6 hours, offset +2h)
 # =============================================================================
 
 services:
@@ -54,6 +63,19 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
+
+  # Run database migrations before any pipeline starts
+  db-migrations:
+    image: repcheck/db-migrations:latest
+    depends_on:
+      alloydb:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
 
   pubsub-emulator:
     image: google/cloud-sdk:slim
@@ -97,17 +119,42 @@ services:
       start_period: 30s
 
   # ---------------------------------------------------------------------------
-  # Application Containers
+  # Cron Scheduler
   # ---------------------------------------------------------------------------
+  # Ofelia triggers pipeline containers on a cron schedule. Each job runs a
+  # stopped container via `docker start`. The containers exit after each run
+  # and Ofelia restarts them on the next scheduled tick.
 
-  # Step 1: Fetch bill metadata from Congress.gov and store in DB
+  ofelia:
+    image: mcuadros/ofelia:v0.3.13
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-init:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
+    command: daemon --docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      ofelia.enabled: "true"
+
+  # ---------------------------------------------------------------------------
+  # Pipeline Containers (started by Ofelia on schedule)
+  # ---------------------------------------------------------------------------
+  # These containers are created but NOT started automatically (profiles: cron).
+  # Ofelia starts them on schedule. They run to completion then stop, waiting
+  # for the next scheduled tick.
+
   bill-metadata-pipeline:
+    container_name: bill-metadata-pipeline
     build:
       context: .
       dockerfile: bill-metadata-pipeline/Dockerfile
     depends_on:
-      alloydb:
-        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
     environment:
       DB_HOST: alloydb
       DB_PORT: "5432"
@@ -117,15 +164,20 @@ services:
       CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
       PIPELINE_LOOKBACK_DAYS: ${PIPELINE_LOOKBACK_DAYS:-30}
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-run.bill-metadata.schedule: "${BILL_METADATA_SCHEDULE:-0 */6 * * *}"
+      ofelia.job-run.bill-metadata.container: "bill-metadata-pipeline"
+    restart: "no"
 
-  # Step 2: Check which bills have new/updated text versions → publish events
   bill-text-availability-checker:
+    container_name: bill-text-availability-checker
     build:
       context: .
       dockerfile: bill-text-availability-checker/Dockerfile
     depends_on:
-      alloydb:
-        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
       pubsub-init:
         condition: service_completed_successfully
     environment:
@@ -139,15 +191,20 @@ services:
       PUBSUB_PROJECT_ID: repcheck-local
       PUBSUB_TOPIC_NAME: bill-text-available
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-run.bill-checker.schedule: "${BILL_TEXT_AVAILABILITY_SCHEDULE:-0 1,7,13,19 * * *}"
+      ofelia.job-run.bill-checker.container: "bill-text-availability-checker"
+    restart: "no"
 
-  # Step 3: Subscribe to text-available events → download text → embed → store
   bill-text-pipeline:
+    container_name: bill-text-pipeline
     build:
       context: .
       dockerfile: bill-text-pipeline/Dockerfile
     depends_on:
-      alloydb:
-        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
       pubsub-init:
         condition: service_completed_successfully
       ollama:
@@ -167,6 +224,11 @@ services:
       OLLAMA_EMBEDDING_DIMENSIONS: "1536"
       OLLAMA_TIMEOUT_SECONDS: "60"
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-run.bill-text.schedule: "${BILL_TEXT_PIPELINE_SCHEDULE:-0 2,8,14,20 * * *}"
+      ofelia.job-run.bill-text.container: "bill-text-pipeline"
+    restart: "no"
 
 volumes:
   alloydbdata:
