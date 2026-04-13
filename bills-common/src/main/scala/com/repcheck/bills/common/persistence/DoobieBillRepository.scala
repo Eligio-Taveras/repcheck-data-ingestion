@@ -144,8 +144,8 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     sql"""
       UPDATE $table SET
         text_url = $textUrl,
-        text_format = $textFormat,
-        text_version_type = $textVersionType,
+        text_format = $textFormat::format_type_enum,
+        text_version_type = $textVersionType::text_version_code_type,
         text_date = $textDate::timestamptz,
         latest_text_version_id = $latestTextVersionId,
         updated_at = NOW()
