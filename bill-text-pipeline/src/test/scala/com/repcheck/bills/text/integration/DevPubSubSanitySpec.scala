@@ -69,7 +69,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
   private val projectId = sys.env.getOrElse("GOOGLE_CLOUD_PROJECT", "repcheck-dev")
 
   private val serviceAccountEmail =
-    sys.env.getOrElse("INTEGRATION_TEST_SA", s"integration-test@$projectId.iam.gserviceaccount.com")
+    sys.env.getOrElse("INTEGRATION_TEST_SA", s"repcheck-inttest-dev@$projectId.iam.gserviceaccount.com")
 
   // Ephemeral GCP Pub/Sub topic/subscription per test run
   private val testPrefix     = s"e2e-sanity-${UUID.randomUUID().toString.take(8)}"
