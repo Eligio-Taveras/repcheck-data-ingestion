@@ -15,12 +15,15 @@ import pureconfig.ConfigSource
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import org.mockito.ArgumentMatchers.any
+import org.mockito.Mockito.when
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.errors.RetryConfig
+import repcheck.pipeline.models.metadata.ProcessingResult
 
 import com.repcheck.bills.textcheck.app.BillTextCheckerPipeline.{AppConfig, CheckerResources}
 import com.repcheck.bills.textcheck.config.BillTextCheckerConfig
@@ -245,6 +248,30 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
 
     val _ = capturedPublisherConfig.get().projectId shouldBe "repcheck-test"
     capturedPublisherConfig.get().topicName shouldBe "test-bill-events"
+  }
+
+  "buildStream" should "delegate to checker.checkAll and return its results" in {
+    val logger  = new StubPipelineLogger
+    val checker = mock[BillTextAvailabilityChecker[IO]]
+    val expectedResult = ProcessingResult.Succeeded(entityId = "118-HR-1")
+
+    when(checker.checkAll(any[UUID])).thenReturn(Stream.emit(expectedResult))
+
+    val results = BillTextCheckerPipeline.buildStream[IO](checker, logger).compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 1
+    results.headOption.map(_.entityId) shouldBe Some("118-HR-1")
+  }
+
+  it should "return empty stream when checker produces no results" in {
+    val logger  = new StubPipelineLogger
+    val checker = mock[BillTextAvailabilityChecker[IO]]
+
+    when(checker.checkAll(any[UUID])).thenReturn(Stream.empty)
+
+    val results = BillTextCheckerPipeline.buildStream[IO](checker, logger).compile.toList.unsafeRunSync()
+
+    results shouldBe empty
   }
 
 }
