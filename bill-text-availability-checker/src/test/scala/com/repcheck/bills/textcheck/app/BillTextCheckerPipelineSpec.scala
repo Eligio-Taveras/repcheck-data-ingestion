@@ -251,8 +251,8 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
   }
 
   "buildStream" should "delegate to checker.checkAll and return its results" in {
-    val logger  = new StubPipelineLogger
-    val checker = mock[BillTextAvailabilityChecker[IO]]
+    val logger         = new StubPipelineLogger
+    val checker        = mock[BillTextAvailabilityChecker[IO]]
     val expectedResult = ProcessingResult.Succeeded(entityId = "118-HR-1")
 
     when(checker.checkAll(any[UUID])).thenReturn(Stream.emit(expectedResult))
