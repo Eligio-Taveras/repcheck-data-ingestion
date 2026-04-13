@@ -157,6 +157,7 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
   .dependsOn(billsCommon % "compile->compile;test->test")
   .dependsOn(billTextAvailabilityChecker % "test->compile")
+  .dependsOn(billMetadataPipeline % "test->compile")
   .settings(pipelineSettings)
   .settings(
     name := "bill-text-pipeline",
@@ -176,7 +177,13 @@ addCommandAlias(
   "dockerTest",
   "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; billsCommon / test" +
-    "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))",
+    "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))" +
+    "; set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; billTextPipeline / test" +
+    "; set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; billTextAvailabilityChecker / test" +
+    "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
 )
 
 lazy val docGenerator = (project in file("doc-generator"))
