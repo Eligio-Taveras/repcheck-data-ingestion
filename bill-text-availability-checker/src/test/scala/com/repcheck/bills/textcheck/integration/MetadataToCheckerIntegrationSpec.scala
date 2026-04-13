@@ -57,13 +57,12 @@ class MetadataToCheckerIntegrationSpec
 
   private val checkerConfig = BillTextCheckerConfig(parallelism = 1, eventPublishRetry = testRetryConfig)
 
-  private lazy val httpClient = EmberClientBuilder
+  private lazy val (httpClient, httpShutdown) = EmberClientBuilder
     .default[IO]
     .withTimeout(5.seconds)
     .build
     .allocated
     .unsafeRunSync()
-    ._1
 
   private val testLogger = new PipelineLogger[IO] {
     override def info(context: LogContext, message: String): IO[Unit]                            = IO.unit
@@ -79,6 +78,8 @@ class MetadataToCheckerIntegrationSpec
 
   override def afterAll(): Unit = {
     wireMock.stop()
+    try httpShutdown.unsafeRunSync()
+    catch { case _: Exception => () }
     super.afterAll()
   }
 

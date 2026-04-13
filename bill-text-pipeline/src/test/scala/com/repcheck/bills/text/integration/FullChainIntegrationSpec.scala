@@ -62,13 +62,12 @@ class FullChainIntegrationSpec
   private val testRetryConfig =
     RetryConfig(maxRetries = 1, initialBackoffMs = 1L, maxBackoffMs = 10L, backoffMultiplier = 1.0)
 
-  private lazy val httpClient = EmberClientBuilder
+  private lazy val (httpClient, httpShutdown) = EmberClientBuilder
     .default[IO]
     .withTimeout(10.seconds)
     .build
     .allocated
     .unsafeRunSync()
-    ._1
 
   private val testLogger = new PipelineLogger[IO] {
     override def info(context: LogContext, message: String): IO[Unit]                            = IO.unit
@@ -84,6 +83,8 @@ class FullChainIntegrationSpec
 
   override def afterAll(): Unit = {
     wireMock.stop()
+    try httpShutdown.unsafeRunSync()
+    catch { case _: Exception => () }
     super.afterAll()
   }
 

@@ -160,8 +160,10 @@ trait PubSubEmulatorFixture extends BeforeAndAfterAll { self: Suite =>
     catch { case _: Exception => () }
     try subscriptionAdminClient.close()
     catch { case _: Exception => () }
-    try channel.shutdown()
-    catch { case _: Exception => () }
+    try {
+      channel.shutdownNow()
+      val _ = channel.awaitTermination(5, TimeUnit.SECONDS)
+    } catch { case _: Exception => () }
     super.afterAll()
   }
 

@@ -65,13 +65,12 @@ class PipelineIntegrationSpec
     maxContentBytes = 10485760L,
   )
 
-  private lazy val httpClient = EmberClientBuilder
+  private lazy val (httpClient, httpShutdown) = EmberClientBuilder
     .default[IO]
     .withTimeout(10.seconds)
     .build
     .allocated
     .unsafeRunSync()
-    ._1
 
   private val testLogger = new PipelineLogger[IO] {
     override def info(context: LogContext, message: String): IO[Unit]                            = IO.unit
@@ -87,6 +86,8 @@ class PipelineIntegrationSpec
 
   override def afterAll(): Unit = {
     wireMock.stop()
+    try httpShutdown.unsafeRunSync()
+    catch { case _: Exception => () }
     super.afterAll()
   }
 
