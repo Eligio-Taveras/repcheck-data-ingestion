@@ -533,12 +533,13 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val _       = results.size shouldBe 2
 
     // Pull messages with retry — Pub/Sub may not deliver all messages in one pull
-    val (messages, attempts) = (1 to 5).foldLeft((List.empty[PubsubMessage], 0)) { case ((msgs, att), _) =>
-      if (msgs.size >= 2) (msgs, att)
-      else {
-        Thread.sleep(3000L)
-        (msgs ++ pullGcpMessages(10), att + 1)
-      }
+    val (messages, attempts) = (1 to 5).foldLeft((List.empty[PubsubMessage], 0)) {
+      case ((msgs, att), _) =>
+        if (msgs.size >= 2) (msgs, att)
+        else {
+          Thread.sleep(3000L)
+          (msgs ++ pullGcpMessages(10), att + 1)
+        }
     }
 
     // Process bill 702 with embedding1

@@ -80,7 +80,7 @@ class BillsApiClient[F[_]](
         params.toDateTime.fold(withFrom)(dt => withFrom.withQueryParam("toDateTime", isoFormatter.format(dt)))
       }
 
-      val request   = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
+      val request = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
       val operation = client.run(request).use { response =>
         if (response.status.isSuccess) {
           response.as[BillListResponseDTO].map { listResponse =>
@@ -115,7 +115,7 @@ class BillsApiClient[F[_]](
     parseUri(detailUrl).flatMap { baseUri =>
       val uri = baseUri.withQueryParam("api_key", config.apiKey).withQueryParam("format", "json")
 
-      val request   = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
+      val request = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
       val operation = client.run(request).use { response =>
         if (response.status.isSuccess) {
           response.as[BillDetailWrapper].map(_.bill)
@@ -153,7 +153,7 @@ class BillsApiClient[F[_]](
         .withQueryParam("format", "json")
         .withQueryParam("limit", pageSize)
 
-      val request   = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
+      val request = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
       val operation = client.run(request).use { response =>
         if (response.status.isSuccess) {
           response.as[CosponsorListResponseDTO]

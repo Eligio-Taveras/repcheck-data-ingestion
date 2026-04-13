@@ -49,7 +49,7 @@ class BillTextApiClient[F[_]: Temporal](
     parseUri(s"${config.baseUrl}/bill/$congress/$billType/$number/text").flatMap { baseUri =>
       val uri = baseUri.withQueryParam("api_key", config.apiKey).withQueryParam("format", "json")
 
-      val request   = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
+      val request = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
       val operation = client.run(request).use { response =>
         response.status match {
           case Status.NotFound =>

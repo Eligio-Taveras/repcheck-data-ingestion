@@ -65,8 +65,8 @@ object BillTextPipelineApp extends IOApp {
         ),
       processorFactory = BillTextPipelinePipeline.buildProcessor[IO],
       streamFactory = BillTextPipelinePipeline.buildStream[IO],
-      workflowStateUpdaterFactory = (xa, cfg) =>
-        sys.env.get("WORKFLOW_RUN_ID").map(_ => new WorkflowStateUpdater[IO](xa, cfg)),
+      workflowStateUpdaterFactory =
+        (xa, cfg) => sys.env.get("WORKFLOW_RUN_ID").map(_ => new WorkflowStateUpdater[IO](xa, cfg)),
     )
   }
 
