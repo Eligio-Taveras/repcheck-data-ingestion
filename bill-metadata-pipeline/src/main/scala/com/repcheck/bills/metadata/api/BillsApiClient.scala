@@ -11,10 +11,10 @@ import cats.syntax.all._
 
 import io.circe.Decoder
 
-import org.http4s.{MediaType, Uri}
 import org.http4s.circe.CirceEntityDecoder._
 import org.http4s.client.Client
 import org.http4s.headers.Accept
+import org.http4s.{MediaType, Uri}
 
 import repcheck.ingestion.common.api.{
   CongressGovApiException,

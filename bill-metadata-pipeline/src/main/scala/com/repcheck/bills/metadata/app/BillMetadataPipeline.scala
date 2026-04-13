@@ -3,9 +3,8 @@ package com.repcheck.bills.metadata.app
 import java.time.Instant
 import java.util.UUID
 
-import cats.effect.{Async, ExitCode, Resource, Sync}
 import cats.effect.std.Semaphore
-import cats.effect.Temporal
+import cats.effect.{Async, ExitCode, Resource, Sync, Temporal}
 import cats.syntax.all._
 
 import org.http4s.client.Client

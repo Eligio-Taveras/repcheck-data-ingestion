@@ -1,7 +1,7 @@
 package com.repcheck.bills.textcheck.app
 
-import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Sync, Temporal}
 import cats.effect.std.Semaphore
+import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Sync, Temporal}
 import cats.syntax.all._
 
 import org.http4s.client.Client

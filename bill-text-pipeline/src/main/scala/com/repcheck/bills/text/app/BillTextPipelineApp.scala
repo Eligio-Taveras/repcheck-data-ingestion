@@ -2,8 +2,8 @@ package com.repcheck.bills.text.app
 
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
-import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Sync, Temporal}
 import cats.effect.std.Semaphore
+import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Sync, Temporal}
 import cats.syntax.all._
 
 import org.http4s.client.Client
@@ -17,7 +17,6 @@ import com.google.api.gax.rpc.FixedTransportChannelProvider
 import com.google.cloud.pubsub.v1.stub.{GrpcSubscriberStub, SubscriberStubSettings}
 
 import io.grpc.ManagedChannelBuilder
-
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.events.PubSubPublisherResource
 import repcheck.ingestion.common.execution.WorkflowStateUpdater
