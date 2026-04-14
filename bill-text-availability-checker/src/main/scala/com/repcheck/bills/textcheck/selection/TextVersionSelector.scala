@@ -35,16 +35,16 @@ object TextVersionSelector {
     "Reported to House"            -> "RTH",
     "Printed as Passed"            -> "PP",
     // Short codes the API sometimes sends directly
-    "PCS"                          -> "PCS",
-    "PCH"                          -> "PCH",
-    "PL"                           -> "PL",
-    "RDS"                          -> "RDS",
-    "RDH"                          -> "RDH",
-    "RTS"                          -> "RTS",
-    "RTH"                          -> "RTH",
-    "ATS"                          -> "ATS",
-    "ATH"                          -> "ATH",
-    "PP"                           -> "PP",
+    "PCS" -> "PCS",
+    "PCH" -> "PCH",
+    "PL"  -> "PL",
+    "RDS" -> "RDS",
+    "RDH" -> "RDH",
+    "RTS" -> "RTS",
+    "RTH" -> "RTH",
+    "ATS" -> "ATS",
+    "ATH" -> "ATH",
+    "PP"  -> "PP",
   )
 
   /** Returns the short code for a known descriptive string, or the input unchanged if not recognized. */
