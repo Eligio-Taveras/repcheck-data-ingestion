@@ -149,6 +149,30 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
     result.foreach(_.versionType shouldBe Some("IS"))
   }
 
+  it should "map Reported to Senate to RTS" in {
+    val versions = List(makeVersion(type_ = Some("Reported to Senate")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("RTS"))
+  }
+
+  it should "map Reported to House to RTH" in {
+    val versions = List(makeVersion(type_ = Some("Reported to House")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("RTH"))
+  }
+
+  it should "map Placed on Calendar Senate to PCS" in {
+    val versions = List(makeVersion(type_ = Some("Placed on Calendar Senate")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("PCS"))
+  }
+
+  it should "map Public Law to PL" in {
+    val versions = List(makeVersion(type_ = Some("Public Law")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("PL"))
+  }
+
   it should "pass through unrecognized versionType unchanged" in {
     val versions = List(makeVersion(type_ = Some("Unknown Version Type")))
     val result   = TextVersionSelector.selectBestVersion(versions)
