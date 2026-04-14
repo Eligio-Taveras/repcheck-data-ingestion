@@ -10,7 +10,7 @@ import repcheck.pipeline.models.constants.Tables
 import repcheck.shared.models.congress.common.DoobieEnumInstances._
 import repcheck.shared.models.congress.dos.bill.BillDO
 
-import com.repcheck.bills.common.persistence.DoobieInstances.{floatArrayGet, floatArrayPut}
+// floatArrayGet/floatArrayPut no longer needed — text_embedding removed from bills table
 
 class DoobieBillRepository extends BillRepository[ConnectionIO] {
 
@@ -36,7 +36,6 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     text_version_type,
     text_date::date,
     text_content,
-    text_embedding,
     summary_text,
     summary_action_desc,
     summary_action_date,
@@ -58,7 +57,7 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         latest_action_date, latest_action_text,
         constitutional_authority_text, sponsor_member_id,
         text_url, text_format, text_version_type, text_date,
-        text_content, text_embedding,
+        text_content,
         summary_text, summary_action_desc, summary_action_date,
         update_date, update_date_including_text,
         legislation_url, api_url
@@ -70,7 +69,7 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         ${bill.constitutionalAuthorityText}, ${bill.sponsorMemberId},
         ${bill.textUrl}, ${bill.textFormat}, ${bill.textVersionType},
         ${bill.textDate},
-        ${bill.textContent}, ${bill.textEmbedding}::vector,
+        ${bill.textContent},
         ${bill.summaryText}, ${bill.summaryActionDesc},
         ${bill.summaryActionDate},
         ${bill.updateDate}, ${bill.updateDateIncludingText},
@@ -91,7 +90,7 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         text_version_type = EXCLUDED.text_version_type,
         text_date = EXCLUDED.text_date,
         text_content = EXCLUDED.text_content,
-        text_embedding = EXCLUDED.text_embedding,
+
         summary_text = EXCLUDED.summary_text,
         summary_action_desc = EXCLUDED.summary_action_desc,
         summary_action_date = EXCLUDED.summary_action_date,

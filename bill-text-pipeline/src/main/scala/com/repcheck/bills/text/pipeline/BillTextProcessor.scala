@@ -102,7 +102,7 @@ class BillTextProcessor[F[_]: Async] private[text] (
   private[pipeline] def storeVersion(
     version: BillTextVersionDO
   ): F[Long] =
-    TransactionRunner.run(xa)(textVersionRepository.insertVersion(version))
+    TransactionRunner.run(xa)(textVersionRepository.storeAndUpdateBill(version))
 
   private[pipeline] def publishEvent(
     event: BillTextAvailableEvent,

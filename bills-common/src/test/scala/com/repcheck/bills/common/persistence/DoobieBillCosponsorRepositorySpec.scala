@@ -40,7 +40,6 @@ class DoobieBillCosponsorRepositorySpec extends AnyFlatSpec with Matchers with T
       textVersionType = None,
       textDate = None,
       textContent = None,
-      textEmbedding = None,
       summaryText = None,
       summaryActionDesc = None,
       summaryActionDate = None,

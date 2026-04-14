@@ -108,7 +108,6 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       textVersionType = textVersionType,
       textDate = None,
       textContent = None,
-      textEmbedding = None,
       summaryText = None,
       summaryActionDesc = None,
       summaryActionDate = None,

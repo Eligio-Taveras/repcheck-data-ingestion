@@ -107,7 +107,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     stubBillLookup(f, billId)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure(content))
     when(f.embeddingService.generateEmbedding(anyString())).thenReturn(IO.pure(None))
-    when(f.textVersionRepository.insertVersion(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
     val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
       .thenReturn(IO.pure("msg-id-123"))
   }
@@ -153,7 +153,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val _ = result.isFailed shouldBe true
     val _ = result.entityId shouldBe "118-HR-1"
-    val _ = verify(f.textVersionRepository, never()).insertVersion(any[BillTextVersionDO])
+    val _ = verify(f.textVersionRepository, never()).storeAndUpdateBill(any[BillTextVersionDO])
     verify(f.eventPublisher, never()).billTextIngested(any[BillTextIngestedEvent], any[UUID])
   }
 
@@ -163,7 +163,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     stubBillLookup(f)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure("some content"))
     when(f.embeddingService.generateEmbedding(anyString())).thenReturn(IO.pure(None))
-    when(f.textVersionRepository.insertVersion(any[BillTextVersionDO]))
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO]))
       .thenReturn(doobie.free.connection.raiseError(new RuntimeException("DB connection lost")))
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
@@ -178,7 +178,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     stubBillLookup(f)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure("some content"))
     when(f.embeddingService.generateEmbedding(anyString())).thenReturn(IO.pure(None))
-    when(f.textVersionRepository.insertVersion(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
     when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
       .thenReturn(IO.raiseError(new RuntimeException("Pub/Sub unavailable")))
 
@@ -201,7 +201,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
     val captor = ArgumentCaptor.forClass(classOf[BillTextVersionDO])
-    val _      = verify(f.textVersionRepository, times(1)).insertVersion(captor.capture())
+    val _      = verify(f.textVersionRepository, times(1)).storeAndUpdateBill(captor.capture())
     val stored = captor.getValue
 
     val _ = stored.billId shouldBe testDbBillId
@@ -219,14 +219,14 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     stubBillLookup(f)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure("some content"))
     when(f.embeddingService.generateEmbedding("some content")).thenReturn(IO.pure(Some(embedding)))
-    when(f.textVersionRepository.insertVersion(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
     val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
       .thenReturn(IO.pure("msg-id-123"))
 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
     val captor = ArgumentCaptor.forClass(classOf[BillTextVersionDO])
-    val _      = verify(f.textVersionRepository, times(1)).insertVersion(captor.capture())
+    val _      = verify(f.textVersionRepository, times(1)).storeAndUpdateBill(captor.capture())
     val stored = captor.getValue
 
     stored.embedding shouldBe Some(embedding)
@@ -240,7 +240,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
     val captor = ArgumentCaptor.forClass(classOf[BillTextVersionDO])
-    val _      = verify(f.textVersionRepository, times(1)).insertVersion(captor.capture())
+    val _      = verify(f.textVersionRepository, times(1)).storeAndUpdateBill(captor.capture())
     val stored = captor.getValue
 
     stored.embedding shouldBe None
