@@ -3,6 +3,8 @@ package com.repcheck.bills.text.app
 import java.time.Instant
 import java.util.UUID
 
+import scala.concurrent.duration._
+
 import cats.effect.unsafe.implicits.global
 import cats.effect.{IO, Resource}
 
@@ -53,6 +55,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       parallelism = 1,
       downloadTimeoutSeconds = 5,
       maxContentBytes = 1048576L,
+      pageDelay = 100.millis,
     ),
     eventPublisher = EventPublisherConfig(
       projectId = "repcheck-test",

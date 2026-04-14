@@ -40,7 +40,7 @@ class DoobieBillHistoryArchiver extends BillHistoryArchiver[ConnectionIO] {
           summary_text, summary_action_desc, summary_action_date,
           update_date, update_date_including_text, legislation_url, api_url
         FROM $billsTable
-        WHERE congress = $congress AND bill_type = $billType AND number = $number::int
+        WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int
         RETURNING id
       """.query[Long].unique
 
@@ -49,7 +49,7 @@ class DoobieBillHistoryArchiver extends BillHistoryArchiver[ConnectionIO] {
         SELECT $historyId, c.bill_id, c.member_id, c.is_original_cosponsor, c.sponsorship_date
         FROM $cospTable c
         INNER JOIN $billsTable b ON c.bill_id = b.id
-        WHERE b.congress = $congress AND b.bill_type = $billType AND b.number = $number::int
+        WHERE b.congress = $congress AND b.bill_type::text = $billType AND b.number = $number::int
       """.update.run
 
       _ <- sql"""
@@ -57,7 +57,7 @@ class DoobieBillHistoryArchiver extends BillHistoryArchiver[ConnectionIO] {
         SELECT $historyId, s.bill_id, s.subject_name, s.update_date
         FROM $subjTable s
         INNER JOIN $billsTable b ON s.bill_id = b.id
-        WHERE b.congress = $congress AND b.bill_type = $billType AND b.number = $number::int
+        WHERE b.congress = $congress AND b.bill_type::text = $billType AND b.number = $number::int
       """.update.run
     } yield historyId
   }

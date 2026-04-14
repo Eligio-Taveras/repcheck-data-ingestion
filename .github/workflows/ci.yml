@@ -39,41 +39,74 @@ jobs:
       - name: Check Scalafix rules
         run: sbt "scalafixAll --check"
 
-      - name: Pull AlloyDB Omni image (cached for DB-backed integration tests)
-        run: docker pull google/alloydbomni:16.8.0
+      - name: Pull Docker images for integration tests
+        run: |
+          docker pull google/alloydbomni:16.8.0 &
+          docker pull gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators &
+          wait
 
-      - name: Run non-Docker tests with coverage
-        run: sbt coverage test coverageReport
+      - name: Run all tests with coverage (unit + Docker integration)
+        # Runs non-Docker tests first (`test` excludes @DockerRequired), then Docker-backed
+        # integration tests (`dockerTest` includes only @DockerRequired). Both run in the
+        # same sbt-scoverage session so measurement data accumulates into a single combined
+        # report — no `clean` between runs.
+        run: sbt coverage test dockerTest coverageReport
 
-      - name: Upload non-Docker coverage reports to Codecov
+      - name: Upload combined coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
-          flags: unit
           files: |
             bills-common/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-metadata-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-text-availability-checker/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-text-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
 
-      - name: Run DB-backed integration tests against AlloyDB Omni with coverage
-        # `dockerTest` is a build.sbt command alias that flips the testOptions filter to
-        # INCLUDE only @DockerRequired specs. The default `sbt test` task above EXCLUDES them.
-        # `coverage` / `coverageReport` are sbt commands wrapped around the alias so the
-        # integration suites contribute to overall coverage.
-        # `clean` ensures scoverage measurement data from the non-Docker run is cleared so
-        # the integration-flag report on Codecov reflects only the DB-backed suites.
-        run: sbt clean coverage dockerTest coverageReport
+  e2e-gcp:
+    runs-on: ubuntu-latest
+    needs: build
+    concurrency:
+      group: e2e-gcp-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      packages: read
+      contents: read
+      id-token: write  # Required for Workload Identity Federation OIDC
 
-      - name: Upload Docker coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_ACTOR: ${{ github.actor }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.2.2
+
+      - name: Authenticate to GCP via Workload Identity Federation
+        id: auth
+        uses: google-github-actions/auth@v2
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-          flags: integration
-          files: |
-            bills-common/target/scala-3.7.3/scoverage-report/scoverage.xml
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Install sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Pull AlloyDB Omni image
+        run: docker pull google/alloydbomni:16.8.0
+
+      - name: Run E2E tests against real GCP Pub/Sub
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          INTEGRATION_TEST_SA: ${{ secrets.GCP_INTEGRATION_TEST_SA }}
+        run: |
+          sbt 'set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "com.repcheck.tags.E2ETest"))' 'billTextPipeline / test'
 
   doc-generator:
     runs-on: ubuntu-latest

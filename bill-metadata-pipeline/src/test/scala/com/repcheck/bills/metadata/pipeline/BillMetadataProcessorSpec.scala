@@ -483,6 +483,20 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     results.headOption.map(_.entityId) shouldBe Some("118-HR-5")
   }
 
+  it should "log error and return empty stream when page fetch fails" in {
+    val f = createFixture()
+    when(f.apiClient.fetchAll(any[FetchParams]))
+      .thenReturn(fs2.Stream.raiseError[IO](new RuntimeException("network timeout")))
+
+    val results = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val _       = results shouldBe empty
+    verify(f.logger, times(1)).error(
+      any[LogContext],
+      org.mockito.ArgumentMatchers.contains("Page fetch failed"),
+      any[Option[Throwable]],
+    )
+  }
+
   it should "return empty stream when no bills match lookback" in {
     val f = createFixture()
     when(f.apiClient.fetchAll(any[FetchParams]))

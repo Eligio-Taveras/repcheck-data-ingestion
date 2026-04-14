@@ -1,0 +1,161 @@
+# =============================================================================
+# Docker Compose — E2E Integration Test Stack
+# =============================================================================
+# Full end-to-end testing environment: infrastructure + application containers.
+#
+# Infrastructure:
+#   - AlloyDB Omni (PostgreSQL + pgvector)
+#   - Google Pub/Sub Emulator
+#   - WireMock (Congress.gov API stubs)
+#   - Ollama (embedding model)
+#
+# Application containers:
+#   - bill-metadata-pipeline
+#   - bill-text-availability-checker
+#   - bill-text-pipeline
+#
+# Usage:
+#   docker compose -f docker-compose.e2e.yml up --build
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Infrastructure Services
+  # ---------------------------------------------------------------------------
+
+  alloydb:
+    image: google/alloydbomni:16.8.0
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: repcheck_e2e
+      POSTGRES_USER: repcheck
+      POSTGRES_PASSWORD: repcheck
+    volumes:
+      - alloydbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U repcheck -d repcheck_e2e"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  pubsub-emulator:
+    image: google/cloud-sdk:slim
+    command: >
+      gcloud beta emulators pubsub start
+      --host-port=0.0.0.0:8085
+      --project=repcheck-e2e
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8085/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  wiremock:
+    image: wiremock/wiremock:3.13.0
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./e2e/wiremock:/home/wiremock
+    command: --verbose --global-response-templating
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/__admin/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollamadata:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Application Containers
+  # ---------------------------------------------------------------------------
+
+  bill-metadata-pipeline:
+    build:
+      context: .
+      dockerfile: bill-metadata-pipeline/Dockerfile
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      wiremock:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_API_BASE_URL: http://wiremock:8080/v3
+      CONGRESS_GOV_API_KEY: e2e-test-key
+
+  bill-text-availability-checker:
+    build:
+      context: .
+      dockerfile: bill-text-availability-checker/Dockerfile
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      pubsub-emulator:
+        condition: service_healthy
+      wiremock:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_API_BASE_URL: http://wiremock:8080/v3
+      CONGRESS_GOV_API_KEY: e2e-test-key
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-e2e
+      PUBSUB_TOPIC_NAME: bill-text-available
+
+  bill-text-pipeline:
+    build:
+      context: .
+      dockerfile: bill-text-pipeline/Dockerfile
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      pubsub-emulator:
+        condition: service_healthy
+      wiremock:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-e2e
+      PUBSUB_TOPIC_NAME: bill-text-ingested
+      PUBSUB_SUBSCRIPTION_ID: bill-text-available-sub
+      EMBEDDING_BASE_URL: http://ollama:11434
+      EMBEDDING_MODEL_NAME: qwen3-embedding
+      EMBEDDING_DIMENSIONS: "1536"
+      EMBEDDING_TIMEOUT_SECONDS: "30"
+
+volumes:
+  alloydbdata:
+    driver: local
+  ollamadata:
+    driver: local

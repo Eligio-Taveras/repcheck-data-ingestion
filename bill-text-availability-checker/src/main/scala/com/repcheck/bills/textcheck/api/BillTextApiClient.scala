@@ -9,7 +9,8 @@ import io.circe.Decoder
 
 import org.http4s.circe.jsonOf
 import org.http4s.client.Client
-import org.http4s.{EntityDecoder, Status, Uri}
+import org.http4s.headers.Accept
+import org.http4s.{EntityDecoder, MediaType, Status, Uri}
 
 import repcheck.ingestion.common.api.{CongressGovApiException, CongressGovClientConfig, CongressGovErrorClassifier}
 import repcheck.pipeline.models.errors.RetryWrapper
@@ -46,9 +47,10 @@ class BillTextApiClient[F[_]: Temporal](
     val billId = s"$congress-${billType.toUpperCase}-$number"
 
     parseUri(s"${config.baseUrl}/bill/$congress/$billType/$number/text").flatMap { baseUri =>
-      val uri = baseUri.withQueryParam("api_key", config.apiKey)
+      val uri = baseUri.withQueryParam("api_key", config.apiKey).withQueryParam("format", "json")
 
-      val operation = client.run(org.http4s.Request[F](uri = uri)).use { response =>
+      val request = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
+      val operation = client.run(request).use { response =>
         response.status match {
           case Status.NotFound =>
             Temporal[F].pure(List.empty[TextVersionDTO])

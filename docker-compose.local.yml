@@ -1,0 +1,235 @@
+# =============================================================================
+# Docker Compose — Local Development Stack (Cron-Scheduled, Long-Running)
+# =============================================================================
+# Simulates the full production pipeline locally. Infrastructure services run
+# continuously; Ofelia triggers each pipeline on a cron schedule, just like
+# Cloud Scheduler would in GCP.
+#
+# Prerequisites:
+#   1. Copy .env.example to .env and set CONGRESS_GOV_API_KEY
+#   2. Docker Desktop running
+#   3. Build fat JARs and Docker images:
+#        sbt "billMetadataPipeline/assembly" "billTextAvailabilityChecker/assembly" "billTextPipeline/assembly"
+#        docker compose -f docker-compose.local.yml build
+#
+# Usage:
+#   # Start everything (long-running, cron-scheduled):
+#   docker compose -f docker-compose.local.yml up -d
+#
+#   # Watch pipeline logs:
+#   docker compose -f docker-compose.local.yml logs -f ofelia
+#   docker compose -f docker-compose.local.yml logs -f bill-metadata-pipeline
+#
+#   # Run only infrastructure (DB + Pub/Sub + Ollama):
+#   docker compose -f docker-compose.local.yml up -d alloydb pubsub-emulator pubsub-init ollama
+#
+#   # Trigger a one-off pipeline run (outside the schedule):
+#   docker compose -f docker-compose.local.yml up bill-metadata-pipeline
+#
+#   # Tear down (preserves data volumes):
+#   docker compose -f docker-compose.local.yml down
+#
+#   # Tear down and delete all data:
+#   docker compose -f docker-compose.local.yml down -v
+#
+# Pipeline execution order (enforced by Ofelia schedule offsets):
+#   1. bill-metadata-pipeline       — fetches bill metadata from Congress.gov → DB
+#   2. bill-text-availability-checker — scans DB for bills needing text → Pub/Sub
+#   3. bill-text-pipeline            — subscribes to Pub/Sub → downloads text → DB
+#
+# Schedule defaults (override via .env):
+#   BILL_METADATA_SCHEDULE         = 0 */6 * * *   (every 6 hours)
+#   BILL_TEXT_AVAILABILITY_SCHEDULE = 0 1,7,13,19 * * * (every 6 hours, offset +1h)
+#   BILL_TEXT_PIPELINE_SCHEDULE     = 0 2,8,14,20 * * * (every 6 hours, offset +2h)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Infrastructure Services
+  # ---------------------------------------------------------------------------
+
+  alloydb:
+    image: google/alloydbomni:16.8.0
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: repcheck
+      POSTGRES_USER: repcheck
+      POSTGRES_PASSWORD: repcheck
+    volumes:
+      - alloydbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U repcheck -d repcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # Run database migrations before any pipeline starts
+  db-migrations:
+    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.12
+    entrypoint: ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "/opt/docker/lib/*", "repcheck.db.migrations.MigrationApp"]
+    depends_on:
+      alloydb:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: alloydb
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: repcheck
+      DATABASE_USER: repcheck
+      DATABASE_PASSWORD: repcheck
+
+  pubsub-emulator:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    command: >
+      gcloud beta emulators pubsub start
+      --host-port=0.0.0.0:8085
+      --project=repcheck-local
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8085/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # Init container: creates Pub/Sub topics and subscriptions in the emulator
+  pubsub-init:
+    image: curlimages/curl:latest
+    depends_on:
+      pubsub-emulator:
+        condition: service_healthy
+    volumes:
+      - ./scripts/pubsub-init.sh:/pubsub-init.sh:ro
+    entrypoint: ["sh", "/pubsub-init.sh"]
+    environment:
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-local
+
+  ollama:
+    build:
+      context: ./ollama
+      dockerfile: Dockerfile
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollamadata:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Cron Scheduler
+  # ---------------------------------------------------------------------------
+  # Ofelia triggers pipeline containers on a cron schedule. Each job runs a
+  # stopped container via `docker start`. The containers exit after each run
+  # and Ofelia restarts them on the next scheduled tick.
+
+  ofelia:
+    image: mcuadros/ofelia:0.3.16
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-init:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
+    command: daemon --config=/etc/ofelia/config.ini
+    volumes:
+      - //var/run/docker.sock:/var/run/docker.sock:ro
+      - ./ofelia-config.ini:/etc/ofelia/config.ini:ro
+
+  # ---------------------------------------------------------------------------
+  # Pipeline Containers (started by Ofelia on schedule)
+  # ---------------------------------------------------------------------------
+  # These containers are created but NOT started automatically (profiles: cron).
+  # Ofelia starts them on schedule. They run to completion then stop, waiting
+  # for the next scheduled tick.
+
+  bill-metadata-pipeline:
+    container_name: bill-metadata-pipeline
+    build:
+      context: .
+      dockerfile: bill-metadata-pipeline/Dockerfile
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
+      PIPELINE_LOOKBACK_DAYS: ${PIPELINE_LOOKBACK_DAYS:-30}
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
+    restart: "no"
+
+  bill-text-availability-checker:
+    container_name: bill-text-availability-checker
+    build:
+      context: .
+      dockerfile: bill-text-availability-checker/Dockerfile
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-local
+      PUBSUB_TOPIC_NAME: bill-text-available
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+    restart: "no"
+
+  bill-text-pipeline:
+    container_name: bill-text-pipeline
+    build:
+      context: .
+      dockerfile: bill-text-pipeline/Dockerfile
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-init:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      GCP_PROJECT_ID: repcheck-local
+      EVENT_PUBLISHER_TOPIC: bill-text-ingested
+      EVENT_SUBSCRIBER_SUBSCRIPTION: bill-text-available-sub
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL_NAME: qwen3-embedding
+      OLLAMA_EMBEDDING_DIMENSIONS: "1536"
+      OLLAMA_TIMEOUT_SECONDS: "60"
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+    restart: "no"
+
+volumes:
+  alloydbdata:
+    driver: local
+  ollamadata:
+    driver: local

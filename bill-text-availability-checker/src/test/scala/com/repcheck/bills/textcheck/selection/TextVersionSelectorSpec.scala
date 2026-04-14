@@ -131,10 +131,28 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
     result.foreach(_.url shouldBe "https://example.com/withdate")
   }
 
-  it should "preserve versionType from selected version" in {
+  it should "map descriptive versionType to short code" in {
     val versions = List(makeVersion(type_ = Some("Enrolled Bill")))
     val result   = TextVersionSelector.selectBestVersion(versions)
-    result.foreach(_.versionType shouldBe Some("Enrolled Bill"))
+    result.foreach(_.versionType shouldBe Some("ENR"))
+  }
+
+  it should "map Introduced in House to IH" in {
+    val versions = List(makeVersion(type_ = Some("Introduced in House")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("IH"))
+  }
+
+  it should "map Introduced in Senate to IS" in {
+    val versions = List(makeVersion(type_ = Some("Introduced in Senate")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("IS"))
+  }
+
+  it should "pass through unrecognized versionType unchanged" in {
+    val versions = List(makeVersion(type_ = Some("Unknown Version Type")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("Unknown Version Type"))
   }
 
   it should "handle multiple formats on a single version" in {

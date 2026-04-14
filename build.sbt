@@ -10,6 +10,9 @@ val isScala212: Def.Initialize[Boolean] = Def.setting {
 
 ThisBuild / dynverSonatypeSnapshots := true
 
+// Prevent concurrent test execution across subprojects — integration tests share Docker containers
+ThisBuild / concurrentRestrictions += Tags.limit(Tags.Test, 1)
+
 // Common settings for all sub-projects
 lazy val commonSettings = Seq(
   organization := "com.repcheck",
@@ -42,10 +45,10 @@ lazy val commonSettings = Seq(
   ),
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
-    "com.repcheck" %% "repchecksharedmodels"       % "0.1.15",
-    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.14",
-    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.11",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.9" % Test,
+    "com.repcheck" %% "repchecksharedmodels"       % "0.1.20",
+    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.16",
+    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.14",
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.12" % Test,
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
@@ -78,11 +81,28 @@ lazy val commonSettings = Seq(
 
   // Suppress Scala 3.4-migration infix warnings for ScalaTest matchers in test sources
   Test / scalacOptions += "-Wconf:msg=is not declared infix:s",
+
+  // Exclude Docker-backed and E2E tests from default `sbt test`. Run them explicitly via
+  // `dockerTest` or `sbt "testOnly -- -n com.repcheck.tags.E2ETest"`.
+  Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-l", "DockerRequired"),
+  Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-l", "com.repcheck.tags.E2ETest"),
 )
 
 // Pipeline-specific settings (IOApp projects get test config override)
 lazy val pipelineSettings = commonSettings ++ Seq(
-  Test / javaOptions += "-Dconfig.resource=application-test.conf"
+  Test / javaOptions += "-Dconfig.resource=application-test.conf",
+  assembly / assemblyMergeStrategy := {
+    case PathList("META-INF", "versions", _, _*)         => MergeStrategy.first
+    case PathList("META-INF", "io.netty.versions.properties") => MergeStrategy.first
+    case PathList("META-INF", "MANIFEST.MF")             => MergeStrategy.discard
+    case PathList("META-INF", "services", _*)            => MergeStrategy.concat
+    case PathList("module-info.class")                   => MergeStrategy.discard
+    case x if x.endsWith(".proto")                       => MergeStrategy.first
+    case x if x.endsWith(".properties")                  => MergeStrategy.first
+    case x =>
+      val oldStrategy = (assembly / assemblyMergeStrategy).value
+      oldStrategy(x)
+  },
 )
 
 lazy val root = (project in file("."))
@@ -104,10 +124,6 @@ lazy val billsCommon = (project in file("bills-common"))
     // Docker integration tests share a single AlloyDB Omni container; sequential execution
     // prevents cross-suite FK violations during table cleanup.
     Test / parallelExecution := false,
-    // Exclude DB-backed integration tests from `sbt test` by default — they require a local
-    // Docker daemon to start an AlloyDB Omni container. Use the `dockerTest` alias below to
-    // run them explicitly.
-    Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-l", "DockerRequired"),
   )
 
 lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
@@ -120,6 +136,8 @@ lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
       ++ catsEffect ++ doobie ++ diff ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     coverageExcludedFiles := ".*BillMetadataPipeline;.*BillMetadataPipelineApp",
+    assembly / mainClass := Some("com.repcheck.bills.metadata.app.BillMetadataPipelineApp"),
+    assembly / assemblyJarName := "bill-metadata-pipeline.jar",
   )
 
 lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-checker"))
@@ -130,11 +148,16 @@ lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-
     name := "bill-text-availability-checker",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
+    coverageExcludedFiles := ".*BillTextCheckerApp",
+    assembly / mainClass := Some("com.repcheck.bills.textcheck.app.BillTextCheckerApp"),
+    assembly / assemblyJarName := "bill-text-availability-checker.jar",
   )
 
 lazy val billTextPipeline = (project in file("bill-text-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
   .dependsOn(billsCommon % "compile->compile;test->test")
+  .dependsOn(billTextAvailabilityChecker % "test->compile")
+  .dependsOn(billMetadataPipeline % "test->compile")
   .settings(pipelineSettings)
   .settings(
     name := "bill-text-pipeline",
@@ -143,6 +166,8 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
     coverageExcludedFiles := ".*BillTextPipelineApp",
     // WireMock-based tests share a dynamic port; sequential prevents port contention
     Test / parallelExecution := false,
+    assembly / mainClass := Some("com.repcheck.bills.text.app.BillTextPipelineApp"),
+    assembly / assemblyJarName := "bill-text-pipeline.jar",
   )
 
 // `dockerTest` runs only the DB-backed integration tests against a local AlloyDB Omni
@@ -152,7 +177,13 @@ addCommandAlias(
   "dockerTest",
   "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; billsCommon / test" +
-    "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))",
+    "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))" +
+    "; set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; billTextPipeline / test" +
+    "; set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; billTextAvailabilityChecker / test" +
+    "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
 )
 
 lazy val docGenerator = (project in file("doc-generator"))

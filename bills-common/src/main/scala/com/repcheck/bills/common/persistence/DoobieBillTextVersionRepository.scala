@@ -34,10 +34,16 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
         bill_id, version_code, version_type,
         version_date, format_type, url, content, embedding, fetched_at
       ) VALUES (
-        ${version.billId}, ${version.versionCode}, ${version.versionType},
+        ${version.billId}, ${version.versionCode}::text_version_code_type, ${version.versionType},
         ${version.versionDate}, ${version.formatType}, ${version.url},
         ${version.content}, ${version.embedding}::vector, ${version.fetchedAt}
       )
+      ON CONFLICT (bill_id, version_code, version_date) DO UPDATE SET
+        content = EXCLUDED.content,
+        embedding = EXCLUDED.embedding,
+        format_type = EXCLUDED.format_type,
+        url = EXCLUDED.url,
+        fetched_at = EXCLUDED.fetched_at
       RETURNING id
     """.query[Long].unique
 
@@ -60,7 +66,7 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
       UPDATE $billsTable SET
         text_url = ${version.url},
         text_format = ${version.formatType},
-        text_version_type = ${version.versionCode},
+        text_version_type = ${version.versionCode}::text_version_code_type,
         text_date = ${version.versionDate},
         latest_text_version_id = $generatedId,
         updated_at = NOW()
@@ -75,10 +81,16 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
           bill_id, version_code, version_type,
           version_date, format_type, url, content, embedding, fetched_at
         ) VALUES (
-          ${version.billId}, ${version.versionCode}, ${version.versionType},
+          ${version.billId}, ${version.versionCode}::text_version_code_type, ${version.versionType},
           ${version.versionDate}, ${version.formatType}, ${version.url},
           ${version.content}, ${version.embedding}::vector, ${version.fetchedAt}
         )
+        ON CONFLICT (bill_id, version_code, version_date) DO UPDATE SET
+          content = EXCLUDED.content,
+          embedding = EXCLUDED.embedding,
+          format_type = EXCLUDED.format_type,
+          url = EXCLUDED.url,
+          fetched_at = EXCLUDED.fetched_at
         RETURNING id
       """.query[Long].unique
 

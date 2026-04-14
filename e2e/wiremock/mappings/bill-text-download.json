@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/v3/bill/118/hr/1/text/ih"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "text/html" },
+    "bodyFileName": "bill-text-content.html"
+  }
+}

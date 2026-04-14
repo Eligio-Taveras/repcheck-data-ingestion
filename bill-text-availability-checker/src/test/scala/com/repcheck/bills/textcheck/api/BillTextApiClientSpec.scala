@@ -28,13 +28,12 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
       .dynamicPort()
   )
 
-  private lazy val httpClient = EmberClientBuilder
+  private lazy val (httpClient, httpShutdown) = EmberClientBuilder
     .default[IO]
     .withTimeout(5.seconds)
     .build
     .allocated
     .unsafeRunSync()
-    ._1
 
   private lazy val retryWrapper = new RetryWrapper[IO]((_, _, _, _, _, _) => IO.unit)
 
@@ -58,6 +57,8 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
 
   override def afterAll(): Unit = {
     wireMock.stop()
+    try httpShutdown.unsafeRunSync()
+    catch { case _: Exception => () }
     super.afterAll()
   }
 

@@ -18,7 +18,7 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
 
   private val selectColumns: Fragment = fr"""
     id,
-    (congress::text || '-' || UPPER(bill_type) || '-' || number::text),
+    (congress::text || '-' || UPPER(bill_type::text) || '-' || number::text),
     congress,
     bill_type,
     number::text,
@@ -64,7 +64,7 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         legislation_url, api_url
       ) VALUES (
         ${bill.congress}, ${bill.billType}, ${bill.number}::int, ${bill.title},
-        ${bill.originChamber}, ${bill.originChamberCode},
+        ${bill.originChamber}, ${bill.originChamberCode}::origin_chamber_code_type,
         ${bill.introducedDate}, ${bill.policyArea},
         ${bill.latestActionDate}, ${bill.latestActionText},
         ${bill.constitutionalAuthorityText}, ${bill.sponsorMemberId},
@@ -105,7 +105,7 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
 
   override def findByBillId(billId: String): ConnectionIO[Option[BillDO]] = {
     val (congress, billType, number) = parseNaturalKey(billId)
-    (fr"SELECT" ++ selectColumns ++ fr"FROM $table WHERE congress = $congress AND bill_type = $billType AND number = $number::int")
+    (fr"SELECT" ++ selectColumns ++ fr"FROM $table WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int")
       .query[BillDO]
       .option
   }
@@ -115,7 +115,7 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
       doobie.free.connection.pure(List.empty[BillDO])
     } else {
       val parsed    = billIds.map(parseNaturalKey)
-      val fragments = parsed.map { case (c, t, n) => fr"(congress = $c AND bill_type = $t AND number = $n::int)" }
+      val fragments = parsed.map { case (c, t, n) => fr"(congress = $c AND bill_type::text = $t AND number = $n::int)" }
       val conditions = fragments match {
         case first :: rest => rest.foldLeft(first)(_ ++ fr" OR " ++ _)
         case Nil           => fr"FALSE"
@@ -128,7 +128,7 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
   override def findBillsNeedingTextCheck(): ConnectionIO[List[BillDO]] =
     (fr"SELECT" ++ selectColumns ++ fr"""FROM $table
       WHERE text_url IS NULL
-         OR (text_version_type IS DISTINCT FROM 'ENR')""")
+         OR (text_version_type::text IS DISTINCT FROM 'ENR')""")
       .query[BillDO]
       .to[List]
 
@@ -144,12 +144,12 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     sql"""
       UPDATE $table SET
         text_url = $textUrl,
-        text_format = $textFormat,
-        text_version_type = $textVersionType,
+        text_format = $textFormat::format_type_enum,
+        text_version_type = $textVersionType::text_version_code_type,
         text_date = $textDate::timestamptz,
         latest_text_version_id = $latestTextVersionId,
         updated_at = NOW()
-      WHERE congress = $congress AND bill_type = $billType AND number = $number::int
+      WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int
     """.update.run.void
   }
 
