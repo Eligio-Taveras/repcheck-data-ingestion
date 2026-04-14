@@ -159,7 +159,6 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
       textVersionType = None,
       textDate = None,
       textContent = None,
-      textEmbedding = None,
       summaryText = None,
       summaryActionDesc = None,
       summaryActionDate = None,

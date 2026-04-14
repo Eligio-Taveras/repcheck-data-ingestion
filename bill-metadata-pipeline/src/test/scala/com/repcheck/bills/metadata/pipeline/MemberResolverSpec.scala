@@ -83,7 +83,6 @@ class MemberResolverSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     textVersionType = None,
     textDate = None,
     textContent = None,
-    textEmbedding = None,
     summaryText = None,
     summaryActionDesc = None,
     summaryActionDate = None,

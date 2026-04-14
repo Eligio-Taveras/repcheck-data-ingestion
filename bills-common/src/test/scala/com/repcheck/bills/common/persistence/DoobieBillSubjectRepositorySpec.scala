@@ -40,7 +40,6 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
       textVersionType = None,
       textDate = None,
       textContent = None,
-      textEmbedding = None,
       summaryText = None,
       summaryActionDesc = None,
       summaryActionDate = None,

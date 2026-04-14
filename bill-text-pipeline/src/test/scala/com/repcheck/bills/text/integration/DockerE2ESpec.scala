@@ -46,7 +46,6 @@ class DockerE2ESpec extends AnyFlatSpec with Matchers with TransactorFixture wit
       textVersionType = None,
       textDate = None,
       textContent = None,
-      textEmbedding = None,
       summaryText = None,
       summaryActionDesc = None,
       summaryActionDate = None,

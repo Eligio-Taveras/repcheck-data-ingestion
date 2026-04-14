@@ -55,7 +55,6 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
       textVersionType = None,
       textDate = None,
       textContent = None,
-      textEmbedding = None,
       summaryText = None,
       summaryActionDesc = None,
       summaryActionDate = None,
