@@ -83,4 +83,86 @@ class MemberDifferSpec extends AnyFlatSpec with Matchers {
     result.isOk shouldBe false
   }
 
+  // Table-driven: mutates one field at a time and asserts the Differ detects each change.
+  // Exercises every field-specific branch of the auto-derived Differ[MemberDO] — without this,
+  // only a handful of fields are diffed and the derived branches for the remaining fields
+  // stay uncovered, dragging the file below the 95% coverage gate.
+  private val fieldMutations: List[(String, MemberDO => MemberDO)] = List(
+    "naturalKey"        -> (_.copy(naturalKey = "B000002")),
+    "lastName"          -> (_.copy(lastName = Some("Smith"))),
+    "directOrderName"   -> (_.copy(directOrderName = Some("Jane Doe"))),
+    "invertedOrderName" -> (_.copy(invertedOrderName = Some("Smith, Jane"))),
+    "honorificName"     -> (_.copy(honorificName = Some("Sen. Jane Smith"))),
+    "birthYear"         -> (_.copy(birthYear = Some(1980))),
+    "district"          -> (_.copy(district = Some(12))),
+    "imageAttribution"  -> (_.copy(imageAttribution = Some("Updated Photo"))),
+    "updateDate"        -> (_.copy(updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))),
+    "createdAt"         -> (_.copy(createdAt = Some(Instant.parse("2024-06-01T00:00:00Z")))),
+    "updatedAt"         -> (_.copy(updatedAt = Some(Instant.parse("2024-06-01T00:00:00Z")))),
+  )
+
+  fieldMutations.foreach {
+    case (fieldName, mutate) =>
+      it should s"detect changes when $fieldName differs" in {
+        val differ  = summon[difflicious.Differ[MemberDO]]
+        val changed = mutate(baseMember)
+        val result  = differ.diff(baseMember, changed)
+        result.isOk shouldBe false
+      }
+  }
+
+  // Edge case: Some -> None transitions for every Option field, exercising the
+  // Option-aware branch of the derived Differ for each field.
+  private val optionToNoneMutations: List[(String, MemberDO => MemberDO)] = List(
+    "firstName"         -> (_.copy(firstName = None)),
+    "lastName"          -> (_.copy(lastName = None)),
+    "directOrderName"   -> (_.copy(directOrderName = None)),
+    "invertedOrderName" -> (_.copy(invertedOrderName = None)),
+    "honorificName"     -> (_.copy(honorificName = None)),
+    "birthYear"         -> (_.copy(birthYear = None)),
+    "currentParty"      -> (_.copy(currentParty = None)),
+    "state"             -> (_.copy(state = None)),
+    "district"          -> (_.copy(district = None)),
+    "imageAttribution"  -> (_.copy(imageAttribution = None)),
+    "updateDate"        -> (_.copy(updateDate = None)),
+    "createdAt"         -> (_.copy(createdAt = None)),
+    "updatedAt"         -> (_.copy(updatedAt = None)),
+  )
+
+  optionToNoneMutations.foreach {
+    case (fieldName, mutate) =>
+      it should s"detect changes when $fieldName goes from Some to None" in {
+        val differ  = summon[difflicious.Differ[MemberDO]]
+        val cleared = mutate(baseMember)
+        val result  = differ.diff(baseMember, cleared)
+        result.isOk shouldBe false
+      }
+  }
+
+  it should "report no diff for two placeholder members with identical natural keys" in {
+    // Exercises the Option[_] diff branch where BOTH sides are None for every optional field.
+    val differ = summon[difflicious.Differ[MemberDO]]
+    val placeholder = MemberDO(
+      memberId = 0L,
+      naturalKey = "P000000",
+      firstName = None,
+      lastName = None,
+      directOrderName = None,
+      invertedOrderName = None,
+      honorificName = None,
+      birthYear = None,
+      currentParty = None,
+      state = None,
+      district = None,
+      imageUrl = None,
+      imageAttribution = None,
+      officialUrl = None,
+      updateDate = None,
+      createdAt = None,
+      updatedAt = None,
+    )
+    val result = differ.diff(placeholder, placeholder)
+    result.isOk shouldBe true
+  }
+
 }

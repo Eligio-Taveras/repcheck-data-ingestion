@@ -25,7 +25,7 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.RetryConfig
+import repcheck.pipeline.models.errors.{ErrorClass, RetryConfig}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
 class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with MockitoSugar {
@@ -169,6 +169,19 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
 
     val summaryLogs = logger.messages.filter(_.contains("Pipeline completed"))
     summaryLogs should not be empty
+  }
+
+  "noOpRetryLogger" should "return F[Unit] regardless of arguments" in {
+    // Directly invoke the extracted retry logger so its body is exercised — the production
+    // retry path wires this through RetryWrapper, but no unit test triggers an actual retry,
+    // leaving the lambda uncovered when inlined. Extracting to a named method lets tests
+    // cover the body without having to simulate transient failures.
+    val result = BillTextCheckerPipeline
+      .noOpRetryLogger[IO]
+      .apply(1, 3, 100L, ErrorClass.Transient, "test error", UUID.randomUUID())
+      .unsafeRunSync()
+
+    result shouldBe ((): Unit)
   }
 
   "buildChecker" should "construct a BillTextAvailabilityChecker with all dependencies" in {
