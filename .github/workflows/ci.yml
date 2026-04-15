@@ -47,10 +47,12 @@ jobs:
 
       - name: Run all tests with coverage (unit + Docker integration)
         # Runs non-Docker tests first (`test` excludes @DockerRequired), then Docker-backed
-        # integration tests (`dockerTest` includes only @DockerRequired). Both run in the
-        # same sbt-scoverage session so measurement data accumulates into a single combined
-        # report — no `clean` between runs.
-        run: sbt coverage test dockerTest coverageReport
+        # integration tests (`dockerTestParallel` includes only @DockerRequired and runs each
+        # subproject's test task concurrently via sbt's `all` command — each subproject has
+        # its own per-classloader AlloyDB + Pub/Sub container, so they don't contend. Both
+        # phases run in the same sbt-scoverage session so measurement data accumulates into a
+        # single combined report — no `clean` between runs.
+        run: sbt coverage test dockerTestParallel coverageReport
 
       - name: Upload combined coverage reports to Codecov
         uses: codecov/codecov-action@v5

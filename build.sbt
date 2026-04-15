@@ -10,8 +10,10 @@ val isScala212: Def.Initialize[Boolean] = Def.setting {
 
 ThisBuild / dynverSonatypeSnapshots := true
 
-// Prevent concurrent test execution across subprojects — integration tests share Docker containers
-ThisBuild / concurrentRestrictions += Tags.limit(Tags.Test, 1)
+// Cap concurrent test tasks across subprojects. Each DockerRequired-having subproject spins
+// up its own AlloyDB Omni + Pub/Sub emulator (per-classloader singletons), so 4 concurrent
+// test tasks means up to ~10 GB of containers. On a 31 GB dev box that's comfortable.
+ThisBuild / concurrentRestrictions += Tags.limit(Tags.Test, 4)
 
 // Common settings for all sub-projects
 lazy val commonSettings = Seq(
@@ -130,8 +132,9 @@ lazy val billsCommon = (project in file("bills-common"))
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig ++ fs2
       ++ catsEffect ++ doobie ++ pubSub ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
-    // Docker integration tests share a single AlloyDB Omni container; sequential execution
-    // prevents cross-suite FK violations during table cleanup.
+    // Intra-subproject parallel execution causes FK violations because specs truncate shared
+    // tables. Cross-subproject parallelism (via Tags.limit(Tags.Test, 4)) is safe because each
+    // subproject gets its own AlloyDB container.
     Test / parallelExecution := false,
   )
 
@@ -210,7 +213,8 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ xml ++ htmlParsing ++ logging ++ testDeps,
     coverageExcludedFiles := ".*BillTextPipelineApp",
-    // WireMock-based tests share a dynamic port; sequential prevents port contention
+    // WireMock-based tests share a dynamic port; sequential prevents port contention.
+    // Cross-subproject parallelism (via Tags.limit(Tags.Test, 4)) gives us the speedup win.
     Test / parallelExecution := false,
     assembly / mainClass := Some("repcheck.ingestion.bills.text.app.BillTextPipelineApp"),
     assembly / assemblyJarName := "bill-text-pipeline.jar",
@@ -238,6 +242,28 @@ addCommandAlias(
     "; set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; lisMappingRefresher / test" +
+    "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
+)
+
+// `dockerTestParallel` — experimental. Flips every DockerRequired-capable subproject's test
+// filter to include DockerRequired, then runs all subproject `test` tasks CONCURRENTLY via
+// sbt's `all` command. Risks we're trying to surface: (a) shared DockerPostgres singleton
+// contention across subprojects, (b) table truncation races, (c) Pub/Sub emulator subscription
+// cross-talk, (d) JVM resource pressure from many concurrent parallel tests.
+addCommandAlias(
+  "dockerTestParallel",
+  "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; set membersCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; all billsCommon/test membersCommon/test billTextPipeline/test billTextAvailabilityChecker/test memberProfilePipeline/test lisMappingRefresher/test" +
+    "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))" +
+    "; set membersCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))" +
+    "; set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
 )
 
