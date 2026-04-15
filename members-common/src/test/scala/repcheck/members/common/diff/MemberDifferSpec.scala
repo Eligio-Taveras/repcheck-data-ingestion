@@ -59,14 +59,14 @@ class MemberDifferSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "detect changes when optional field goes from None to Some" in {
-    val differ  = summon[difflicious.Differ[MemberDO]]
+    val differ   = summon[difflicious.Differ[MemberDO]]
     val withNone = baseMember.copy(imageUrl = None)
     val result   = differ.diff(withNone, baseMember)
     result.isOk shouldBe false
   }
 
   it should "detect changes when optional field goes from Some to None" in {
-    val differ  = summon[difflicious.Differ[MemberDO]]
+    val differ   = summon[difflicious.Differ[MemberDO]]
     val withNone = baseMember.copy(officialUrl = None)
     val result   = differ.diff(baseMember, withNone)
     result.isOk shouldBe false
