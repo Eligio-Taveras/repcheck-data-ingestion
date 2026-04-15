@@ -1,7 +1,6 @@
 package repcheck.members.common.diff
 
 import difflicious.Differ
-import repcheck.shared.models.congress.common.{Party, UsState}
 import repcheck.shared.models.congress.dos.member.MemberDO
 
 /**
@@ -13,13 +12,10 @@ import repcheck.shared.models.congress.dos.member.MemberDO
  * instance is sufficient and avoids the hundreds of macro-expanded branches that `Differ.derived` emits, which can
  * never be exercised at runtime and drag coverage below the global threshold.
  *
- * Custom `Differ` instances for `Party` and `UsState` enums compare by value equality, since difflicious does not
- * auto-derive for enums without an explicit instance.
+ * Because `useEquals` compares via `equals` without decomposing the case class into child fields, no per-field `Differ`
+ * instances (for `Party`, `UsState`, etc.) are required.
  */
 object MemberDiffer {
-
-  given Differ[Party]   = Differ.useEquals[Party](_.toString)
-  given Differ[UsState] = Differ.useEquals[UsState](_.toString)
 
   given Differ[MemberDO] = Differ.useEquals[MemberDO](_.toString)
 
