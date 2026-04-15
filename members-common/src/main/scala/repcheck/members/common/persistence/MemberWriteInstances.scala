@@ -13,20 +13,20 @@ object MemberWriteInstances {
     import doobie.postgres.implicits._
     import repcheck.shared.models.congress.common.DoobieEnumInstances._
     type Row = (
-      String,
-      Option[String],
-      Option[String],
-      Option[String],
-      Option[String],
-      Option[String],
-      Option[Int],
-      Option[Party],
-      Option[UsState],
-      Option[Int],
-      Option[String],
-      Option[String],
-      Option[String],
-      Option[Instant],
+      String,          // naturalKey
+      Option[String],  // firstName
+      Option[String],  // lastName
+      Option[String],  // directOrderName
+      Option[String],  // invertedOrderName
+      Option[String],  // honorificName
+      Option[Int],     // birthYear
+      Option[Party],   // currentParty
+      Option[UsState], // state
+      Option[Int],     // district
+      Option[String],  // imageUrl
+      Option[String],  // imageAttribution
+      Option[String],  // officialUrl
+      Option[Instant], // updateDate
     )
     Write[Row].contramap[MemberDO] { m =>
       (

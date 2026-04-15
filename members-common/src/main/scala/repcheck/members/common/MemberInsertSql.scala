@@ -1,5 +1,12 @@
 package repcheck.members.common
 
+/**
+ * INSERT statement for placeholder member creation via
+ * [[repcheck.ingestion.common.placeholders.DoobieEntityRepository]]. Uses ON CONFLICT DO NOTHING because placeholders
+ * must not overwrite existing members — whether they are fully populated profiles or earlier placeholders. The owning
+ * pipeline (member-profile-pipeline) fills in the real data later via
+ * [[repcheck.members.common.persistence.MemberRepository.upsert]].
+ */
 object MemberInsertSql {
 
   val value: String =
