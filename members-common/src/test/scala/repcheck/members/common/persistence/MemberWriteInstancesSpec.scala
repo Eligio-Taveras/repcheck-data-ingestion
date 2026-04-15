@@ -1,10 +1,9 @@
 package repcheck.members.common.persistence
 
-import org.scalatest.flatspec.AnyFlatSpec
-import org.scalatest.matchers.should.Matchers
-
 import doobie.util.Write
 
+import org.scalatest.flatspec.AnyFlatSpec
+import org.scalatest.matchers.should.Matchers
 import repcheck.shared.models.congress.dos.member.MemberDO
 
 class MemberWriteInstancesSpec extends AnyFlatSpec with Matchers {
