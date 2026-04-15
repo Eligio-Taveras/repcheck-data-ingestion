@@ -67,7 +67,9 @@ jobs:
 
   e2e-gcp:
     runs-on: ubuntu-latest
-    needs: build
+    # No `needs: build` — the E2E job runs against real GCP Pub/Sub, doesn't contribute to
+    # coverage, and shares no state with the `build` job. Running both in parallel cuts wall
+    # time from build + e2e to max(build, e2e).
     concurrency:
       group: e2e-gcp-${{ github.ref }}
       cancel-in-progress: true
