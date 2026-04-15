@@ -8,7 +8,7 @@ import cats.syntax.all._
 import fs2.Stream
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.metadata.{PipelineRunSummary, ProcessingResult}
+import repcheck.pipeline.models.metadata.{ProcessingResult, StepRunSummary}
 
 /**
  * Testable pipeline execution logic. Accepts a pre-built result stream and logger so that tests can inject stubs
@@ -28,9 +28,9 @@ private[app] object PipelineExecutor {
       startedAt   <- Async[F].realTimeInstant
       results     <- resultStream.compile.toList
       completedAt <- Async[F].realTimeInstant
-      summary = PipelineRunSummary.fromResults(
-        runId = correlationId,
-        pipelineName = pipelineName,
+      summary = StepRunSummary.fromResults(
+        stepRunId = 0L,
+        stepName = pipelineName,
         startedAt = startedAt,
         completedAt = completedAt,
         results = results,
