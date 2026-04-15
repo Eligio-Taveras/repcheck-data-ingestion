@@ -10,16 +10,26 @@ import repcheck.shared.models.congress.dos.member.MemberDO
 
 class DoobieMemberRepository extends MemberRepository {
 
+  /**
+   * Explicit column list matching [[MemberDO]] constructor parameter order. Required because the `id` column was added
+   * via ALTER TABLE (migration 011) and sits at the end of the physical table layout, while `MemberDO.memberId` is the
+   * first field. Doobie maps columns positionally, so `SELECT *` would produce a type mismatch.
+   */
+  private val memberColumns: Fragment =
+    fr"""id, natural_key, first_name, last_name, direct_order_name, inverted_order_name,
+         honorific_name, birth_year, current_party, state, district, image_url,
+         image_attribution, official_url, update_date, created_at, updated_at"""
+
   override def findById(memberId: Long): ConnectionIO[Option[MemberDO]] = {
     val table = Fragment.const(Tables.Members)
-    sql"SELECT * FROM $table WHERE id = $memberId"
+    (fr"SELECT" ++ memberColumns ++ fr"FROM" ++ table ++ fr"WHERE id = $memberId")
       .query[MemberDO]
       .option
   }
 
   override def findByBioguideId(bioguideId: String): ConnectionIO[Option[MemberDO]] = {
     val table = Fragment.const(Tables.Members)
-    sql"SELECT * FROM $table WHERE natural_key = $bioguideId"
+    (fr"SELECT" ++ memberColumns ++ fr"FROM" ++ table ++ fr"WHERE natural_key = $bioguideId")
       .query[MemberDO]
       .option
   }
@@ -55,7 +65,7 @@ class DoobieMemberRepository extends MemberRepository {
 
   override def findPlaceholders(): ConnectionIO[List[MemberDO]] = {
     val table = Fragment.const(Tables.Members)
-    sql"SELECT * FROM $table WHERE update_date IS NULL"
+    (fr"SELECT" ++ memberColumns ++ fr"FROM" ++ table ++ fr"WHERE update_date IS NULL")
       .query[MemberDO]
       .to[List]
   }
