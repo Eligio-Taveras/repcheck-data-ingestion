@@ -106,7 +106,16 @@ lazy val pipelineSettings = commonSettings ++ Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(billsCommon, membersCommon, billMetadataPipeline, billTextAvailabilityChecker, billTextPipeline, docGenerator)
+  .aggregate(
+    billsCommon,
+    membersCommon,
+    billMetadataPipeline,
+    billTextAvailabilityChecker,
+    billTextPipeline,
+    memberProfilePipeline,
+    lisMappingRefresher,
+    docGenerator,
+  )
   .settings(
     commonSettings,
     name := "repcheck-data-ingestion",
@@ -131,7 +140,7 @@ lazy val membersCommon = (project in file("members-common"))
   .settings(commonSettings)
   .settings(
     name := "members-common",
-    libraryDependencies ++= doobie ++ catsEffect ++ logging ++ testDeps,
+    libraryDependencies ++= doobie ++ catsEffect ++ diff ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     Test / parallelExecution := false,
   )
@@ -163,6 +172,33 @@ lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-
     assembly / assemblyJarName := "bill-text-availability-checker.jar",
   )
 
+lazy val memberProfilePipeline = (project in file("member-profile-pipeline"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(membersCommon % "compile->compile;test->test")
+  .settings(pipelineSettings)
+  .settings(
+    name := "member-profile-pipeline",
+    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
+      ++ catsEffect ++ doobie ++ diff ++ pubSub ++ fs2 ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
+    coverageExcludedFiles := ".*MemberProfilePipelineApp",
+    assembly / mainClass := Some("repcheck.ingestion.members.profile.app.MemberProfilePipelineApp"),
+    assembly / assemblyJarName := "member-profile-pipeline.jar",
+  )
+
+lazy val lisMappingRefresher = (project in file("lis-mapping-refresher"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(membersCommon % "compile->compile;test->test")
+  .settings(pipelineSettings)
+  .settings(
+    name := "lis-mapping-refresher",
+    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
+      ++ catsEffect ++ doobie ++ xml ++ pubSub ++ fs2 ++ logging ++ testDeps,
+    coverageExcludedFiles := ".*LisMappingRefresherApp",
+    assembly / mainClass := Some("repcheck.members.lismapping.app.LisMappingRefresherApp"),
+    assembly / assemblyJarName := "lis-mapping-refresher.jar",
+  )
+
 lazy val billTextPipeline = (project in file("bill-text-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
   .dependsOn(billsCommon % "compile->compile;test->test")
@@ -188,12 +224,21 @@ addCommandAlias(
   "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; billsCommon / test" +
     "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))" +
+    "; set membersCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; membersCommon / test" +
+    "; set membersCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))" +
     "; set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; billTextPipeline / test" +
     "; set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; billTextAvailabilityChecker / test" +
-    "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
+    "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; memberProfilePipeline / test" +
+    "; set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; lisMappingRefresher / test" +
+    "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
 )
 
 lazy val docGenerator = (project in file("doc-generator"))
