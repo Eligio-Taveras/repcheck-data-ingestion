@@ -10,8 +10,9 @@ object TextVersionSelector {
     "PDF"            -> 2,
   )
 
-  /** Maps Congress.gov descriptive version type strings to the short codes used in the DB enum. */
+  /** Maps Congress.gov version type strings (descriptive or short) to the short codes used in the DB enum. */
   private val VersionTypeToCode: Map[String, String] = Map(
+    // Long-form descriptive → short code
     "Introduced in House"          -> "IH",
     "Introduced in Senate"         -> "IS",
     "Reported in House"            -> "RH",
@@ -30,6 +31,20 @@ object TextVersionSelector {
     "Agreed to House"              -> "ATH",
     "Placed on Calendar Senate"    -> "PCS",
     "Placed on Calendar House"     -> "PCH",
+    "Reported to Senate"           -> "RTS",
+    "Reported to House"            -> "RTH",
+    "Printed as Passed"            -> "PP",
+    // Short codes the API sometimes sends directly
+    "PCS" -> "PCS",
+    "PCH" -> "PCH",
+    "PL"  -> "PL",
+    "RDS" -> "RDS",
+    "RDH" -> "RDH",
+    "RTS" -> "RTS",
+    "RTH" -> "RTH",
+    "ATS" -> "ATS",
+    "ATH" -> "ATH",
+    "PP"  -> "PP",
   )
 
   /** Returns the short code for a known descriptive string, or the input unchanged if not recognized. */
