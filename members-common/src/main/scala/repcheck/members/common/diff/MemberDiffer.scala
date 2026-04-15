@@ -1,7 +1,6 @@
 package repcheck.members.common.diff
 
 import difflicious.Differ
-
 import repcheck.shared.models.congress.common.{Party, UsState}
 import repcheck.shared.models.congress.dos.member.MemberDO
 
