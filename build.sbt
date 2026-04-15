@@ -46,9 +46,9 @@ lazy val commonSettings = Seq(
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
     "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.17",
-    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.15",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.15" % Test,
-    "com.repcheck" %% "repchecksharedmodels"       % "0.1.23",
+    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.16",
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.16" % Test,
+    "com.repcheck" %% "repchecksharedmodels"       % "0.1.24",
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
@@ -106,7 +106,7 @@ lazy val pipelineSettings = commonSettings ++ Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(billsCommon, billMetadataPipeline, billTextAvailabilityChecker, billTextPipeline, docGenerator)
+  .aggregate(billsCommon, membersCommon, billMetadataPipeline, billTextAvailabilityChecker, billTextPipeline, docGenerator)
   .settings(
     commonSettings,
     name := "repcheck-data-ingestion",
@@ -126,9 +126,19 @@ lazy val billsCommon = (project in file("bills-common"))
     Test / parallelExecution := false,
   )
 
+lazy val membersCommon = (project in file("members-common"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .settings(commonSettings)
+  .settings(
+    name := "members-common",
+    libraryDependencies ++= doobie ++ catsEffect ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
+    Test / parallelExecution := false,
+  )
+
 lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
-  .dependsOn(billsCommon % "compile->compile;test->test")
+  .dependsOn(billsCommon % "compile->compile;test->test", membersCommon)
   .settings(pipelineSettings)
   .settings(
     name := "bill-metadata-pipeline",
@@ -136,7 +146,7 @@ lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
       ++ catsEffect ++ doobie ++ diff ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     coverageExcludedFiles := ".*BillMetadataPipeline;.*BillMetadataPipelineApp",
-    assembly / mainClass := Some("com.repcheck.bills.metadata.app.BillMetadataPipelineApp"),
+    assembly / mainClass := Some("repcheck.ingestion.bills.metadata.app.BillMetadataPipelineApp"),
     assembly / assemblyJarName := "bill-metadata-pipeline.jar",
   )
 
@@ -149,7 +159,7 @@ lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
     coverageExcludedFiles := ".*BillTextCheckerApp",
-    assembly / mainClass := Some("com.repcheck.bills.textcheck.app.BillTextCheckerApp"),
+    assembly / mainClass := Some("repcheck.ingestion.bills.textcheck.app.BillTextCheckerApp"),
     assembly / assemblyJarName := "bill-text-availability-checker.jar",
   )
 
@@ -166,7 +176,7 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
     coverageExcludedFiles := ".*BillTextPipelineApp",
     // WireMock-based tests share a dynamic port; sequential prevents port contention
     Test / parallelExecution := false,
-    assembly / mainClass := Some("com.repcheck.bills.text.app.BillTextPipelineApp"),
+    assembly / mainClass := Some("repcheck.ingestion.bills.text.app.BillTextPipelineApp"),
     assembly / assemblyJarName := "bill-text-pipeline.jar",
   )
 
