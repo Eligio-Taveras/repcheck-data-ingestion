@@ -18,10 +18,10 @@ import repcheck.shared.models.congress.dos.member.MemberLisMappingDO
  *
  * `id` is BIGSERIAL and never appears in INSERT clauses.
  *
- * Schema note: `member_id` and `lis_member_id` are both BIGINT surrogate keys, not the Congress.gov string
- * identifiers. `member_id` is a FK to `members.id` (whose natural key is the bioguide id, e.g. `"P000001"`);
- * `lis_member_id` is a FK to `lis_members.id` (whose natural key is the Senate LIS code, e.g. `"S428"`). Both natural
- * keys live on their parent tables' `natural_key` columns and are resolved to BIGINT ids before reaching this layer.
+ * Schema note: `member_id` and `lis_member_id` are both BIGINT surrogate keys, not the Congress.gov string identifiers.
+ * `member_id` is a FK to `members.id` (whose natural key is the bioguide id, e.g. `"P000001"`); `lis_member_id` is a FK
+ * to `lis_members.id` (whose natural key is the Senate LIS code, e.g. `"S428"`). Both natural keys live on their parent
+ * tables' `natural_key` columns and are resolved to BIGINT ids before reaching this layer.
  */
 class DoobieLisMappingRepository extends LisMappingRepository {
 
