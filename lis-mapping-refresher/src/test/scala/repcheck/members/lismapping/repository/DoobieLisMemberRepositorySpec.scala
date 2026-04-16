@@ -8,7 +8,8 @@ import doobie.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.members.lismapping.testing.{DockerRequired, TransactorFixture}
+import repcheck.members.common.testing.DockerRequired
+import repcheck.members.lismapping.testing.TransactorFixture
 import repcheck.shared.models.congress.dos.member.LisMemberDO
 
 class DoobieLisMemberRepositorySpec extends AnyFlatSpec with Matchers with TransactorFixture {

@@ -1,81 +1,29 @@
 package repcheck.members.lismapping.testing
 
-import cats.effect.IO
-
-import doobie.Transactor
 import doobie.implicits._
 
-import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach, Suite}
+import org.scalatest.Suite
 
 /**
- * Provides a shared AlloyDB Omni container and Doobie transactor for Docker-backed integration tests in the
- * lis-mapping-refresher project. Suites share one container (via [[SharedDockerPostgres]]) and run sequentially (`Test
- * / parallelExecution := false` in build.sbt) to avoid cross-suite FK violations during cleanup.
+ * Lis-mapping-specific layer over [[repcheck.members.common.testing.TransactorFixture]] (pulled in via
+ * `lisMappingRefresher.dependsOn(membersCommon % "test->test")`). All the Docker/container bootstrap
+ * (`DockerPostgres`, `SharedDockerPostgres`, `PostgresContainerInfo`) and the `xa` + `insertMember` helpers are
+ * inherited from the members-common fixture — this trait only adds cleanup of the two LIS-scoped tables
+ * (`member_lis_mapping`, `lis_members`) that are foreign to members-common's cleanup list.
  *
- * Seeds placeholder `members` rows so FK constraints on `member_lis_mapping.member_id` are satisfied. Cleans
- * `member_lis_mapping` and `lis_members` after every test to isolate state.
+ * Cleanup order matters: `member_lis_mapping` must be deleted before `members` (super.afterEach) because of the FK to
+ * `members.id`, and `lis_members` is cleaned here alongside it for symmetry.
  */
-trait TransactorFixture extends BeforeAndAfterAll with BeforeAndAfterEach { self: Suite =>
+trait TransactorFixture extends repcheck.members.common.testing.TransactorFixture { self: Suite =>
 
   import cats.effect.unsafe.implicits.global
 
-  protected lazy val containerInfo: PostgresContainerInfo = SharedDockerPostgres.info
-
-  protected lazy val xa: Transactor[IO] = Transactor.fromDriverManager[IO](
-    driver = "org.postgresql.Driver",
-    url = containerInfo.jdbcUrl,
-    user = containerInfo.user,
-    password = containerInfo.password,
-    logHandler = None,
-  )
-
-  override def beforeAll(): Unit = {
-    super.beforeAll()
-    val _ = containerInfo
-  }
-
-  override def beforeEach(): Unit = {
-    super.beforeEach()
-    seedMembers()
-  }
-
   override def afterEach(): Unit = {
-    cleanTables()
-    super.afterEach()
-  }
-
-  /**
-   * Insert placeholder member rows so FK constraints on `member_lis_mapping.member_id` are satisfied. Uses `ON CONFLICT
-   * DO NOTHING` to be idempotent across tests.
-   */
-  private def seedMembers(): Unit = {
-    val _ = sql"""
-      INSERT INTO members (natural_key) VALUES ('LIS-M001')
-        ON CONFLICT (natural_key) DO NOTHING;
-      INSERT INTO members (natural_key) VALUES ('LIS-M002')
-        ON CONFLICT (natural_key) DO NOTHING;
-      INSERT INTO members (natural_key) VALUES ('LIS-M003')
-        ON CONFLICT (natural_key) DO NOTHING;
-      INSERT INTO members (natural_key) VALUES ('LIS-M004')
-        ON CONFLICT (natural_key) DO NOTHING;
-      INSERT INTO members (natural_key) VALUES ('LIS-M005')
-        ON CONFLICT (natural_key) DO NOTHING;
-    """.update.run.transact(xa).unsafeRunSync()
-  }
-
-  /** Look up the auto-generated `members.id` for a given natural key. */
-  protected def memberIdByKey(key: String): Long =
-    sql"SELECT id FROM members WHERE natural_key = $key"
-      .query[Long]
-      .unique
-      .transact(xa)
-      .unsafeRunSync()
-
-  private def cleanTables(): Unit = {
     val _ = sql"""
       DELETE FROM member_lis_mapping;
       DELETE FROM lis_members;
     """.update.run.transact(xa).unsafeRunSync()
+    super.afterEach()
   }
 
 }

@@ -17,11 +17,18 @@ import repcheck.shared.models.congress.dos.member.MemberLisMappingDO
  * updated. This distinction drives downstream event emission.
  *
  * `id` is BIGSERIAL and never appears in INSERT clauses.
+ *
+ * Schema note: `member_id` and `lis_member_id` are both BIGINT surrogate keys, not the Congress.gov string
+ * identifiers. `member_id` is a FK to `members.id` (whose natural key is the bioguide id, e.g. `"P000001"`);
+ * `lis_member_id` is a FK to `lis_members.id` (whose natural key is the Senate LIS code, e.g. `"S428"`). Both natural
+ * keys live on their parent tables' `natural_key` columns and are resolved to BIGINT ids before reaching this layer.
  */
 class DoobieLisMappingRepository extends LisMappingRepository {
 
   private val table = Fragment.const(Tables.MemberLisMapping)
 
+  // Column order below matches MemberLisMappingDO's constructor (id, memberId: Long, lisMemberId: Long, lastVerified).
+  // member_id / lis_member_id are BIGINT FKs — see class Scaladoc.
   private val selectColumns: Fragment =
     fr"""id, member_id, lis_member_id, last_verified"""
 

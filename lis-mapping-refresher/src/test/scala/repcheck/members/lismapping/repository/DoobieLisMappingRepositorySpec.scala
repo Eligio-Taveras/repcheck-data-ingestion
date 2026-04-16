@@ -8,7 +8,8 @@ import doobie.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.members.lismapping.testing.{DockerRequired, TransactorFixture}
+import repcheck.members.common.testing.DockerRequired
+import repcheck.members.lismapping.testing.TransactorFixture
 import repcheck.shared.models.congress.dos.member.{LisMemberDO, MemberLisMappingDO}
 
 class DoobieLisMappingRepositorySpec extends AnyFlatSpec with Matchers with TransactorFixture {
@@ -39,7 +40,7 @@ class DoobieLisMappingRepositorySpec extends AnyFlatSpec with Matchers with Tran
     )
 
   "upsert" should "return Inserted for a brand-new mapping" taggedAs DockerRequired in {
-    val memberId    = memberIdByKey("LIS-M001")
+    val memberId    = insertMember("LIS-M001")
     val lisMemberId = insertLisMember("S500")
     val mapping     = makeMapping(memberId, lisMemberId, Instant.parse("2024-06-15T00:00:00Z"))
 
@@ -49,7 +50,7 @@ class DoobieLisMappingRepositorySpec extends AnyFlatSpec with Matchers with Tran
   }
 
   it should "return Updated when the (member_id, lis_member_id) pair already exists" taggedAs DockerRequired in {
-    val memberId    = memberIdByKey("LIS-M002")
+    val memberId    = insertMember("LIS-M002")
     val lisMemberId = insertLisMember("S501")
     val initial     = makeMapping(memberId, lisMemberId, Instant.parse("2024-06-15T00:00:00Z"))
     val refreshed   = initial.copy(lastVerified = Instant.parse("2025-01-01T00:00:00Z"))
@@ -62,7 +63,7 @@ class DoobieLisMappingRepositorySpec extends AnyFlatSpec with Matchers with Tran
   }
 
   it should "persist last_verified on update" taggedAs DockerRequired in {
-    val memberId    = memberIdByKey("LIS-M003")
+    val memberId    = insertMember("LIS-M003")
     val lisMemberId = insertLisMember("S502")
     val initial     = makeMapping(memberId, lisMemberId, Instant.parse("2024-06-15T00:00:00Z"))
     val refreshed   = initial.copy(lastVerified = Instant.parse("2025-02-02T00:00:00Z"))
@@ -83,9 +84,9 @@ class DoobieLisMappingRepositorySpec extends AnyFlatSpec with Matchers with Tran
   }
 
   it should "return a list of 3 results in the same order as the input batch" taggedAs DockerRequired in {
-    val m1  = memberIdByKey("LIS-M001")
-    val m2  = memberIdByKey("LIS-M002")
-    val m3  = memberIdByKey("LIS-M003")
+    val m1  = insertMember("LIS-M001")
+    val m2  = insertMember("LIS-M002")
+    val m3  = insertMember("LIS-M003")
     val l1  = insertLisMember("S600")
     val l2  = insertLisMember("S601")
     val l3  = insertLisMember("S602")
@@ -103,8 +104,8 @@ class DoobieLisMappingRepositorySpec extends AnyFlatSpec with Matchers with Tran
   }
 
   it should "mix Inserted and Updated results when some pairs already exist" taggedAs DockerRequired in {
-    val m1    = memberIdByKey("LIS-M001")
-    val m2    = memberIdByKey("LIS-M002")
+    val m1    = insertMember("LIS-M001")
+    val m2    = insertMember("LIS-M002")
     val l1    = insertLisMember("S700")
     val l2    = insertLisMember("S701")
     val now   = Instant.parse("2024-06-15T00:00:00Z")
@@ -125,7 +126,7 @@ class DoobieLisMappingRepositorySpec extends AnyFlatSpec with Matchers with Tran
   }
 
   it should "roundtrip an inserted mapping" taggedAs DockerRequired in {
-    val memberId    = memberIdByKey("LIS-M004")
+    val memberId    = insertMember("LIS-M004")
     val lisMemberId = insertLisMember("S800")
     val mapping     = makeMapping(memberId, lisMemberId, Instant.parse("2024-06-15T00:00:00Z"))
     val _           = lisMappingRepo.upsert(mapping).transact(xa).unsafeRunSync()
@@ -146,7 +147,7 @@ class DoobieLisMappingRepositorySpec extends AnyFlatSpec with Matchers with Tran
   }
 
   it should "roundtrip an inserted mapping" taggedAs DockerRequired in {
-    val memberId    = memberIdByKey("LIS-M005")
+    val memberId    = insertMember("LIS-M005")
     val lisMemberId = insertLisMember("S900")
     val mapping     = makeMapping(memberId, lisMemberId, Instant.parse("2024-06-15T00:00:00Z"))
     val _           = lisMappingRepo.upsert(mapping).transact(xa).unsafeRunSync()
