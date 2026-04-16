@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scoverage statement-count="100" statements-invoked="90" statement-rate="90.00" branch-rate="80.00">
+  <packages>
+    <package name="com.example.fixture">
+      <classes>
+        <class name="AllCovered" filename="/foo/AllCovered.scala" statement-count="10" statements-invoked="10" statement-rate="100.00" branch-rate="100.00"/>
+        <class name="MostlyCovered" filename="/foo/MostlyCovered.scala" statement-count="20" statements-invoked="19" statement-rate="95.00" branch-rate="95.00"/>
+        <class name="AlmostCovered" filename="/foo/AlmostCovered.scala" statement-count="20" statements-invoked="18" statement-rate="90.00" branch-rate="90.00"/>
+        <class name="PartlyCovered" filename="/foo/PartlyCovered.scala" statement-count="40" statements-invoked="28" statement-rate="70.00" branch-rate="70.00"/>
+        <class name="MarkerTrait" filename="/foo/MarkerTrait.scala" statement-count="0" statements-invoked="0" statement-rate="0.00" branch-rate="0.00"/>
+      </classes>
+    </package>
+  </packages>
+</scoverage>

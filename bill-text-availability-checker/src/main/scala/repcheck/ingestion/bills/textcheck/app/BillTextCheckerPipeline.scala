@@ -1,5 +1,7 @@
 package repcheck.ingestion.bills.textcheck.app
 
+import java.util.UUID
+
 import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
@@ -17,7 +19,7 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.logging.PipelineLogger
-import repcheck.pipeline.models.errors.RetryWrapper
+import repcheck.pipeline.models.errors.{ErrorClass, RetryWrapper}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
 private[app] object BillTextCheckerPipeline {
@@ -70,10 +72,18 @@ private[app] object BillTextCheckerPipeline {
           resultStream = resultStream,
           logger = logger,
           pipelineName = PipelineName,
-          correlationId = java.util.UUID.randomUUID(),
+          correlationId = UUID.randomUUID(),
         )
       }
     } yield exitCode
+
+  /**
+   * No-op retry logger used when we don't need per-attempt logging. Extracted as a named method (rather than inlined as
+   * a lambda) so tests can invoke it directly and cover its body — an inlined lambda is never exercised in unit tests
+   * because the test path doesn't trigger a retry, which leaves the lambda body uncovered.
+   */
+  private[app] def noOpRetryLogger[F[_]: Async]: (Int, Int, Long, ErrorClass, String, UUID) => F[Unit] =
+    (_, _, _, _, _, _) => Async[F].unit
 
   private[app] def buildChecker[F[_]: Async](
     httpClient: Client[F],
@@ -83,7 +93,7 @@ private[app] object BillTextCheckerPipeline {
     logger: PipelineLogger[F],
   ): BillTextAvailabilityChecker[F] = {
     val billRepo     = new DoobieBillRepository
-    val retryWrapper = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
+    val retryWrapper = new RetryWrapper[F](noOpRetryLogger[F])
     val eventPublisher = new DefaultIngestionEventPublisher[F](
       publisher = pubSubPublisher,
       topicName = config.eventPublisher.topicName,
@@ -108,7 +118,7 @@ private[app] object BillTextCheckerPipeline {
     logger: PipelineLogger[F],
   ): Stream[F, ProcessingResult] = {
     val _             = logger // reserved for future pre/post-stream logging
-    val correlationId = java.util.UUID.randomUUID()
+    val correlationId = UUID.randomUUID()
     checker.checkAll(correlationId)
   }
 

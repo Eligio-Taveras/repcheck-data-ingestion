@@ -64,6 +64,20 @@ jobs:
             bill-metadata-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-text-availability-checker/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-text-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
+            lis-mapping-refresher/target/scala-3.7.3/scoverage-report/scoverage.xml
+            member-profile-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
+            members-common/target/scala-3.7.3/scoverage-report/scoverage.xml
+
+      - name: Enforce per-file coverage threshold
+        # Parses every subproject's scoverage.xml and fails if any instrumented file is below
+        # the configured minimum statement coverage. Files excluded via `coverageExcludedFiles`
+        # in build.sbt are already omitted from the XML and naturally skipped here.
+        # Codecov's `patch` check (codecov.yml) enforces coverage on changed lines only; this
+        # step is stricter — it gates on global per-file coverage and surfaces violations
+        # directly in the CI log without waiting on Codecov.
+        # Placed after Codecov upload so Codecov's report is populated even when this gate
+        # fails, giving reviewers a second data source while fixing the violation.
+        run: python3 scripts/check-coverage.py --min 95
 
   e2e-gcp:
     runs-on: ubuntu-latest
