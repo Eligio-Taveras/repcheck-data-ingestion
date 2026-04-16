@@ -1,6 +1,6 @@
 package repcheck.members.common.diff
 
-import difflicious.Differ
+import difflicious.{DiffResult, Differ}
 import repcheck.shared.models.congress.dos.member.MemberDO
 
 /**
@@ -14,9 +14,27 @@ import repcheck.shared.models.congress.dos.member.MemberDO
  *
  * Because `useEquals` compares via `equals` without decomposing the case class into child fields, no per-field `Differ`
  * instances (for `Party`, `UsState`, etc.) are required.
+ *
+ * Identity-column handling: callers that want to compare members ignoring DB-managed fields (`memberId`, `createdAt`,
+ * `updatedAt`) should use [[diffIgnoringIdentity]] rather than the raw `given Differ[MemberDO]`. This is the equivalent
+ * of difflicious's `.ignoreAt`, which is only available on `Differ.derived` instances — and we deliberately avoid
+ * `derived` here for the coverage reason above.
  */
 object MemberDiffer {
 
   given Differ[MemberDO] = Differ.useEquals[MemberDO](_.toString)
+
+  /**
+   * Compares two `MemberDO` values while ignoring identity columns (`memberId`, `createdAt`, `updatedAt`). These are
+   * DB-managed (BIGSERIAL PK and timestamp triggers) and would otherwise produce false-positive change detections
+   * whenever an incoming API DTO is compared against a stored row. Equivalent to the difflicious
+   * `Differ.derived[MemberDO].ignoreAt(_.memberId).ignoreAt(_.createdAt).ignoreAt(_.updatedAt)` pattern, but built on
+   * `useEquals` so we keep coverage out of the macro-derived branch explosion.
+   */
+  def diffIgnoringIdentity(a: MemberDO, b: MemberDO): DiffResult =
+    summon[Differ[MemberDO]].diff(normalize(a), normalize(b))
+
+  private def normalize(m: MemberDO): MemberDO =
+    m.copy(memberId = 0L, createdAt = None, updatedAt = None)
 
 }

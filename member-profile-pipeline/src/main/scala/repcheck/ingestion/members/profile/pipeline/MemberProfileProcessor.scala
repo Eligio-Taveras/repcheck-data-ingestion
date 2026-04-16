@@ -16,7 +16,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.members.profile.api.MembersApiClient
 import repcheck.ingestion.members.profile.config.MemberProfileConfig
 import repcheck.ingestion.members.profile.errors.MemberProcessingFailed
-import repcheck.members.common.diff.MemberDiffer.given
+import repcheck.members.common.diff.MemberDiffer
 import repcheck.members.common.persistence.{
   MemberHistoryArchiver,
   MemberPartyHistoryRepository,
@@ -68,6 +68,11 @@ class MemberProfileProcessor[F[_]: Async](
           logger.error(logCtx, s"Page fetch failed, completing with partial results: ${e.getMessage}", Some(e))
         ) *> Stream.empty
       }
+      // NOTE: `parEvalMap(config.parallelism)` controls how many `processMember` fibers can run concurrently. It does NOT
+      // throttle outbound HTTP calls — Congress.gov rate limits are tied to the API key (shared across bills/members/
+      // votes/etc.), so the throttle has to live at the http4s `Client[F]` layer. The IOApp wiring (Phase 5A) wraps the
+      // raw EmberClient with a semaphore-gated middleware (see `BillMetadataPipeline.rateLimitedClient` for the
+      // canonical pattern) before constructing `MembersApiClient`, so the call sites here remain unchanged.
       .parEvalMap(config.parallelism) { listItem =>
         val itemCtx = LogContext(correlationId.toString, stepName, Some(correlationId), Some(listItem.bioguideId))
         processMember(listItem, correlationId).handleErrorWith { e =>
@@ -122,26 +127,19 @@ class MemberProfileProcessor[F[_]: Async](
    * The stale-first check matches the canonical [[repcheck.ingestion.common.changes.ChangeDetector.detect]] semantics:
    * if the incoming `updateDate` is not strictly after the stored one, we consider the member unchanged — we never
    * overwrite more-recent data. Placeholders written by the bills pipeline have `updateDate = None`: once the
-   * member-profile API returns a real `updateDate`, that `None -> Some` transition is treated as a change.
+   * member-profile API returns a real `updateDate`, that `None -> Some` transition falls through to the field-level
+   * diff and is treated as a change.
    *
-   * Only once the date check says the incoming wins do we compare fields via the `Differ[MemberDO]` summon. The differ
-   * uses value-equality on the normalized member shape (identity columns such as `memberId`, `createdAt`, and
-   * `updatedAt` are ignored by normalising them on both sides before comparison).
+   * Only once the date check says the incoming wins do we compare fields via [[MemberDiffer.diffIgnoringIdentity]],
+   * which excludes the DB-managed identity columns (`memberId`, `createdAt`, `updatedAt`) — see that method's docstring
+   * for why we don't use difflicious's `.ignoreAt` directly.
    */
-  private[pipeline] def isChanged(incoming: MemberDO, stored: MemberDO): Boolean = {
-    val incomingSupersedes = (incoming.updateDate, stored.updateDate) match {
-      case (Some(i), Some(s)) => i.isAfter(s)
-      case (Some(_), None)    => true
-      case (None, _)          => false
+  private[pipeline] def isChanged(incoming: MemberDO, stored: MemberDO): Boolean =
+    (incoming.updateDate, stored.updateDate) match {
+      case (Some(i), Some(s)) if !i.isAfter(s) => false
+      case (None, _)                           => false
+      case _                                   => !MemberDiffer.diffIgnoringIdentity(incoming, stored).isOk
     }
-    if (!incomingSupersedes) { false }
-    else {
-      val differ             = summon[difflicious.Differ[MemberDO]]
-      val normalizedIncoming = incoming.copy(memberId = 0L, createdAt = None, updatedAt = None)
-      val normalizedStored   = stored.copy(memberId = 0L, createdAt = None, updatedAt = None)
-      !differ.diff(normalizedIncoming, normalizedStored).isOk
-    }
-  }
 
   private def persistAndEmit(
     bioguideId: String,
