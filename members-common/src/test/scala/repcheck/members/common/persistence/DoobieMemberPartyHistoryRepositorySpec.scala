@@ -68,8 +68,8 @@ class DoobieMemberPartyHistoryRepositorySpec extends AnyFlatSpec with Matchers w
     // silently dropped the second affiliation via ON CONFLICT DO NOTHING.
     val memberId = insertMember("P000006")
     val entries = List(
-      makeEntry(memberId, 2011, "Democrat", "D"),    // served as Democrat early 2011
-      makeEntry(memberId, 2011, "Independent", "I"), // switched to Independent later in 2011
+      makeEntry(memberId, 2011, "Democrat", "D"),   // served as Democrat early 2011
+      makeEntry(memberId, 2011, "Independent", "I"),// switched to Independent later in 2011
     )
     repo.appendNew(memberId, entries).transact(xa).unsafeRunSync()
 
