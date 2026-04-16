@@ -197,6 +197,7 @@ lazy val lisMappingRefresher = (project in file("lis-mapping-refresher"))
     name := "lis-mapping-refresher",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ xml ++ pubSub ++ fs2 ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     coverageExcludedFiles := ".*LisMappingRefresherApp",
     // Intra-subproject parallel execution causes FK violations because DoobieLisMember*Spec and
     // DoobieLisMapping*Spec share SharedDockerPostgres's singleton container and each suite's
