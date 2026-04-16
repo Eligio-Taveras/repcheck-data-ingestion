@@ -198,6 +198,11 @@ lazy val lisMappingRefresher = (project in file("lis-mapping-refresher"))
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ xml ++ pubSub ++ fs2 ++ logging ++ testDeps,
     coverageExcludedFiles := ".*LisMappingRefresherApp",
+    // Intra-subproject parallel execution causes FK violations because DoobieLisMember*Spec and
+    // DoobieLisMapping*Spec share SharedDockerPostgres's singleton container and each suite's
+    // afterEach truncates lis_members / member_lis_mapping — which clobbers the other suite's
+    // in-flight inserts. Matches the convention used by billsCommon and membersCommon.
+    Test / parallelExecution := false,
     assembly / mainClass := Some("repcheck.members.lismapping.app.LisMappingRefresherApp"),
     assembly / assemblyJarName := "lis-mapping-refresher.jar",
   )
