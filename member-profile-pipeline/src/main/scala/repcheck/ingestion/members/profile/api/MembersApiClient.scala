@@ -51,10 +51,18 @@ class MembersApiClient[F[_]](
       case Left(err)  => temporal.raiseError(MemberFetchFailed(None, err.sanitized, Some(err)))
     }
 
-  override def fetchPage(params: FetchParams): F[PagedResponse[MemberListItemDTO]] = {
-    val congressSegment = params.congress.fold("")(c => s"/$c")
+  override def fetchPage(params: FetchParams): F[PagedResponse[MemberListItemDTO]] =
+    params.congress match {
+      case None           => temporal.raiseError(MemberFetchFailed(None, "congress is required for member fetch"))
+      case Some(congress) => fetchPageForCongress(congress, params)
+    }
 
-    parseUri(s"${config.baseUrl}/member/congress$congressSegment").flatMap { baseUri =>
+  // The Congress.gov member list endpoint is scoped by congress: `/v3/member/congress/{congress}`. Per acceptance
+  // criteria 5.1, this client only supports the by-congress form — there is no "all members across all congresses"
+  // endpoint we target. Back-filling older congresses is a pipeline concern: the orchestrator iterates the configured
+  // congress range (e.g., 118, 119) and invokes the client once per congress, not a single unfiltered call.
+  private def fetchPageForCongress(congress: Int, params: FetchParams): F[PagedResponse[MemberListItemDTO]] =
+    parseUri(s"${config.baseUrl}/member/congress/$congress").flatMap { baseUri =>
       val uri = baseUri
         .withQueryParam("api_key", config.apiKey)
         .withQueryParam("format", "json")
@@ -90,7 +98,6 @@ class MembersApiClient[F[_]](
         correlationId = UUID.randomUUID(),
       )
     }
-  }
 
   def fetchDetail(detailUrl: String): F[MemberDetailDTO] =
     parseUri(detailUrl).flatMap { baseUri =>

@@ -148,6 +148,14 @@ class MembersApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
     )
   }
 
+  it should "raise MemberFetchFailed when congress is missing" in {
+    val client = makeClient()
+    val ex = intercept[MemberFetchFailed] {
+      client.fetchPage(FetchParams(congress = None, pageSize = 25)).unsafeRunSync()
+    }
+    ex.getMessage should include("congress is required")
+  }
+
   it should "return an empty page when the response has no members" in {
     wireMock.stubFor(
       get(urlPathEqualTo("/v3/member/congress/118"))
