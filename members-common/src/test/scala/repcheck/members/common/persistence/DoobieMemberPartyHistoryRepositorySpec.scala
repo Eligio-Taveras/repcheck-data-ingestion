@@ -43,7 +43,7 @@ class DoobieMemberPartyHistoryRepositorySpec extends AnyFlatSpec with Matchers w
     found.size shouldBe 3
   }
 
-  it should "deduplicate on repeat calls using (member_id, start_year)" taggedAs DockerRequired in {
+  it should "deduplicate on repeat calls using (member_id, start_year, party_name)" taggedAs DockerRequired in {
     val memberId = insertMember("P000003")
     val first = List(
       makeEntry(memberId, 2005, "Democrat", "D"),
@@ -60,6 +60,22 @@ class DoobieMemberPartyHistoryRepositorySpec extends AnyFlatSpec with Matchers w
 
     val found = repo.findByMemberId(memberId).transact(xa).unsafeRunSync()
     found.size shouldBe 3
+  }
+
+  it should "preserve a mid-year party switch (same start_year, different party_name)" taggedAs DockerRequired in {
+    // Regression guard for migration 020: two entries with the same (member_id, start_year)
+    // but different party_name must both be inserted. A 2-column UNIQUE target would have
+    // silently dropped the second affiliation via ON CONFLICT DO NOTHING.
+    val memberId = insertMember("P000006")
+    val entries = List(
+      makeEntry(memberId, 2011, "Democrat", "D"),    // served as Democrat early 2011
+      makeEntry(memberId, 2011, "Independent", "I"), // switched to Independent later in 2011
+    )
+    repo.appendNew(memberId, entries).transact(xa).unsafeRunSync()
+
+    val found = repo.findByMemberId(memberId).transact(xa).unsafeRunSync()
+    val _     = found.size shouldBe 2
+    found.flatMap(_.partyName).toSet shouldBe Set("Democrat", "Independent")
   }
 
   it should "handle empty list (no rows inserted)" taggedAs DockerRequired in {
