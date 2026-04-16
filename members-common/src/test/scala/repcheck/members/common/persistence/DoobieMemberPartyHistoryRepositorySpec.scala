@@ -52,14 +52,35 @@ class DoobieMemberPartyHistoryRepositorySpec extends AnyFlatSpec with Matchers w
     repo.appendNew(memberId, first).transact(xa).unsafeRunSync()
 
     val second = List(
-      makeEntry(memberId, 2005, "Democrat", "D"),    // duplicate — ignored
-      makeEntry(memberId, 2011, "Independent", "I"), // duplicate — ignored
+      makeEntry(memberId, 2005, "Democrat", "D"),    // duplicate — UPDATE is no-op (same abbrev)
+      makeEntry(memberId, 2011, "Independent", "I"), // duplicate — UPDATE is no-op (same abbrev)
       makeEntry(memberId, 2015, "Democrat", "D"),    // new
     )
     repo.appendNew(memberId, second).transact(xa).unsafeRunSync()
 
     val found = repo.findByMemberId(memberId).transact(xa).unsafeRunSync()
     found.size shouldBe 3
+  }
+
+  it should "be idempotent under DO UPDATE SET — re-ingest keeps row count at 1" taggedAs DockerRequired in {
+    // DO UPDATE SET party_abbreviation = EXCLUDED.party_abbreviation semantically says
+    // "always reflect the latest ingested abbreviation on conflict". In practice
+    // party_abbreviation is enum-constrained to {D, R, I} and is uniquely determined by
+    // party_name, so the UPDATE is functionally a no-op for valid inputs. This test
+    // guards against a regression where the UPDATE accidentally produces duplicate rows
+    // or corrupts state.
+    val memberId = insertMember("P000007")
+    val entry    = List(makeEntry(memberId, 2005, "Independent", "I"))
+
+    repo.appendNew(memberId, entry).transact(xa).unsafeRunSync()
+    repo.appendNew(memberId, entry).transact(xa).unsafeRunSync()
+    repo.appendNew(memberId, entry).transact(xa).unsafeRunSync()
+
+    val found = repo.findByMemberId(memberId).transact(xa).unsafeRunSync()
+    val _     = found.size shouldBe 1
+    val row   = found.headOption.getOrElse(sys.error("Expected single row after re-ingest"))
+    val _     = row.partyName shouldBe Some("Independent")
+    row.partyAbbreviation shouldBe Some("I")
   }
 
   it should "preserve a mid-year party switch (same start_year, different party_name)" taggedAs DockerRequired in {
