@@ -52,7 +52,7 @@ class MembersApiClient[F[_]](
     }
 
   override def fetchPage(params: FetchParams): F[PagedResponse[MemberListItemDTO]] = {
-    val congressSegment = params.congress.fold("") { c => s"/$c" }
+    val congressSegment = params.congress.fold("")(c => s"/$c")
 
     parseUri(s"${config.baseUrl}/member/congress$congressSegment").flatMap { baseUri =>
       val uri = baseUri
@@ -68,9 +68,8 @@ class MembersApiClient[F[_]](
             PagedResponse(
               items = listResponse.members,
               totalCount = listResponse.pagination.flatMap(_.count).getOrElse(listResponse.members.size),
-              nextOffset =
-                if (listResponse.members.size < params.pageSize) { None }
-                else { Some(params.offset + params.pageSize) },
+              nextOffset = if (listResponse.members.size < params.pageSize) { None }
+              else { Some(params.offset + params.pageSize) },
             )
           }
         } else {
