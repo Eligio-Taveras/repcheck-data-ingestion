@@ -51,7 +51,18 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
   )
 
   private val correlationId = UUID.randomUUID()
-  private val config        = MemberProfileConfig(congress = 118, parallelism = 1, pageDelay = 0.millis)
+
+  private val config = MemberProfileConfig(
+    congress = 118,
+    parallelism = 1,
+    pageDelay = 0.millis,
+    eventPublishRetry = repcheck.pipeline.models.errors.RetryConfig(
+      maxRetries = 0,
+      initialBackoffMs = 1,
+      maxBackoffMs = 10,
+      backoffMultiplier = 1.0,
+    ),
+  )
 
   private case class TestFixture(
     apiClient: MembersApiClient[IO],
