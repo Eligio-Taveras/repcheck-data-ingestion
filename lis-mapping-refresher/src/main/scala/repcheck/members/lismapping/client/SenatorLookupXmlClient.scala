@@ -1,5 +1,7 @@
 package repcheck.members.lismapping.client
 
+import java.util.UUID
+
 import cats.effect.Async
 import cats.syntax.all._
 
@@ -31,16 +33,18 @@ class SenatorLookupXmlClient[F[_]: Async](
   logger: PipelineLogger[F],
 ) {
 
-  private val stepName: String = "SenatorLookupXmlClient"
-  private val runId: String    = "senator-lookup-xml"
+  // Pipeline step identifier — constant per class, kebab-case, action-focused. Matches the convention used by
+  // BillTextAvailabilityChecker/BillMetadataProcessor (see their `StepName` vals). The per-run identity comes from
+  // the `correlationId` parameter on `fetchMappings`, not from a hardcoded string.
+  private val StepName: String = "senator-lookup-xml-fetch"
 
-  def fetchMappings(): Stream[F, SenatorLookupXmlDTO] =
+  def fetchMappings(correlationId: UUID): Stream[F, SenatorLookupXmlDTO] = {
+    val logCtx = LogContext(runId = correlationId.toString, stepName = StepName, correlationId = Some(correlationId))
+
     Stream
       .eval(
-        logger.info(
-          LogContext(runId = runId, stepName = stepName),
-          s"Fetching senator-lookup XML from ${config.senatorXmlUrl}",
-        ) *> xmlFeedClient.fetchXml(config.senatorXmlUrl)
+        logger.info(logCtx, s"Fetching senator-lookup XML from ${config.senatorXmlUrl}") *>
+          xmlFeedClient.fetchXml(config.senatorXmlUrl)
       )
       .flatMap { elem =>
         val parsed   = SenatorXmlParser.parse(elem)
@@ -48,13 +52,14 @@ class SenatorLookupXmlClient[F[_]: Async](
         Stream
           .eval(
             logger.info(
-              LogContext(runId = runId, stepName = stepName),
+              logCtx,
               s"Parsed ${parsed.size.toString} senators, ${filtered.size.toString} within lookback window " +
                 s"[${windowStart.toString}, ${config.currentCongress.toString}]",
             )
           )
           .flatMap(_ => Stream.emits(filtered))
       }
+  }
 
   private def windowStart: Int =
     config.currentCongress - config.congressLookbackWindow + 1

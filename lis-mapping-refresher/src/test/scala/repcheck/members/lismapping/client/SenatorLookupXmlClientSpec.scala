@@ -1,5 +1,7 @@
 package repcheck.members.lismapping.client
 
+import java.util.UUID
+
 import scala.concurrent.duration._
 
 import cats.effect.IO
@@ -132,7 +134,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     )
     stubXml("/senators.xml", body)
 
-    val result = makeClient(baseConfig()).fetchMappings().compile.toList.unsafeRunSync()
+    val result = makeClient(baseConfig()).fetchMappings(UUID.randomUUID()).compile.toList.unsafeRunSync()
     val _      = result.size shouldBe 3
     result.map(_.lisId) should contain theSameElementsAs List("S1", "S2", "S3")
   }
@@ -149,7 +151,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     stubXml("/senators.xml", body)
 
     // Window: currentCongress=118, lookback=5 → [114, 118]
-    val result = makeClient(baseConfig()).fetchMappings().compile.toList.unsafeRunSync()
+    val result = makeClient(baseConfig()).fetchMappings(UUID.randomUUID()).compile.toList.unsafeRunSync()
     val _      = result.size shouldBe 2
     result.map(_.lisId) should contain theSameElementsAs List("S-current-1", "S-current-2")
   }
@@ -162,7 +164,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     )
     stubXml("/senators.xml", body)
 
-    val result = makeClient(baseConfig()).fetchMappings().compile.toList.unsafeRunSync()
+    val result = makeClient(baseConfig()).fetchMappings(UUID.randomUUID()).compile.toList.unsafeRunSync()
     val _      = result.size shouldBe 1
     result.map(_.lisId) shouldBe List("S-appointed")
   }
@@ -176,7 +178,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     )
     stubXml("/senators.xml", body)
 
-    val result = makeClient(baseConfig()).fetchMappings().compile.toList.unsafeRunSync()
+    val result = makeClient(baseConfig()).fetchMappings(UUID.randomUUID()).compile.toList.unsafeRunSync()
     val _      = result.size shouldBe 1
     result.map(_.lisId) shouldBe List("S-boundary")
   }
@@ -185,7 +187,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     stubXml("/senators.xml", "<contact_information></contact_information>", status = 404)
 
     val thrown = intercept[Exception] {
-      makeClient(baseConfig()).fetchMappings().compile.drain.unsafeRunSync()
+      makeClient(baseConfig()).fetchMappings(UUID.randomUUID()).compile.drain.unsafeRunSync()
     }
     thrown.toString should not be empty
   }
@@ -193,7 +195,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
   it should "emit an empty stream when the feed has no <member> entries" in {
     stubXml("/senators.xml", "<contact_information></contact_information>")
 
-    val result = makeClient(baseConfig()).fetchMappings().compile.toList.unsafeRunSync()
+    val result = makeClient(baseConfig()).fetchMappings(UUID.randomUUID()).compile.toList.unsafeRunSync()
     result shouldBe empty
   }
 
@@ -201,7 +203,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     stubXml("/senators.xml", "this is not xml at all {{{")
 
     val thrown = intercept[Exception] {
-      makeClient(baseConfig()).fetchMappings().compile.drain.unsafeRunSync()
+      makeClient(baseConfig()).fetchMappings(UUID.randomUUID()).compile.drain.unsafeRunSync()
     }
     thrown.toString should not be empty
   }
@@ -216,7 +218,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     )
     stubXml("/senators.xml", body)
 
-    val result = makeClient(baseConfig()).fetchMappings().compile.toList.unsafeRunSync()
+    val result = makeClient(baseConfig()).fetchMappings(UUID.randomUUID()).compile.toList.unsafeRunSync()
     val _      = result.size shouldBe 1
     result.map(_.lisId) shouldBe List("S-edge-in")
   }
@@ -236,7 +238,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
 
     stubXml("/senators.xml", document(Seq(validMember, brokenMember)))
 
-    val result = makeClient(baseConfig()).fetchMappings().compile.toList.unsafeRunSync()
+    val result = makeClient(baseConfig()).fetchMappings(UUID.randomUUID()).compile.toList.unsafeRunSync()
     val _      = result.size shouldBe 1
     result.map(_.lisId) shouldBe List("S-good")
   }
@@ -249,7 +251,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     )
     stubXml("/senators.xml", body)
 
-    val result = makeClient(baseConfig()).fetchMappings().compile.toList.unsafeRunSync()
+    val result = makeClient(baseConfig()).fetchMappings(UUID.randomUUID()).compile.toList.unsafeRunSync()
     result shouldBe empty
   }
 
