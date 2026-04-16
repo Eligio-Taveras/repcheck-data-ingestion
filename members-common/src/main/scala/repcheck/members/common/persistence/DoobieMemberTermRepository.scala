@@ -2,7 +2,6 @@ package repcheck.members.common.persistence
 
 import doobie._
 import doobie.implicits._
-import doobie.postgres.implicits._
 
 import repcheck.pipeline.models.constants.Tables
 import repcheck.shared.models.congress.common.DoobieEnumInstances._
@@ -21,15 +20,15 @@ class DoobieMemberTermRepository extends MemberTermRepository {
   private val table = Fragment.const(Tables.MemberTerms)
 
   private type InsertRow = (
-    Long,              // member_id
-    Option[Chamber],   // chamber
-    Option[Int],       // congress
-    Option[Int],       // start_year
-    Option[Int],       // end_year
-    Option[MemberType],// member_type
-    Option[UsState],   // state_code
-    Option[String],    // state_name
-    Option[Int],       // district
+    Long,               // member_id
+    Option[Chamber],    // chamber
+    Option[Int],        // congress
+    Option[Int],        // start_year
+    Option[Int],        // end_year
+    Option[MemberType], // member_type
+    Option[UsState],    // state_code
+    Option[String],     // state_name
+    Option[Int],        // district
   )
 
   override def replaceAll(memberId: Long, terms: List[MemberTermDO]): ConnectionIO[Unit] = {

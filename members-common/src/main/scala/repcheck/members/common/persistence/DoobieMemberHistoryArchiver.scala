@@ -23,10 +23,10 @@ import repcheck.pipeline.models.constants.Tables
 class DoobieMemberHistoryArchiver extends MemberHistoryArchiver[ConnectionIO] {
 
   override def archiveMember(bioguideId: String): ConnectionIO[Unit] = {
-    val membersTable    = Fragment.const(Tables.Members)
-    val historyTable    = Fragment.const(Tables.MemberHistory)
-    val termsTable      = Fragment.const(Tables.MemberTerms)
-    val termHistoryTbl  = Fragment.const(Tables.MemberTermHistory)
+    val membersTable   = Fragment.const(Tables.Members)
+    val historyTable   = Fragment.const(Tables.MemberHistory)
+    val termsTable     = Fragment.const(Tables.MemberTerms)
+    val termHistoryTbl = Fragment.const(Tables.MemberTermHistory)
 
     val existsQuery = sql"SELECT id FROM $membersTable WHERE natural_key = $bioguideId"
       .query[Long]

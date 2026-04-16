@@ -6,13 +6,14 @@ import cats.effect.IO
 
 import doobie.Transactor
 import doobie.implicits._
+import doobie.postgres.implicits._
 
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach, Suite}
 
 /**
  * Provides a shared AlloyDB Omni container and Doobie transactor for Docker-backed integration tests in
- * `members-common`. All suites share one container (via [[SharedDockerPostgres]]) and run sequentially
- * (`Test / parallelExecution := false` in `build.sbt`) to avoid cross-suite FK violations during cleanup.
+ * `members-common`. All suites share one container (via [[SharedDockerPostgres]]) and run sequentially (`Test /
+ * parallelExecution := false` in `build.sbt`) to avoid cross-suite FK violations during cleanup.
  */
 trait TransactorFixture extends BeforeAndAfterAll with BeforeAndAfterEach { self: Suite =>
 

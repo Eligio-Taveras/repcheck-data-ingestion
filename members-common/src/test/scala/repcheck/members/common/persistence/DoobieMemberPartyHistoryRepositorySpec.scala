@@ -52,9 +52,9 @@ class DoobieMemberPartyHistoryRepositorySpec extends AnyFlatSpec with Matchers w
     repo.appendNew(memberId, first).transact(xa).unsafeRunSync()
 
     val second = List(
-      makeEntry(memberId, 2005, "Democrat", "D"),        // duplicate — ignored
-      makeEntry(memberId, 2011, "Independent", "I"),     // duplicate — ignored
-      makeEntry(memberId, 2015, "Democrat", "D"),        // new
+      makeEntry(memberId, 2005, "Democrat", "D"),    // duplicate — ignored
+      makeEntry(memberId, 2011, "Independent", "I"), // duplicate — ignored
+      makeEntry(memberId, 2015, "Democrat", "D"),    // new
     )
     repo.appendNew(memberId, second).transact(xa).unsafeRunSync()
 
