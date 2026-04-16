@@ -165,4 +165,35 @@ class MemberDifferSpec extends AnyFlatSpec with Matchers {
     result.isOk shouldBe true
   }
 
+  "MemberDiffer.diffIgnoringIdentity" should "ignore memberId differences" in {
+    val a = baseMember
+    val b = baseMember.copy(memberId = 99L)
+    val _ = MemberDiffer.diffIgnoringIdentity(a, a).isOk shouldBe true
+    MemberDiffer.diffIgnoringIdentity(a, b).isOk shouldBe true
+  }
+
+  it should "ignore createdAt differences" in {
+    val a = baseMember
+    val b = baseMember.copy(createdAt = Some(Instant.parse("2030-01-01T00:00:00Z")))
+    MemberDiffer.diffIgnoringIdentity(a, b).isOk shouldBe true
+  }
+
+  it should "ignore updatedAt differences" in {
+    val a = baseMember
+    val b = baseMember.copy(updatedAt = Some(Instant.parse("2030-01-01T00:00:00Z")))
+    MemberDiffer.diffIgnoringIdentity(a, b).isOk shouldBe true
+  }
+
+  it should "still detect non-identity field differences" in {
+    val a = baseMember
+    val b = baseMember.copy(firstName = Some("Jane"))
+    MemberDiffer.diffIgnoringIdentity(a, b).isOk shouldBe false
+  }
+
+  it should "detect a non-identity field change even when identity fields also differ" in {
+    val a = baseMember
+    val b = baseMember.copy(memberId = 99L, firstName = Some("Jane"))
+    MemberDiffer.diffIgnoringIdentity(a, b).isOk shouldBe false
+  }
+
 }
