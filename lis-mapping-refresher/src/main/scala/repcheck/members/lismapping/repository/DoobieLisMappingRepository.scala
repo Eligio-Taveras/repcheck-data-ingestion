@@ -12,8 +12,8 @@ import repcheck.shared.models.congress.dos.member.MemberLisMappingDO
 /**
  * Doobie implementation of [[LisMappingRepository]].
  *
- * Uses PostgreSQL's `xmax` system column to distinguish a freshly inserted row from one that was updated via
- * `ON CONFLICT`: `xmax = 0` indicates a brand-new insert, any non-zero value indicates the row already existed and was
+ * Uses PostgreSQL's `xmax` system column to distinguish a freshly inserted row from one that was updated via `ON
+ * CONFLICT`: `xmax = 0` indicates a brand-new insert, any non-zero value indicates the row already existed and was
  * updated. This distinction drives downstream event emission.
  *
  * `id` is BIGSERIAL and never appears in INSERT clauses.

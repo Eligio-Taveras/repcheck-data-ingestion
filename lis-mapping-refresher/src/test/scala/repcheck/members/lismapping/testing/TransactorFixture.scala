@@ -9,8 +9,8 @@ import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach, Suite}
 
 /**
  * Provides a shared AlloyDB Omni container and Doobie transactor for Docker-backed integration tests in the
- * lis-mapping-refresher project. Suites share one container (via [[SharedDockerPostgres]]) and run sequentially
- * (`Test / parallelExecution := false` in build.sbt) to avoid cross-suite FK violations during cleanup.
+ * lis-mapping-refresher project. Suites share one container (via [[SharedDockerPostgres]]) and run sequentially (`Test
+ * / parallelExecution := false` in build.sbt) to avoid cross-suite FK violations during cleanup.
  *
  * Seeds placeholder `members` rows so FK constraints on `member_lis_mapping.member_id` are satisfied. Cleans
  * `member_lis_mapping` and `lis_members` after every test to isolate state.
@@ -45,8 +45,8 @@ trait TransactorFixture extends BeforeAndAfterAll with BeforeAndAfterEach { self
   }
 
   /**
-   * Insert placeholder member rows so FK constraints on `member_lis_mapping.member_id` are satisfied. Uses
-   * `ON CONFLICT DO NOTHING` to be idempotent across tests.
+   * Insert placeholder member rows so FK constraints on `member_lis_mapping.member_id` are satisfied. Uses `ON CONFLICT
+   * DO NOTHING` to be idempotent across tests.
    */
   private def seedMembers(): Unit = {
     val _ = sql"""
