@@ -20,11 +20,7 @@ import repcheck.ingestion.common.xml.XmlFeedClient
 import repcheck.members.lismapping.config.LisMappingConfig
 import repcheck.pipeline.models.errors.RetryConfig
 
-class SenatorLookupXmlClientSpec
-    extends AnyFlatSpec
-    with Matchers
-    with BeforeAndAfterAll
-    with BeforeAndAfterEach {
+class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
   private val wireMock = new WireMockServer(
     WireMockConfiguration
@@ -50,10 +46,10 @@ class SenatorLookupXmlClientSpec
   )
 
   private val noopLogger: PipelineLogger[IO] = new PipelineLogger[IO] {
-    def info(context: LogContext, message: String): IO[Unit]                           = IO.unit
-    def warn(context: LogContext, message: String): IO[Unit]                           = IO.unit
+    def info(context: LogContext, message: String): IO[Unit]                            = IO.unit
+    def warn(context: LogContext, message: String): IO[Unit]                            = IO.unit
     def error(context: LogContext, message: String, cause: Option[Throwable]): IO[Unit] = IO.unit
-    def debug(context: LogContext, message: String): IO[Unit]                          = IO.unit
+    def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
   }
 
   private def baseConfig(

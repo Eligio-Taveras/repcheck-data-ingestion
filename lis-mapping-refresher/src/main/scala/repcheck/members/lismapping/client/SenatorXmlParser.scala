@@ -32,8 +32,8 @@ import repcheck.shared.models.congress.dto.vote.{SenatorLookupXmlDTO, ServicePer
  *   </contact_information>
  * }}}
  *
- * Resilience: an individual `<member>` entry that fails to parse (missing required field or malformed numeric value)
- * is skipped rather than aborting the whole feed. Required fields for a senator to be kept are `lisId` (from
+ * Resilience: an individual `<member>` entry that fails to parse (missing required field or malformed numeric value) is
+ * skipped rather than aborting the whole feed. Required fields for a senator to be kept are `lisId` (from
  * `<lis_member_id>`), `bioguideId` (from `<bioguide_id>`), `firstName`, `lastName`, `party`, and `state`. Everything
  * else is optional.
  */
@@ -59,22 +59,22 @@ object SenatorXmlParser {
     val serviceDates = parseServiceDates(node \ "service_dates")
 
     for {
-      lis  <- lisId
-      bio  <- bioguideId
-      fn   <- firstName
-      ln   <- lastName
-      p    <- party
-      st   <- state
+      lis <- lisId
+      bio <- bioguideId
+      fn  <- firstName
+      ln  <- lastName
+      p   <- party
+      st  <- state
     } yield SenatorLookupXmlDTO(
-      lisId        = lis,
-      bioguideId   = bio,
-      firstName    = fn,
-      lastName     = ln,
-      party        = p,
-      state        = st,
-      senateClass  = senateClass,
+      lisId = lis,
+      bioguideId = bio,
+      firstName = fn,
+      lastName = ln,
+      party = p,
+      state = st,
+      senateClass = senateClass,
       serviceDates = serviceDates,
-      isCurrent    = isCurrent,
+      isCurrent = isCurrent,
     )
   }
 

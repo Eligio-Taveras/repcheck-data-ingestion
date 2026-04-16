@@ -11,8 +11,8 @@ import repcheck.members.lismapping.config.LisMappingConfig
 import repcheck.shared.models.congress.dto.vote.SenatorLookupXmlDTO
 
 /**
- * Fetches and parses the senate.gov `senators_cfm.xml` feed into a stream of [[SenatorLookupXmlDTO]]s filtered to
- * the configured congress lookback window.
+ * Fetches and parses the senate.gov `senators_cfm.xml` feed into a stream of [[SenatorLookupXmlDTO]]s filtered to the
+ * configured congress lookback window.
  *
  * The full feed is a single HTTP GET returning ~100 rows, but the interface is expressed as a stream for consistency
  * with the rest of the pipeline (and so downstream processors can `parEvalMap` over it identically to paginated
