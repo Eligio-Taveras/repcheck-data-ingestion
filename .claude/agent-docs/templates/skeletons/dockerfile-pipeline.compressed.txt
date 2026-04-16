@@ -29,7 +29,7 @@ FROM gcr.io/distroless/java21-debian12
 
 WORKDIR /app
 
-COPY --from=build /app/PLACEHOLDER_PROJECT/target/scala-3.7.3/PLACEHOLDER_JAR app.jar
+COPY --from=build /app/PLACEHOLDER_PROJECT/target/scala-3.4.1/PLACEHOLDER_JAR app.jar
 
 ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
 ```
