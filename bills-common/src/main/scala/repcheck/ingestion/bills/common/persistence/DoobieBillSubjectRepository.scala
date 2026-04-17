@@ -28,12 +28,14 @@ class DoobieBillSubjectRepository extends BillSubjectRepository[ConnectionIO] {
 
   private[persistence] def runInsert(
     rows: List[(Long, String, Option[String], Option[java.time.Instant])]
-  ): ConnectionIO[Int] = {
-    val insert = Update[(Long, String, Option[String], Option[java.time.Instant])](
-      s"INSERT INTO ${Tables.BillSubjects} (bill_id, subject_name, embedding, update_date) VALUES (?, ?, ?::vector, ?)"
-    )
-    insert.updateMany(rows)
-  }
+  ): ConnectionIO[Int] =
+    if (rows.isEmpty) 0.pure[ConnectionIO]
+    else {
+      val insert = Update[(Long, String, Option[String], Option[java.time.Instant])](
+        s"INSERT INTO ${Tables.BillSubjects} (bill_id, subject_name, embedding, update_date) VALUES (?, ?, ?::vector, ?)"
+      )
+      insert.updateMany(rows)
+    }
 
   override def findByBillId(billId: Long): ConnectionIO[List[BillSubjectDO]] =
     sql"SELECT bill_id, subject_name, embedding::text, update_date FROM $table WHERE bill_id = $billId"
