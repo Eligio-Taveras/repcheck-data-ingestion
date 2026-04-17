@@ -34,8 +34,8 @@ class BillTextAvailabilityChecker[F[_]: Async](
 
   private val StepName = "bill-text-availability-check"
 
-  def checkAll(correlationId: UUID): Stream[F, ProcessingResult] = {
-    val logCtx = LogContext(runId = correlationId.toString, stepName = StepName)
+  def checkAll(runId: Long): Stream[F, ProcessingResult] = {
+    val logCtx = LogContext(runId = runId.toString, stepName = StepName)
 
     Stream
       .eval(
@@ -48,7 +48,7 @@ class BillTextAvailabilityChecker[F[_]: Async](
           .drain ++
           Stream
             .emits(bills)
-            .parEvalMap(config.parallelism)(bill => checkBill(bill, correlationId))
+            .parEvalMap(config.parallelism)(bill => checkBill(bill, UUID.randomUUID()))
       }
   }
 

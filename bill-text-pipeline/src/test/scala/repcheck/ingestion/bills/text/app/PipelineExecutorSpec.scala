@@ -1,13 +1,10 @@
 package repcheck.ingestion.bills.text.app
 
-import java.util.UUID
-
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
 import fs2.Stream
 
-import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.{any, eq => eqTo}
 import org.mockito.Mockito.{verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
@@ -19,8 +16,8 @@ import repcheck.pipeline.models.metadata.ProcessingResult
 
 class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
-  private val correlationId = UUID.fromString("00000000-0000-0000-0000-000000000001")
-  private val pipelineName  = "test-pipeline"
+  private val runId        = 12345L
+  private val pipelineName = "test-pipeline"
 
   private class StubPipelineLogger extends PipelineLogger[IO] {
     private val messagesRef = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
@@ -53,7 +50,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -66,7 +63,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
     result.code shouldBe 1
   }
 
@@ -79,7 +76,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -87,7 +84,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     val logger                               = new StubPipelineLogger
     val stream: Stream[IO, ProcessingResult] = Stream.empty
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -102,7 +99,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       )
     )
 
-    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
 
     val _          = logger.messages.size shouldBe 1
     val logMessage = logger.messages.headOption.getOrElse(fail("expected at least one log message"))
@@ -117,7 +114,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       Stream.emit(ProcessingResult.Succeeded("bill-1")) ++
         Stream.raiseError[IO](new RuntimeException("stream failure"))
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).attempt.unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).attempt.unsafeRunSync()
     result.isLeft shouldBe true
   }
 
@@ -141,9 +138,8 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
         stream,
         logger,
         pipelineName,
-        correlationId,
+        12345L,
         workflowStateUpdater = Some(mockUpdater),
-        workflowRunId = Some("12345"),
       )
       .unsafeRunSync()
 
@@ -165,9 +161,8 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
         stream,
         logger,
         pipelineName,
-        correlationId,
+        12345L,
         workflowStateUpdater = Some(mockUpdater),
-        workflowRunId = Some("12345"),
       )
       .unsafeRunSync()
 
@@ -189,9 +184,8 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
         stream,
         logger,
         pipelineName,
-        correlationId,
+        12345L,
         workflowStateUpdater = Some(mockUpdater),
-        workflowRunId = Some("12345"),
       )
       .unsafeRunSync()
 
@@ -202,7 +196,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     )
   }
 
-  it should "use provided workflowRunId for state updates" in {
+  it should "use the run ID for workflow state updates" in {
     val logger      = new StubPipelineLogger
     val mockUpdater = buildMockUpdater()
     val stream      = Stream.emit(ProcessingResult.Succeeded("bill-1"))
@@ -212,37 +206,13 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
         stream,
         logger,
         pipelineName,
-        correlationId,
+        99999L,
         workflowStateUpdater = Some(mockUpdater),
-        workflowRunId = Some("99999"),
       )
       .unsafeRunSync()
 
     val _ = verify(mockUpdater).recordStepStarted(eqTo("99999"), eqTo("test-pipeline"))
     val _ = verify(mockUpdater).recordStepCompleted(eqTo("99999"), eqTo("test-pipeline"))
-  }
-
-  it should "generate a numeric runId when workflowRunId is not provided but updater is set" in {
-    val logger      = new StubPipelineLogger
-    val mockUpdater = buildMockUpdater()
-    val stream      = Stream.emit(ProcessingResult.Succeeded("bill-1"))
-
-    val captorStarted = ArgumentCaptor.forClass(classOf[String])
-
-    val _ = PipelineExecutor
-      .execute[IO](
-        stream,
-        logger,
-        pipelineName,
-        correlationId,
-        workflowStateUpdater = Some(mockUpdater),
-        workflowRunId = None,
-      )
-      .unsafeRunSync()
-
-    val _             = verify(mockUpdater).recordStepStarted(captorStarted.capture(), eqTo("test-pipeline"))
-    val capturedRunId = captorStarted.getValue
-    capturedRunId.toLongOption should not be empty
   }
 
 }

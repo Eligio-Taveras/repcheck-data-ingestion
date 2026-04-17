@@ -283,4 +283,72 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     }
   }
 
+  it should "raise an error when the base URL is not a valid URI" in {
+    val badConfig = CongressGovClientConfig(
+      apiKey = "test-api-key",
+      baseUrl = "::not-a-valid-uri::",
+      pageSize = 250,
+      pageDelay = scala.concurrent.duration.Duration.Zero,
+      retry = RetryConfig(maxRetries = 0, initialBackoffMs = 10L),
+    )
+    val client = new BillTextApiClient[IO](badConfig, httpClient, retryWrapper)
+    intercept[Exception] {
+      client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+    }
+  }
+
+  it should "return an empty list when textVersions array is empty" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/118/hr/100/text"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody("""{"textVersions": []}""")
+        )
+    )
+
+    val client = makeClient()
+    val result = client.fetchTextVersions(118, "hr", "100").unsafeRunSync()
+    result shouldBe empty
+  }
+
+  it should "pass format=json query parameter on every request" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/118/hr/200/text"))
+        .withQueryParam("format", equalTo("json"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody("""{"textVersions": []}""")
+        )
+    )
+
+    val client = makeClient()
+    val _      = client.fetchTextVersions(118, "hr", "200").unsafeRunSync()
+    wireMock.verify(
+      getRequestedFor(urlPathEqualTo("/v3/bill/118/hr/200/text"))
+        .withQueryParam("format", equalTo("json"))
+    )
+  }
+
+  it should "fall back to the HTTP status reason when the response body stream raises an error" in {
+    val errorBody   = fs2.Stream.raiseError[IO](new RuntimeException("simulated body read failure"))
+    val badResponse = org.http4s.Response[IO](status = org.http4s.Status.Forbidden, body = errorBody)
+    val badClient   = org.http4s.client.Client[IO](_ => cats.effect.Resource.pure(badResponse))
+    val config = CongressGovClientConfig(
+      apiKey = "test-api-key",
+      baseUrl = s"http://localhost:${wireMock.port()}/v3",
+      pageSize = 250,
+      pageDelay = Duration.Zero,
+      retry = RetryConfig(maxRetries = 0, initialBackoffMs = 10L),
+    )
+    val client = new BillTextApiClient[IO](config, badClient, retryWrapper)
+    val ex = intercept[BillTextCheckFailed] {
+      client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+    }
+    ex.getMessage should include("118-HR-1234")
+  }
+
 }

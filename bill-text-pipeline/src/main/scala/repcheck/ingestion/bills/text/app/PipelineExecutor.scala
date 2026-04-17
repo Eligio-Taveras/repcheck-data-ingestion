@@ -1,7 +1,5 @@
 package repcheck.ingestion.bills.text.app
 
-import java.util.UUID
-
 import cats.effect.{Async, ExitCode}
 import cats.syntax.all._
 
@@ -20,16 +18,21 @@ import repcheck.pipeline.models.metadata.{ProcessingResult, StepRunSummary}
  */
 private[app] object PipelineExecutor {
 
+  /**
+   * @param runId
+   *   run-level identifier for this pipeline execution. Will be the Long ID from the `workflow_runs` DB row once
+   *   `PipelineBootstrap.extractRunId` (ingestion-common §3.7) is implemented; currently a placeholder. Used in
+   *   `LogContext` (as `.toString`) and as the workflow step key (as `.toString`) when a `WorkflowStateUpdater` is
+   *   supplied.
+   */
   def execute[F[_]: Async](
     resultStream: Stream[F, ProcessingResult],
     logger: PipelineLogger[F],
     pipelineName: String,
-    correlationId: UUID,
+    runId: Long,
     workflowStateUpdater: Option[WorkflowStateUpdater[F]] = None,
-    workflowRunId: Option[String] = None,
   ): F[ExitCode] = {
-    val logCtx = LogContext(runId = correlationId.toString, stepName = pipelineName)
-    val runId  = workflowRunId.getOrElse(System.currentTimeMillis().toString)
+    val logCtx = LogContext(runId = runId.toString, stepName = pipelineName)
 
     for {
       _           <- recordStepStarted(workflowStateUpdater, runId, pipelineName)
@@ -73,23 +76,23 @@ private[app] object PipelineExecutor {
 
   private def recordStepStarted[F[_]: Async](
     updater: Option[WorkflowStateUpdater[F]],
-    runId: String,
+    runId: Long,
     stepName: String,
   ): F[Unit] =
-    updater.traverse_(_.recordStepStarted(runId, stepName))
+    updater.traverse_(_.recordStepStarted(runId.toString, stepName))
 
   private def recordStepOutcome[F[_]: Async](
     updater: Option[WorkflowStateUpdater[F]],
-    runId: String,
+    runId: Long,
     stepName: String,
     summary: StepRunSummary,
   ): F[Unit] =
     updater.traverse_ { wsu =>
       if (summary.itemsFailed == 0) {
-        wsu.recordStepCompleted(runId, stepName)
+        wsu.recordStepCompleted(runId.toString, stepName)
       } else {
         wsu.recordStepFailed(
-          runId,
+          runId.toString,
           stepName,
           s"${summary.itemsFailed} of ${summary.itemsProcessed} items failed",
         )

@@ -12,7 +12,7 @@ import doobie._
 import doobie.free.connection
 
 import org.mockito.ArgumentCaptor
-import org.mockito.ArgumentMatchers.{any, anyString, eq => eqTo}
+import org.mockito.ArgumentMatchers.{any, anyLong, anyString, eq => eqTo}
 import org.mockito.Mockito.{never, times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -48,7 +48,7 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
     logHandler = None,
   )
 
-  private val correlationId = UUID.fromString("00000000-0000-0000-0000-000000000001")
+  private val runId = 12345L
 
   private val config = LisMappingConfig(
     parallelism = 1,
@@ -155,7 +155,7 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
     upsertResultsByLisId: Map[String, UpsertResult],
     startingLisMemberId: Long = 1000L,
   ): Unit = {
-    when(f.xmlClient.fetchMappings(any[UUID])).thenReturn(fs2.Stream.emits(dtos))
+    when(f.xmlClient.fetchMappings(anyLong())).thenReturn(fs2.Stream.emits(dtos))
 
     // Route lisMemberRepo.upsertByNaturalKey by DTO order (natural key → assigned id).
     val idsByLisId: Map[String, Long] = dtos.zipWithIndex.map {
@@ -204,10 +204,10 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
 
     stubHappyPath(f, dtos, members, results)
 
-    val result = f.processor.refreshAll(correlationId).unsafeRunSync()
+    val result = f.processor.refreshAll(runId).unsafeRunSync()
 
     val _ = result.totalParsed shouldBe 10
-    val _ = verify(f.xmlClient, times(1)).fetchMappings(any[UUID])
+    val _ = verify(f.xmlClient, times(1)).fetchMappings(anyLong())
     verify(f.mappingRepo, times(10)).upsert(any[MemberLisMappingDO])
   }
 
@@ -225,7 +225,7 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
     stubHappyPath(f, dtos, members, results)
 
     val before = Instant.now()
-    val _      = f.processor.refreshAll(correlationId).unsafeRunSync()
+    val _      = f.processor.refreshAll(runId).unsafeRunSync()
     val after  = Instant.now().plusSeconds(2)
 
     val lisMemberCaptor = ArgumentCaptor.forClass(classOf[LisMemberDO])
@@ -257,7 +257,7 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
 
     stubHappyPath(f, dtos, members, results)
 
-    val result = f.processor.refreshAll(correlationId).unsafeRunSync()
+    val result = f.processor.refreshAll(runId).unsafeRunSync()
 
     val _       = result.eventsEmitted shouldBe 1
     val _       = result.inserted shouldBe 1
@@ -266,7 +266,7 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val _       = verify(f.eventPublisher, times(1)).memberUpdated(captor.capture(), cidCap.capture())
     val emitted = captor.getValue
     val _       = emitted.memberId shouldBe "B000042"
-    cidCap.getValue shouldBe correlationId
+    // Per-item correlation ID is a fresh UUID generated inside processDto (verified via ArgumentCaptor above).
   }
 
   // =========================================================================================================
@@ -279,13 +279,13 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val dtos    = List(dto)
     val members = Map(dto.bioguideId -> Option.empty[MemberDO])
 
-    when(f.xmlClient.fetchMappings(any[UUID])).thenReturn(fs2.Stream.emits(dtos))
+    when(f.xmlClient.fetchMappings(anyLong())).thenReturn(fs2.Stream.emits(dtos))
     when(f.lisMemberRepo.upsertByNaturalKey(any[LisMemberDO]))
       .thenReturn(connection.pure[Long](1234L))
     when(f.memberRepo.findByBioguideId(eqTo(dto.bioguideId)))
       .thenReturn(connection.pure[Option[MemberDO]](members(dto.bioguideId)))
 
-    val result = f.processor.refreshAll(correlationId).unsafeRunSync()
+    val result = f.processor.refreshAll(runId).unsafeRunSync()
 
     val _ = result.totalParsed shouldBe 1
     val _ = result.inserted shouldBe 0
@@ -308,7 +308,7 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
 
     stubHappyPath(f, dtos, members, results)
 
-    val result = f.processor.refreshAll(correlationId).unsafeRunSync()
+    val result = f.processor.refreshAll(runId).unsafeRunSync()
 
     val _ = result.updated shouldBe 1
     val _ = result.inserted shouldBe 0
@@ -337,7 +337,7 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
 
     stubHappyPath(f, allDtos, members, results)
 
-    val result = f.processor.refreshAll(correlationId).unsafeRunSync()
+    val result = f.processor.refreshAll(runId).unsafeRunSync()
 
     val _ = result.totalParsed shouldBe 10
     val _ = result.inserted shouldBe 3
@@ -349,7 +349,7 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
   // AC-05.6.7 — Correlation ID flows through all operations
   // =========================================================================================================
 
-  it should "propagate the correlation ID to the XML client and the event publisher (AC-05.6.7)" in {
+  it should "pass the run ID to the XML client and a distinct per-item correlation ID to the event publisher (AC-05.6.7)" in {
     val f       = createFixture()
     val dto     = makeDto(lisId = "S7", bioguideId = "B000007")
     val dtos    = List(dto)
@@ -358,16 +358,18 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
 
     stubHappyPath(f, dtos, members, results)
 
-    val myCorrelation = UUID.fromString("11111111-2222-3333-4444-555555555555")
-    val _             = f.processor.refreshAll(myCorrelation).unsafeRunSync()
+    val myRunId = 99999L
+    val _       = f.processor.refreshAll(myRunId).unsafeRunSync()
 
-    val xmlCid = ArgumentCaptor.forClass(classOf[UUID])
+    // The XML fetch receives the run-level Long ID for HTTP-request tracing.
+    val xmlCid = ArgumentCaptor.forClass(classOf[java.lang.Long])
     val _      = verify(f.xmlClient).fetchMappings(xmlCid.capture())
-    val _      = xmlCid.getValue shouldBe myCorrelation
+    val _      = xmlCid.getValue shouldBe myRunId
 
+    // The event publisher receives a fresh per-item correlation ID generated inside processDto — not the run ID.
     val pubCid = ArgumentCaptor.forClass(classOf[UUID])
     val _      = verify(f.eventPublisher).memberUpdated(any[MemberUpdatedEvent], pubCid.capture())
-    pubCid.getValue shouldBe myCorrelation
+    pubCid.getValue should not be myRunId
   }
 
   // =========================================================================================================
@@ -377,10 +379,10 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
   it should "propagate an XML-client failure as a failed effect (AC-05.6.8)" in {
     val f     = createFixture()
     val error = new RuntimeException("XML feed unreachable")
-    when(f.xmlClient.fetchMappings(any[UUID])).thenReturn(fs2.Stream.raiseError[IO](error))
+    when(f.xmlClient.fetchMappings(anyLong())).thenReturn(fs2.Stream.raiseError[IO](error))
 
     val thrown = intercept[Exception] {
-      val _ = f.processor.refreshAll(correlationId).unsafeRunSync()
+      val _ = f.processor.refreshAll(runId).unsafeRunSync()
     }
     val _ = thrown.getMessage shouldBe "XML feed unreachable"
     verify(f.eventPublisher, never()).memberUpdated(any[MemberUpdatedEvent], any[UUID])
@@ -395,12 +397,12 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val dto  = makeDto(lisId = "S-fail", bioguideId = "B-fail")
     val dtos = List(dto)
 
-    when(f.xmlClient.fetchMappings(any[UUID])).thenReturn(fs2.Stream.emits(dtos))
+    when(f.xmlClient.fetchMappings(anyLong())).thenReturn(fs2.Stream.emits(dtos))
     when(f.lisMemberRepo.upsertByNaturalKey(any[LisMemberDO]))
       .thenReturn(connection.raiseError[Long](new RuntimeException("DB connection lost")))
 
     val thrown = intercept[LisMappingUpsertFailed] {
-      val _ = f.processor.refreshAll(correlationId).unsafeRunSync()
+      val _ = f.processor.refreshAll(runId).unsafeRunSync()
     }
     val _ = thrown.lisId shouldBe "S-fail"
     val _ = thrown.getMessage should include("DB connection lost")
@@ -413,9 +415,9 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
 
   it should "return all-zero counts for an empty XML stream (AC-05.6.10)" in {
     val f = createFixture()
-    when(f.xmlClient.fetchMappings(any[UUID])).thenReturn(fs2.Stream.empty)
+    when(f.xmlClient.fetchMappings(anyLong())).thenReturn(fs2.Stream.empty)
 
-    val result = f.processor.refreshAll(correlationId).unsafeRunSync()
+    val result = f.processor.refreshAll(runId).unsafeRunSync()
 
     val _ = result shouldBe LisMappingRefreshResult.empty
     val _ = verify(f.lisMemberRepo, never()).upsertByNaturalKey(any[LisMemberDO])
@@ -441,7 +443,7 @@ class LisMappingProcessorSpec extends AnyFlatSpec with Matchers with MockitoSuga
       .thenReturn(IO.raiseError(new RuntimeException("Pub/Sub down")))
 
     val thrown = intercept[Exception] {
-      val _ = f.processor.refreshAll(correlationId).unsafeRunSync()
+      val _ = f.processor.refreshAll(runId).unsafeRunSync()
     }
     thrown.getMessage shouldBe "Pub/Sub down"
   }

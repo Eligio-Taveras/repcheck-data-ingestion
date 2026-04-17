@@ -242,7 +242,7 @@ class FullChainIntegrationSpec
 
     // Step 1: Run checker — finds bill needing text, emits BillTextAvailableEvent
     val checker        = buildChecker()
-    val checkerResults = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val checkerResults = checker.checkAll(0L).compile.toList.unsafeRunSync()
     val _              = checkerResults.size shouldBe 1
     val _              = checkerResults.headOption.exists(_.isSucceeded) shouldBe true
 
@@ -341,7 +341,7 @@ class FullChainIntegrationSpec
 
     // Run checker
     val checker        = buildChecker()
-    val checkerResults = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val checkerResults = checker.checkAll(0L).compile.toList.unsafeRunSync()
     val _              = checkerResults.size shouldBe 1
     val _              = checkerResults.headOption.exists(_.isSucceeded) shouldBe true
 
@@ -391,7 +391,7 @@ class FullChainIntegrationSpec
 
     // Run checker
     val checker        = buildChecker()
-    val checkerResults = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val checkerResults = checker.checkAll(0L).compile.toList.unsafeRunSync()
     val _              = checkerResults.size shouldBe 2
     val _              = checkerResults.count(_.isSucceeded) shouldBe 2
 

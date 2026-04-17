@@ -1,7 +1,5 @@
 package repcheck.ingestion.bills.metadata.app
 
-import java.util.UUID
-
 import cats.effect.std.Semaphore
 import cats.effect.{Async, ExitCode, Resource, Sync, Temporal}
 import cats.syntax.all._
@@ -78,9 +76,11 @@ private[app] object BillMetadataPipeline {
             logger = logger,
           )
 
-          val correlationId = UUID.randomUUID()
-          val resultStream  = processor.streamAll(correlationId)
-          PipelineExecutor.execute[F](resultStream, logger, PipelineName, correlationId)
+          // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
+          // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
+          val runId        = 0L
+          val resultStream = processor.streamAll(runId)
+          PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId)
       }
     } yield exitCode
   }

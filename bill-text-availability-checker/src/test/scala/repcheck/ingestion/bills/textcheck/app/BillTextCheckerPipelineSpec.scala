@@ -13,7 +13,7 @@ import doobie._
 
 import pureconfig.ConfigSource
 
-import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.Mockito.when
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -267,7 +267,7 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
     val checker        = mock[BillTextAvailabilityChecker[IO]]
     val expectedResult = ProcessingResult.Succeeded(entityId = "118-HR-1")
 
-    when(checker.checkAll(any[UUID])).thenReturn(Stream.emit(expectedResult))
+    when(checker.checkAll(anyLong())).thenReturn(Stream.emit(expectedResult))
 
     val results = BillTextCheckerPipeline.buildStream[IO](checker, logger).compile.toList.unsafeRunSync()
 
@@ -279,7 +279,7 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
     val logger  = new StubPipelineLogger
     val checker = mock[BillTextAvailabilityChecker[IO]]
 
-    when(checker.checkAll(any[UUID])).thenReturn(Stream.empty)
+    when(checker.checkAll(anyLong())).thenReturn(Stream.empty)
 
     val results = BillTextCheckerPipeline.buildStream[IO](checker, logger).compile.toList.unsafeRunSync()
 

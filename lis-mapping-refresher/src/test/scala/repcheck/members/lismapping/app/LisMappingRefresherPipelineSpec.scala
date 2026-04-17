@@ -13,7 +13,7 @@ import doobie._
 
 import pureconfig.ConfigSource
 
-import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.Mockito.when
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -115,7 +115,7 @@ class LisMappingRefresherPipelineSpec extends AnyFlatSpec with Matchers with Moc
     val logger    = new StubPipelineLogger
     val processor = mock[LisMappingProcessor[IO]]
 
-    when(processor.refreshAll(any[UUID])).thenReturn(IO.pure(LisMappingRefreshResult.empty))
+    when(processor.refreshAll(anyLong())).thenReturn(IO.pure(LisMappingRefreshResult.empty))
 
     val exitCode = LisMappingRefresherPipeline
       .runWithFactories[IO](
@@ -152,7 +152,7 @@ class LisMappingRefresherPipelineSpec extends AnyFlatSpec with Matchers with Moc
     val logger    = new StubPipelineLogger
     val processor = mock[LisMappingProcessor[IO]]
 
-    when(processor.refreshAll(any[UUID])).thenReturn(
+    when(processor.refreshAll(anyLong())).thenReturn(
       IO.raiseError(new RuntimeException("XML fetch failed"))
     )
 
@@ -176,7 +176,7 @@ class LisMappingRefresherPipelineSpec extends AnyFlatSpec with Matchers with Moc
     val processor = mock[LisMappingProcessor[IO]]
 
     val result = LisMappingRefreshResult(totalParsed = 100, inserted = 5, updated = 95, eventsEmitted = 5)
-    when(processor.refreshAll(any[UUID])).thenReturn(IO.pure(result))
+    when(processor.refreshAll(anyLong())).thenReturn(IO.pure(result))
 
     val _ = LisMappingRefresherPipeline
       .runWithFactories[IO](

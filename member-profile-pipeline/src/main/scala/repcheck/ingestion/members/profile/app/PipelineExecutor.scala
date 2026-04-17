@@ -1,7 +1,5 @@
 package repcheck.ingestion.members.profile.app
 
-import java.util.UUID
-
 import cats.effect.{Async, ExitCode}
 import cats.syntax.all._
 
@@ -16,18 +14,25 @@ import repcheck.pipeline.models.metadata.{ProcessingResult, StepRunSummary}
  */
 private[app] object PipelineExecutor {
 
+  /**
+   * @param runId
+   *   run-level identifier for this pipeline execution. Will be the Long ID from the `workflow_runs` DB row once
+   *   `PipelineBootstrap.extractRunId` (ingestion-common §3.7) is implemented; currently a placeholder.
+   */
   def execute[F[_]: Async](
     resultStream: Stream[F, ProcessingResult],
     logger: PipelineLogger[F],
     pipelineName: String,
-    correlationId: UUID,
+    runId: Long,
   ): F[ExitCode] = {
-    val logCtx = LogContext(runId = correlationId.toString, stepName = pipelineName)
+    val logCtx = LogContext(runId = runId.toString, stepName = pipelineName)
 
     for {
       startedAt   <- Async[F].realTimeInstant
       results     <- executeStream(resultStream, logger, logCtx)
       completedAt <- Async[F].realTimeInstant
+      // TODO: record step started/completed in workflow_run_steps via WorkflowStateUpdater (ingestion-common §3.7).
+      // stepRunId is a placeholder until that table and updater are implemented.
       summary = StepRunSummary.fromResults(
         stepRunId = 0L,
         stepName = pipelineName,

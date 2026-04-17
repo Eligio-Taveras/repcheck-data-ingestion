@@ -82,7 +82,9 @@ private[app] object MemberProfilePipeline {
       exitCode <- resourceBuilder(config, logger).use { resources =>
         val processor = processorFactory(resources.httpClient, resources.xa, resources.pubSubPublisher, config, logger)
         val resultStream = streamFactory(processor, logger)
-        PipelineExecutor.execute[F](resultStream, logger, PipelineName, UUID.randomUUID())
+        // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
+        // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
+        PipelineExecutor.execute[F](resultStream, logger, PipelineName, 0L)
       }
     } yield exitCode
 
@@ -140,7 +142,8 @@ private[app] object MemberProfilePipeline {
     logger: PipelineLogger[F],
   ): Stream[F, ProcessingResult] = {
     val _ = logger // reserved for future pre/post-stream logging
-    processor.streamAll(UUID.randomUUID())
+    // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration.
+    processor.streamAll(0L)
   }
 
   /**

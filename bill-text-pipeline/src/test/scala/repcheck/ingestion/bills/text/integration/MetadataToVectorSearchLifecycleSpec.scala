@@ -383,7 +383,7 @@ class MetadataToVectorSearchLifecycleSpec
 
     // Step 1: Metadata processor fetches from Congress.gov (WireMock) and stores in DB
     val metadataProcessor = buildMetadataProcessor()
-    val metadataResults   = metadataProcessor.streamAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val metadataResults   = metadataProcessor.streamAll(0L).compile.toList.unsafeRunSync()
     val _                 = metadataResults.size shouldBe 1
     val _                 = metadataResults.headOption.exists(_.isSucceeded) shouldBe true
 
@@ -396,7 +396,7 @@ class MetadataToVectorSearchLifecycleSpec
 
     // Step 3: Text checker finds the bill needs text, publishes event
     val checker        = buildChecker()
-    val checkerResults = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val checkerResults = checker.checkAll(0L).compile.toList.unsafeRunSync()
     val _              = checkerResults.size shouldBe 1
     val _              = checkerResults.headOption.exists(_.isSucceeded) shouldBe true
 
@@ -443,7 +443,7 @@ class MetadataToVectorSearchLifecycleSpec
 
     // Step 1: Metadata ingestion
     val metadataProcessor = buildMetadataProcessor()
-    val metadataResults   = metadataProcessor.streamAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val metadataResults   = metadataProcessor.streamAll(0L).compile.toList.unsafeRunSync()
     val _                 = metadataResults.headOption.exists(_.isSucceeded) shouldBe true
 
     // Step 2: Get bill ID from DB
@@ -456,7 +456,7 @@ class MetadataToVectorSearchLifecycleSpec
 
     // Step 3: Checker → Pub/Sub → Processor (with embedding)
     val checker   = buildChecker()
-    val _         = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val _         = checker.checkAll(0L).compile.toList.unsafeRunSync()
     val messages  = pullMessages()
     val eventData = messages.headOption.map(_.getData.toStringUtf8).getOrElse("")
     val eventJson = parse(eventData).getOrElse(fail("Failed to parse event"))
@@ -504,7 +504,7 @@ class MetadataToVectorSearchLifecycleSpec
     stubOllamaEmbedding(embedding1)
 
     val mp1 = buildMetadataProcessor()
-    val _   = mp1.streamAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val _   = mp1.streamAll(0L).compile.toList.unsafeRunSync()
 
     val billId1 = billRepo
       .findByBillId("118-HR-902")
@@ -514,7 +514,7 @@ class MetadataToVectorSearchLifecycleSpec
       .getOrElse(fail("Bill 902 not stored"))
 
     val checker1 = buildChecker()
-    val _        = checker1.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val _        = checker1.checkAll(0L).compile.toList.unsafeRunSync()
     val msgs1    = pullMessages()
     val ed1      = msgs1.headOption.map(_.getData.toStringUtf8).getOrElse("")
     val ej1      = parse(ed1).getOrElse(fail("Parse failed"))
@@ -539,10 +539,10 @@ class MetadataToVectorSearchLifecycleSpec
     stubOllamaEmbedding(embedding2)
 
     val mp2 = buildMetadataProcessor()
-    val _   = mp2.streamAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val _   = mp2.streamAll(0L).compile.toList.unsafeRunSync()
 
     val checker2 = buildChecker()
-    val _        = checker2.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val _        = checker2.checkAll(0L).compile.toList.unsafeRunSync()
 
     drainMessages()
     // The checker may have found bill 902 again (already has text now) and bill 903.
@@ -556,7 +556,7 @@ class MetadataToVectorSearchLifecycleSpec
     stubOllamaEmbedding(embedding2)
 
     val checker3 = buildChecker()
-    val _        = checker3.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val _        = checker3.checkAll(0L).compile.toList.unsafeRunSync()
     val msgs2    = pullMessages()
 
     // Find the event for bill 903

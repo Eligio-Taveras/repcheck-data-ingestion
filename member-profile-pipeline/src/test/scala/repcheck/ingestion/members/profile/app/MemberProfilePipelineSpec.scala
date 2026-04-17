@@ -15,7 +15,7 @@ import doobie._
 
 import pureconfig.ConfigSource
 
-import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.Mockito.when
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -217,7 +217,7 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
     val logger    = new StubPipelineLogger
     val processor = mock[MemberProfileProcessor[IO]]
 
-    when(processor.streamAll(any[UUID])).thenReturn(Stream.emit(ProcessingResult.Succeeded("A000001")))
+    when(processor.streamAll(anyLong())).thenReturn(Stream.emit(ProcessingResult.Succeeded("A000001")))
 
     val results = MemberProfilePipeline.buildStream[IO](processor, logger).compile.toList.unsafeRunSync()
 
@@ -229,7 +229,7 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
     val logger    = new StubPipelineLogger
     val processor = mock[MemberProfileProcessor[IO]]
 
-    when(processor.streamAll(any[UUID])).thenReturn(Stream.empty)
+    when(processor.streamAll(anyLong())).thenReturn(Stream.empty)
 
     val results = MemberProfilePipeline.buildStream[IO](processor, logger).compile.toList.unsafeRunSync()
 

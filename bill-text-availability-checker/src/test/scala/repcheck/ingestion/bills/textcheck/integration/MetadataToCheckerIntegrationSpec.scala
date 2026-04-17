@@ -1,7 +1,5 @@
 package repcheck.ingestion.bills.textcheck.integration
 
-import java.util.UUID
-
 import scala.concurrent.duration._
 
 import cats.effect.IO
@@ -234,7 +232,7 @@ class MetadataToCheckerIntegrationSpec
     stubTextVersions(118, "hr", "1", singleVersionJson)
 
     val checker = buildChecker()
-    val results = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val results = checker.checkAll(1L).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 1
     val _ = results.headOption.exists(_.isSucceeded) shouldBe true
@@ -258,7 +256,7 @@ class MetadataToCheckerIntegrationSpec
     stubTextVersions(118, "hr", "2", textVersionJson("IH", "https://congress.gov/text/ih/formatted"))
 
     val checker = buildChecker()
-    val results = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val results = checker.checkAll(1L).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 1
     val _ = results.headOption.exists(_.isSkipped) shouldBe true
@@ -277,7 +275,7 @@ class MetadataToCheckerIntegrationSpec
     stubTextVersions(118, "hr", "3", textVersionJson("RH", "https://congress.gov/text/rh/formatted"))
 
     val checker = buildChecker()
-    val results = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val results = checker.checkAll(1L).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 1
     val _ = results.headOption.exists(_.isSucceeded) shouldBe true
@@ -300,7 +298,7 @@ class MetadataToCheckerIntegrationSpec
     stubTextVersions(118, "hr", "12", textVersionJson("RH", "https://congress.gov/text/12"))
 
     val checker = buildChecker()
-    val results = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val results = checker.checkAll(1L).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 3
     val _ = results.count(_.isSucceeded) shouldBe 3
@@ -318,7 +316,7 @@ class MetadataToCheckerIntegrationSpec
     stubTextVersions(118, "hr", "20", emptyVersionsJson)
 
     val checker = buildChecker()
-    val results = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val results = checker.checkAll(1L).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 1
     val _ = results.headOption.exists(_.isSkipped) shouldBe true
@@ -335,7 +333,7 @@ class MetadataToCheckerIntegrationSpec
     stubTextVersions(118, "hr", "31", textVersionJson("IH", "https://congress.gov/text/31"))
 
     val checker = buildChecker()
-    val results = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val results = checker.checkAll(1L).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 2
     val _ = results.count(_.isFailed) shouldBe 1

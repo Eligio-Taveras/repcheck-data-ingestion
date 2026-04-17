@@ -42,6 +42,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     logHandler = None,
   )
 
+  private val runId         = 12345L
   private val correlationId = UUID.randomUUID()
   private val config        = BillMetadataConfig(lookbackDays = 30, parallelism = 1)
 
@@ -460,7 +461,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     when(f.apiClient.fetchAll(any[FetchParams]))
       .thenReturn(fs2.Stream.emits(List(goodItem, badItem)))
 
-    val results = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 2
     val _ = results.count(_.isSucceeded) should be >= 1
@@ -484,7 +485,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     when(f.apiClient.fetchAll(any[FetchParams]))
       .thenReturn(fs2.Stream.empty)
 
-    val _ = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val _ = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     verify(f.apiClient, times(1)).fetchAll(any[FetchParams])
   }
 
@@ -501,7 +502,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     when(f.cosponsorRepo.replaceAll(any[Long], any[List[BillCosponsorDO]])).thenReturn(doobie.free.connection.pure(()))
     when(f.subjectRepo.replaceAll(any[Long], any[List[BillSubjectDO]])).thenReturn(doobie.free.connection.pure(()))
 
-    val results = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 1
     results.headOption.map(_.entityId) shouldBe Some("118-HR-5")
@@ -512,7 +513,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     when(f.apiClient.fetchAll(any[FetchParams]))
       .thenReturn(fs2.Stream.raiseError[IO](new RuntimeException("network timeout")))
 
-    val results = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     val _       = results shouldBe empty
     verify(f.logger, times(1)).error(
       any[LogContext],
@@ -526,7 +527,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     when(f.apiClient.fetchAll(any[FetchParams]))
       .thenReturn(fs2.Stream.empty)
 
-    val results = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     results shouldBe empty
   }
 

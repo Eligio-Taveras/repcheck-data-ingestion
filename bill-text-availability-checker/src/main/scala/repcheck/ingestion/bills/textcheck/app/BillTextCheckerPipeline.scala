@@ -72,7 +72,9 @@ private[app] object BillTextCheckerPipeline {
           resultStream = resultStream,
           logger = logger,
           pipelineName = PipelineName,
-          correlationId = UUID.randomUUID(),
+          // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
+          // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
+          runId = 0L,
         )
       }
     } yield exitCode
@@ -117,9 +119,9 @@ private[app] object BillTextCheckerPipeline {
     checker: BillTextAvailabilityChecker[F],
     logger: PipelineLogger[F],
   ): Stream[F, ProcessingResult] = {
-    val _             = logger // reserved for future pre/post-stream logging
-    val correlationId = UUID.randomUUID()
-    checker.checkAll(correlationId)
+    val _ = logger // reserved for future pre/post-stream logging
+    // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration.
+    checker.checkAll(0L)
   }
 
   private[app] def buildResources[F[_]](

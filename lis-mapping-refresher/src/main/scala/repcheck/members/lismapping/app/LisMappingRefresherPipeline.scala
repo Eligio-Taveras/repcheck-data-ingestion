@@ -76,10 +76,12 @@ private[app] object LisMappingRefresherPipeline {
       logger <- loggerFactory(PipelineName)
       exitCode <- resourceBuilder(config, logger).use { resources =>
         val processor = processorFactory(resources.httpClient, resources.xa, resources.pubSubPublisher, config, logger)
-        val correlationId = UUID.randomUUID()
-        val logCtx        = LogContext(runId = correlationId.toString, stepName = PipelineName)
+        // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
+        // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
+        val runId: Long = 0L
+        val logCtx      = LogContext(runId = runId.toString, stepName = PipelineName)
         for {
-          result <- processor.refreshAll(correlationId)
+          result <- processor.refreshAll(runId)
           _ <- logger.info(
             logCtx,
             s"Pipeline completed: totalParsed=${result.totalParsed.toString} " +
