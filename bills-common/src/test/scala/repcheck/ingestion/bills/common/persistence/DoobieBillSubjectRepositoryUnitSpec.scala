@@ -148,7 +148,7 @@ class DoobieBillSubjectRepositoryUnitSpec extends AnyFlatSpec with Matchers with
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    sql"""
+    val _ = sql"""
       CREATE TABLE IF NOT EXISTS bill_subjects (
         id           BIGINT AUTO_INCREMENT PRIMARY KEY,
         bill_id      BIGINT NOT NULL,

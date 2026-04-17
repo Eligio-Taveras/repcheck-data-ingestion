@@ -3,8 +3,8 @@ package repcheck.members.common.persistence
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
-import doobie.{Fragment, Transactor}
 import doobie.implicits._
+import doobie.{Fragment, Transactor}
 
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.flatspec.AnyFlatSpec
@@ -103,7 +103,7 @@ class DoobieMemberHistoryArchiverUnitSpec extends AnyFlatSpec with Matchers with
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    sql"""CREATE TABLE IF NOT EXISTS members (
+    val _ = sql"""CREATE TABLE IF NOT EXISTS members (
       id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
       natural_key         TEXT NOT NULL UNIQUE,
       first_name          TEXT,
@@ -120,7 +120,7 @@ class DoobieMemberHistoryArchiverUnitSpec extends AnyFlatSpec with Matchers with
       official_url        TEXT,
       update_date         TIMESTAMP WITH TIME ZONE
     )""".update.run.transact(h2xa).unsafeRunSync()
-    sql"""CREATE TABLE IF NOT EXISTS member_history (
+    val _ = sql"""CREATE TABLE IF NOT EXISTS member_history (
       id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
       member_id           BIGINT,
       first_name          TEXT,
@@ -137,7 +137,7 @@ class DoobieMemberHistoryArchiverUnitSpec extends AnyFlatSpec with Matchers with
       official_url        TEXT,
       update_date         TIMESTAMP WITH TIME ZONE
     )""".update.run.transact(h2xa).unsafeRunSync()
-    sql"""CREATE TABLE IF NOT EXISTS member_terms (
+    val _ = sql"""CREATE TABLE IF NOT EXISTS member_terms (
       id          BIGINT AUTO_INCREMENT PRIMARY KEY,
       member_id   BIGINT NOT NULL,
       chamber     TEXT,
@@ -149,7 +149,7 @@ class DoobieMemberHistoryArchiverUnitSpec extends AnyFlatSpec with Matchers with
       state_name  TEXT,
       district    INT
     )""".update.run.transact(h2xa).unsafeRunSync()
-    sql"""CREATE TABLE IF NOT EXISTS member_term_history (
+    val _ = sql"""CREATE TABLE IF NOT EXISTS member_term_history (
       id          BIGINT AUTO_INCREMENT PRIMARY KEY,
       history_id  BIGINT NOT NULL,
       member_id   BIGINT,

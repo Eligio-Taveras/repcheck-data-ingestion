@@ -149,7 +149,7 @@ class DoobieBillHistoryArchiverUnitSpec extends AnyFlatSpec with Matchers with B
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    sql"""CREATE TABLE IF NOT EXISTS bills (
+    val _ = sql"""CREATE TABLE IF NOT EXISTS bills (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       congress INT NOT NULL, bill_type TEXT NOT NULL, number INT NOT NULL,
       title TEXT, origin_chamber TEXT, origin_chamber_code TEXT,
@@ -162,7 +162,7 @@ class DoobieBillHistoryArchiverUnitSpec extends AnyFlatSpec with Matchers with B
       update_date_including_text TIMESTAMP WITH TIME ZONE,
       legislation_url TEXT, api_url TEXT
     )""".update.run.transact(h2xa).unsafeRunSync()
-    sql"""CREATE TABLE IF NOT EXISTS bill_history (
+    val _ = sql"""CREATE TABLE IF NOT EXISTS bill_history (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       bill_id BIGINT, congress INT, bill_type TEXT, number INT,
       title TEXT, origin_chamber TEXT, origin_chamber_code TEXT,
@@ -175,22 +175,22 @@ class DoobieBillHistoryArchiverUnitSpec extends AnyFlatSpec with Matchers with B
       update_date_including_text TIMESTAMP WITH TIME ZONE,
       legislation_url TEXT, api_url TEXT
     )""".update.run.transact(h2xa).unsafeRunSync()
-    sql"""CREATE TABLE IF NOT EXISTS bill_cosponsors (
+    val _ = sql"""CREATE TABLE IF NOT EXISTS bill_cosponsors (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       bill_id BIGINT NOT NULL, member_id BIGINT NOT NULL,
       is_original_cosponsor BOOLEAN, sponsorship_date DATE
     )""".update.run.transact(h2xa).unsafeRunSync()
-    sql"""CREATE TABLE IF NOT EXISTS bill_cosponsor_history (
+    val _ = sql"""CREATE TABLE IF NOT EXISTS bill_cosponsor_history (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       history_id BIGINT NOT NULL, bill_id BIGINT,
       member_id BIGINT, is_original_cosponsor BOOLEAN, sponsorship_date DATE
     )""".update.run.transact(h2xa).unsafeRunSync()
-    sql"""CREATE TABLE IF NOT EXISTS bill_subjects (
+    val _ = sql"""CREATE TABLE IF NOT EXISTS bill_subjects (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       bill_id BIGINT NOT NULL, subject_name TEXT NOT NULL,
       embedding TEXT, update_date TIMESTAMP WITH TIME ZONE
     )""".update.run.transact(h2xa).unsafeRunSync()
-    sql"""CREATE TABLE IF NOT EXISTS bill_subject_history (
+    val _ = sql"""CREATE TABLE IF NOT EXISTS bill_subject_history (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       history_id BIGINT NOT NULL, bill_id BIGINT,
       subject_name TEXT, update_date TIMESTAMP WITH TIME ZONE
