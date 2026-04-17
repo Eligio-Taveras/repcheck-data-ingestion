@@ -178,6 +178,7 @@ lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-
 lazy val memberProfilePipeline = (project in file("member-profile-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
   .dependsOn(membersCommon % "compile->compile;test->test")
+  .dependsOn(lisMappingRefresher % "test->compile")
   .settings(pipelineSettings)
   .settings(
     name := "member-profile-pipeline",

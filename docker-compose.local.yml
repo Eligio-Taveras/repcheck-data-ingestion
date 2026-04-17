@@ -33,14 +33,18 @@
 #   docker compose -f docker-compose.local.yml down -v
 #
 # Pipeline execution order (enforced by Ofelia schedule offsets):
-#   1. bill-metadata-pipeline       — fetches bill metadata from Congress.gov → DB
+#   1. bill-metadata-pipeline         — fetches bill metadata from Congress.gov → DB
 #   2. bill-text-availability-checker — scans DB for bills needing text → Pub/Sub
-#   3. bill-text-pipeline            — subscribes to Pub/Sub → downloads text → DB
+#   3. bill-text-pipeline             — subscribes to Pub/Sub → downloads text → DB
+#   4. member-profile-pipeline        — fetches member profiles from Congress.gov → DB → member-updated events
+#   5. lis-mapping-refresher          — fetches senate.gov XML → maps LIS IDs → DB → member-updated events
 #
 # Schedule defaults (override via .env):
-#   BILL_METADATA_SCHEDULE         = 0 */6 * * *   (every 6 hours)
-#   BILL_TEXT_AVAILABILITY_SCHEDULE = 0 1,7,13,19 * * * (every 6 hours, offset +1h)
-#   BILL_TEXT_PIPELINE_SCHEDULE     = 0 2,8,14,20 * * * (every 6 hours, offset +2h)
+#   BILL_METADATA_SCHEDULE          = 0 */6 * * *         (every 6 hours)
+#   BILL_TEXT_AVAILABILITY_SCHEDULE = 0 1,7,13,19 * * *   (every 6 hours, offset +1h)
+#   BILL_TEXT_PIPELINE_SCHEDULE     = 0 2,8,14,20 * * *   (every 6 hours, offset +2h)
+#   MEMBER_PROFILE_SCHEDULE         = 0 3,9,15,21 * * *   (every 6 hours, offset +3h)
+#   LIS_MAPPING_SCHEDULE            = 0 4,10,16,22 * * *  (every 6 hours, offset +4h)
 # =============================================================================
 
 services:
@@ -226,6 +230,51 @@ services:
       OLLAMA_EMBEDDING_DIMENSIONS: "1536"
       OLLAMA_TIMEOUT_SECONDS: "60"
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+    restart: "no"
+
+  member-profile-pipeline:
+    container_name: member-profile-pipeline
+    build:
+      context: .
+      dockerfile: member-profile-pipeline/Dockerfile
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-local
+      MEMBER_UPDATED_TOPIC: member-updated
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+    restart: "no"
+
+  lis-mapping-refresher:
+    container_name: lis-mapping-refresher
+    build:
+      context: .
+      dockerfile: lis-mapping-refresher/Dockerfile
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-local
+      MEMBER_UPDATED_TOPIC: member-updated
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
     restart: "no"
 
 volumes:

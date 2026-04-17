@@ -46,4 +46,14 @@ create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions
 echo "Creating topic: bill-text-ingested"
 create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/bill-text-ingested"
 
+# Topic: member-updated (member profile pipeline + LIS refresher publish when member data changes)
+echo "Creating topic: member-updated"
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/member-updated"
+
+# Subscription: member-updated-sub (downstream consumers of member update events)
+echo "Creating subscription: member-updated-sub"
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions/member-updated-sub" \
+  -H "Content-Type: application/json" \
+  -d "{\"topic\":\"projects/${PROJECT_ID}/topics/member-updated\",\"ackDeadlineSeconds\":60}"
+
 echo "Pub/Sub topics and subscriptions created successfully."
