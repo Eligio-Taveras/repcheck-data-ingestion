@@ -1,5 +1,7 @@
 package repcheck.ingestion.bills.common.persistence
 
+import cats.syntax.all._
+
 import doobie._
 import doobie.implicits._
 
@@ -14,55 +16,97 @@ class DoobieBillHistoryArchiver extends BillHistoryArchiver[ConnectionIO] {
 
   override def archiveBill(billId: String): ConnectionIO[Long] = {
     val (congress, billType, number) = parseNaturalKey(billId)
-
-    val billsTable    = Fragment.const(Tables.Bills)
-    val histTable     = Fragment.const(HistoryTables.BillHistory)
-    val cospHistTable = Fragment.const(HistoryTables.BillCosponsorHistory)
-    val subjHistTable = Fragment.const(HistoryTables.BillSubjectHistory)
-    val cospTable     = Fragment.const(Tables.BillCosponsors)
-    val subjTable     = Fragment.const(Tables.BillSubjects)
-
-    for {
-      historyId <- sql"""
-        INSERT INTO $histTable (
-          bill_id, congress, bill_type, number, title,
-          origin_chamber, origin_chamber_code, introduced_date, policy_area,
-          latest_action_date, latest_action_text, constitutional_authority_text,
-          sponsor_member_id, text_url, text_format, text_version_type, text_date,
-          summary_text, summary_action_desc, summary_action_date,
-          update_date, update_date_including_text, legislation_url, api_url
-        )
-        SELECT
-          id, congress, bill_type, number, title,
-          origin_chamber, origin_chamber_code, introduced_date, policy_area,
-          latest_action_date, latest_action_text, constitutional_authority_text,
-          sponsor_member_id, text_url, text_format, text_version_type, text_date,
-          summary_text, summary_action_desc, summary_action_date,
-          update_date, update_date_including_text, legislation_url, api_url
-        FROM $billsTable
-        WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int
-        RETURNING id
-      """.query[Long].unique
-
-      _ <- sql"""
-        INSERT INTO $cospHistTable (history_id, bill_id, member_id, is_original_cosponsor, sponsorship_date)
-        SELECT $historyId, c.bill_id, c.member_id, c.is_original_cosponsor, c.sponsorship_date
-        FROM $cospTable c
-        INNER JOIN $billsTable b ON c.bill_id = b.id
-        WHERE b.congress = $congress AND b.bill_type::text = $billType AND b.number = $number::int
-      """.update.run
-
-      _ <- sql"""
-        INSERT INTO $subjHistTable (history_id, bill_id, subject_name, update_date)
-        SELECT $historyId, s.bill_id, s.subject_name, s.update_date
-        FROM $subjTable s
-        INNER JOIN $billsTable b ON s.bill_id = b.id
-        WHERE b.congress = $congress AND b.bill_type::text = $billType AND b.number = $number::int
-      """.update.run
-    } yield historyId
+    val frags                        = buildFragments()
+    insertBillHistory(congress, billType, number, frags).flatMap(archiveDependents(congress, billType, number, frags))
   }
 
-  private def parseNaturalKey(naturalKey: String): (Int, String, String) = {
+  private[persistence] def archiveDependents(
+    congress: Int,
+    billType: String,
+    number: String,
+    f: ArchiveFragments,
+  )(historyId: Long): ConnectionIO[Long] = {
+    val cospCio = insertCosponsorHistory(historyId, congress, billType, number, f)
+    val subjCio = insertSubjectHistory(historyId, congress, billType, number, f)
+    cospCio *> subjCio.as(historyId)
+  }
+
+  private[persistence] case class ArchiveFragments(
+    billsTable: Fragment,
+    histTable: Fragment,
+    cospHistTable: Fragment,
+    subjHistTable: Fragment,
+    cospTable: Fragment,
+    subjTable: Fragment,
+  )
+
+  private[persistence] def buildFragments(): ArchiveFragments = ArchiveFragments(
+    billsTable = Fragment.const(Tables.Bills),
+    histTable = Fragment.const(HistoryTables.BillHistory),
+    cospHistTable = Fragment.const(HistoryTables.BillCosponsorHistory),
+    subjHistTable = Fragment.const(HistoryTables.BillSubjectHistory),
+    cospTable = Fragment.const(Tables.BillCosponsors),
+    subjTable = Fragment.const(Tables.BillSubjects),
+  )
+
+  private[persistence] def insertBillHistory(
+    congress: Int,
+    billType: String,
+    number: String,
+    f: ArchiveFragments,
+  ): ConnectionIO[Long] =
+    sql"""
+      INSERT INTO ${f.histTable} (
+        bill_id, congress, bill_type, number, title,
+        origin_chamber, origin_chamber_code, introduced_date, policy_area,
+        latest_action_date, latest_action_text, constitutional_authority_text,
+        sponsor_member_id, text_url, text_format, text_version_type, text_date,
+        summary_text, summary_action_desc, summary_action_date,
+        update_date, update_date_including_text, legislation_url, api_url
+      )
+      SELECT
+        id, congress, bill_type, number, title,
+        origin_chamber, origin_chamber_code, introduced_date, policy_area,
+        latest_action_date, latest_action_text, constitutional_authority_text,
+        sponsor_member_id, text_url, text_format, text_version_type, text_date,
+        summary_text, summary_action_desc, summary_action_date,
+        update_date, update_date_including_text, legislation_url, api_url
+      FROM ${f.billsTable}
+      WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int
+      RETURNING id
+    """.query[Long].unique
+
+  private[persistence] def insertCosponsorHistory(
+    historyId: Long,
+    congress: Int,
+    billType: String,
+    number: String,
+    f: ArchiveFragments,
+  ): ConnectionIO[Int] =
+    sql"""
+      INSERT INTO ${f.cospHistTable} (history_id, bill_id, member_id, is_original_cosponsor, sponsorship_date)
+      SELECT $historyId, c.bill_id, c.member_id, c.is_original_cosponsor, c.sponsorship_date
+      FROM ${f.cospTable} c
+      INNER JOIN ${f.billsTable} b ON c.bill_id = b.id
+      WHERE b.congress = $congress AND b.bill_type::text = $billType AND b.number = $number::int
+    """.update.run
+
+  private[persistence] def insertSubjectHistory(
+    historyId: Long,
+    congress: Int,
+    billType: String,
+    number: String,
+    f: ArchiveFragments,
+  ): ConnectionIO[Int] =
+    sql"""
+      INSERT INTO ${f.subjHistTable} (history_id, bill_id, subject_name, update_date)
+      SELECT $historyId, s.bill_id, s.subject_name, s.update_date
+      FROM ${f.subjTable} s
+      INNER JOIN ${f.billsTable} b ON s.bill_id = b.id
+      WHERE b.congress = $congress AND b.bill_type::text = $billType AND b.number = $number::int
+    """.update.run
+
+  private[persistence] def parseNaturalKey(naturalKey: String): (Int, String, String) = {
     val parts = naturalKey.split("-", 3)
     (parts(0).toInt, parts(1).toLowerCase, parts(2))
   }

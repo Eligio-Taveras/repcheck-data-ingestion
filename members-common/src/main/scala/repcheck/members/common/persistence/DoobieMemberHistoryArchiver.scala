@@ -1,5 +1,7 @@
 package repcheck.members.common.persistence
 
+import cats.syntax.all._
+
 import doobie._
 import doobie.free.connection
 import doobie.implicits._
@@ -32,46 +34,74 @@ class DoobieMemberHistoryArchiver extends MemberHistoryArchiver[ConnectionIO] {
       .query[Long]
       .option
 
-    existsQuery.flatMap {
-      case None           => connection.unit
-      case Some(memberId) => archiveExisting(historyTable, membersTable, termHistoryTbl, termsTable, memberId)
-    }
+    existsQuery.flatMap(dispatchArchive(_, historyTable, membersTable, termHistoryTbl, termsTable))
   }
 
-  private def archiveExisting(
+  private[persistence] def dispatchArchive(
+    existingId: Option[Long],
+    historyTable: Fragment,
+    membersTable: Fragment,
+    termHistoryTable: Fragment,
+    termsTable: Fragment,
+  ): ConnectionIO[Unit] = existingId match {
+    case None           => connection.unit
+    case Some(memberId) => archiveExisting(historyTable, membersTable, termHistoryTable, termsTable, memberId)
+  }
+
+  private[persistence] def archiveExisting(
     historyTable: Fragment,
     membersTable: Fragment,
     termHistoryTable: Fragment,
     termsTable: Fragment,
     memberId: Long,
   ): ConnectionIO[Unit] =
-    for {
-      historyId <- sql"""
-        INSERT INTO $historyTable (
-          member_id, first_name, last_name, direct_order_name, inverted_order_name,
-          honorific_name, birth_year, current_party, state, district,
-          image_url, image_attribution, official_url, update_date
-        )
-        SELECT
-          id, first_name, last_name, direct_order_name, inverted_order_name,
-          honorific_name, birth_year, current_party, state, district,
-          image_url, image_attribution, official_url, update_date
-        FROM $membersTable
-        WHERE id = $memberId
-        RETURNING id
-      """.query[Long].unique
+    insertMemberHistory(historyTable, membersTable, memberId).flatMap(
+      archiveTerms(termHistoryTable, termsTable, memberId)
+    )
 
-      _ <- sql"""
-        INSERT INTO $termHistoryTable (
-          history_id, member_id, chamber, congress, start_year, end_year,
-          member_type, state_code, state_name, district
-        )
-        SELECT
-          $historyId, t.member_id, t.chamber, t.congress, t.start_year, t.end_year,
-          t.member_type, t.state_code, t.state_name, t.district
-        FROM $termsTable t
-        WHERE t.member_id = $memberId
-      """.update.run
-    } yield ()
+  private[persistence] def archiveTerms(
+    termHistoryTable: Fragment,
+    termsTable: Fragment,
+    memberId: Long,
+  )(historyId: Long): ConnectionIO[Unit] =
+    insertTermHistory(historyId, termHistoryTable, termsTable, memberId).void
+
+  private[persistence] def insertMemberHistory(
+    historyTable: Fragment,
+    membersTable: Fragment,
+    memberId: Long,
+  ): ConnectionIO[Long] =
+    sql"""
+      INSERT INTO $historyTable (
+        member_id, first_name, last_name, direct_order_name, inverted_order_name,
+        honorific_name, birth_year, current_party, state, district,
+        image_url, image_attribution, official_url, update_date
+      )
+      SELECT
+        id, first_name, last_name, direct_order_name, inverted_order_name,
+        honorific_name, birth_year, current_party, state, district,
+        image_url, image_attribution, official_url, update_date
+      FROM $membersTable
+      WHERE id = $memberId
+      RETURNING id
+    """.query[Long].unique
+
+  private[persistence] def insertTermHistory(
+    historyId: Long,
+    termHistoryTable: Fragment,
+    termsTable: Fragment,
+    memberId: Long,
+  ): ConnectionIO[Int] =
+    sql"""
+      INSERT INTO $termHistoryTable (
+        history_id, member_id, chamber, congress, start_year, end_year,
+        member_type, state_code, state_name, district
+      )
+      SELECT
+        $historyId, t.member_id, t.chamber, t.congress, t.start_year, t.end_year,
+        t.member_type, t.state_code, t.state_name, t.district
+      FROM $termsTable t
+      WHERE t.member_id = $memberId
+    """.update.run
 
 }

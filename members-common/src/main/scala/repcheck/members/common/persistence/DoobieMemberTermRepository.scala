@@ -1,5 +1,7 @@
 package repcheck.members.common.persistence
 
+import cats.syntax.all._
+
 import doobie._
 import doobie.implicits._
 
@@ -33,13 +35,12 @@ class DoobieMemberTermRepository extends MemberTermRepository {
 
   override def replaceAll(memberId: Long, terms: List[MemberTermDO]): ConnectionIO[Unit] = {
     val delete = sql"DELETE FROM $table WHERE member_id = $memberId".update.run
+    val rows   = buildRows(memberId, terms)
+    delete *> runInsert(rows).void
+  }
 
-    val insert = Update[InsertRow](
-      s"INSERT INTO ${Tables.MemberTerms} (member_id, chamber, congress, start_year, end_year, member_type, state_code, state_name, district) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )
-
-    val rows: List[InsertRow] = terms.map(t =>
+  private[persistence] def buildRows(memberId: Long, terms: List[MemberTermDO]): List[InsertRow] =
+    terms.map(t =>
       (
         memberId,
         t.chamber,
@@ -53,10 +54,12 @@ class DoobieMemberTermRepository extends MemberTermRepository {
       )
     )
 
-    for {
-      _ <- delete
-      _ <- insert.updateMany(rows)
-    } yield ()
+  private[persistence] def runInsert(rows: List[InsertRow]): ConnectionIO[Int] = {
+    val insert = Update[InsertRow](
+      s"INSERT INTO ${Tables.MemberTerms} (member_id, chamber, congress, start_year, end_year, member_type, state_code, state_name, district) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    insert.updateMany(rows)
   }
 
   override def findByMemberId(memberId: Long): ConnectionIO[List[MemberTermDO]] =

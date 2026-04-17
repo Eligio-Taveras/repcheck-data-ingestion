@@ -2,11 +2,18 @@ package repcheck.ingestion.bills.common.persistence
 
 import java.time.LocalDate
 
+import cats.effect.IO
+import cats.effect.unsafe.implicits.global
+
+import doobie.Transactor
+import doobie.implicits._
+
+import org.scalatest.BeforeAndAfterAll
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.shared.models.congress.dos.bill.BillCosponsorDO
 
-class DoobieBillCosponsorRepositoryUnitSpec extends AnyFlatSpec with Matchers {
+class DoobieBillCosponsorRepositoryUnitSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
 
   private val repo = new DoobieBillCosponsorRepository
 
@@ -36,6 +43,62 @@ class DoobieBillCosponsorRepositoryUnitSpec extends AnyFlatSpec with Matchers {
   "findByBillId" should "produce a ConnectionIO for the query" in {
     val cio = repo.findByBillId(1L)
     cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  "runInsert" should "produce a ConnectionIO[Int] for a non-empty row list" in {
+    val rows = List((1L, 2L, Some(true), Some(java.time.LocalDate.parse("2024-01-15"))))
+    val cio  = repo.runInsert(rows)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "produce a ConnectionIO[Int] for an empty row list" in {
+    val cio = repo.runInsert(List.empty)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "produce a ConnectionIO[Int] for rows with None optional fields" in {
+    val rows = List((1L, 2L, None, None))
+    val cio  = repo.runInsert(rows)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "produce a ConnectionIO[Int] for multiple rows" in {
+    val rows = List(
+      (1L, 2L, Some(true), Some(java.time.LocalDate.parse("2024-01-15"))),
+      (1L, 3L, Some(false), Some(java.time.LocalDate.parse("2024-02-01"))),
+      (1L, 4L, None, None),
+    )
+    val cio = repo.runInsert(rows)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  private lazy val h2xa: Transactor[IO] = Transactor.fromDriverManager[IO](
+    driver = "org.h2.Driver",
+    url = "jdbc:h2:mem:testBillCosponsor;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
+    user = "",
+    password = "",
+    logHandler = None,
+  )
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    val _ = sql"""
+      CREATE TABLE IF NOT EXISTS bill_cosponsors (
+        id                    BIGINT AUTO_INCREMENT PRIMARY KEY,
+        bill_id               BIGINT NOT NULL,
+        member_id             BIGINT NOT NULL,
+        is_original_cosponsor BOOLEAN,
+        sponsorship_date      DATE
+      )
+    """.update.run.transact(h2xa).unsafeRunSync()
+  }
+
+  "replaceAll" should "execute delete and insert steps when run with a transactor" in {
+    repo.replaceAll(99L, List.empty).transact(h2xa).unsafeRunSync() shouldBe ()
+  }
+
+  "findByBillId" should "return an empty list when run against an empty H2 table" in {
+    repo.findByBillId(99L).transact(h2xa).unsafeRunSync() shouldBe empty
   }
 
 }
