@@ -41,8 +41,8 @@ class LisMappingProcessor[F[_]: Async](
   logger: PipelineLogger[F],
 ) {
 
-  // Per-run identity flows in via `correlationId`; StepName is a stable per-class label, matching the convention used
-  // by the sibling `SenatorLookupXmlClient`/`BillTextAvailabilityChecker`.
+  // Per-run identity flows in via `runId`; per-item correlation IDs are generated fresh in `processDto`.
+  // StepName is a stable per-class label, matching the convention used by sibling clients.
   private val StepName: String = "lis-mapping-refresh"
 
   /**
@@ -52,19 +52,18 @@ class LisMappingProcessor[F[_]: Async](
    * Event-publishing failures are non-fatal with respect to persistence (the mapping has already been committed) but
    * are propagated as errors so that the caller sees a failed refresh and can re-run.
    */
-  def refreshAll(correlationId: UUID): F[LisMappingRefreshResult] = {
+  def refreshAll(runId: Long): F[LisMappingRefreshResult] = {
     val logCtx = LogContext(
-      runId = correlationId.toString,
+      runId = runId.toString,
       stepName = StepName,
-      correlationId = Some(correlationId),
     )
 
-    val per: SenatorLookupXmlDTO => F[PerItemOutcome] = dto => processDto(dto, correlationId, logCtx)
+    val per: SenatorLookupXmlDTO => F[PerItemOutcome] = dto => processDto(dto, UUID.randomUUID(), logCtx)
 
     for {
       _ <- logger.info(logCtx, "Starting LIS mapping refresh")
       outcomes <- xmlClient
-        .fetchMappings(correlationId)
+        .fetchMappings(runId)
         .parEvalMap(config.parallelism)(per)
         .compile
         .toList

@@ -1,7 +1,5 @@
 package repcheck.members.lismapping.client
 
-import java.util.UUID
-
 import cats.effect.Async
 import cats.syntax.all._
 
@@ -38,8 +36,8 @@ class SenatorLookupXmlClient[F[_]: Async](
   // the `correlationId` parameter on `fetchMappings`, not from a hardcoded string.
   private val StepName: String = "senator-lookup-xml-fetch"
 
-  def fetchMappings(correlationId: UUID): Stream[F, SenatorLookupXmlDTO] = {
-    val logCtx = LogContext(runId = correlationId.toString, stepName = StepName, correlationId = Some(correlationId))
+  def fetchMappings(runId: Long): Stream[F, SenatorLookupXmlDTO] = {
+    val logCtx = LogContext(runId = runId.toString, stepName = StepName)
 
     Stream
       .eval(

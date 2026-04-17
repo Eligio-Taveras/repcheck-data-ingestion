@@ -50,6 +50,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     logHandler = None,
   )
 
+  private val runId         = 12345L
   private val correlationId = UUID.randomUUID()
 
   private val config = MemberProfileConfig(
@@ -267,7 +268,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
       .thenReturn(doobie.free.connection.pure(Some(makeMember(memberId = 42L))))
     stubRepoBasics(f)
 
-    val results = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     results.size shouldBe 5
   }
 
@@ -275,7 +276,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     val f = createFixture()
     when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.empty)
 
-    val _ = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val _ = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     verify(f.apiClient, times(1)).fetchAll(eqTo(FetchParams(congress = Some(config.congress))))
   }
 
@@ -293,7 +294,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
       .thenReturn(doobie.free.connection.pure(Some(makeMember(memberId = 42L))))
     stubRepoBasics(f)
 
-    val _ = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val _ = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     verify(f.apiClient, times(3)).fetchDetail(anyString())
   }
 
@@ -478,7 +479,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emit(makeListItem(bioguideId = "")))
     when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(badDetail))
 
-    val results = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     val _       = results.size shouldBe 1
     results.headOption.map(_.isFailed) shouldBe Some(true)
   }
@@ -499,7 +500,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emit(makeListItem()))
     when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.raiseError(new RuntimeException("boom")))
 
-    val results = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     val _       = results.size shouldBe 1
     results.headOption.map(_.isFailed) shouldBe Some(true)
   }
@@ -509,7 +510,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     when(f.apiClient.fetchAll(any[FetchParams]))
       .thenReturn(fs2.Stream.raiseError[IO](new RuntimeException("network timeout")))
 
-    val results = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     val _       = results shouldBe empty
     verify(f.logger, times(1)).error(
       any[LogContext],
@@ -529,7 +530,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     when(f.eventPublisher.memberUpdated(any[MemberUpdatedEvent], any[UUID]))
       .thenReturn(IO.raiseError(new RuntimeException("pubsub down")))
 
-    val results = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     val _       = results.size shouldBe 1
     results.headOption.map(_.isFailed) shouldBe Some(true)
   }
@@ -559,7 +560,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
       .thenReturn(doobie.free.connection.pure(Some(makeMember(memberId = 42L))))
     stubRepoBasics(f)
 
-    val _ = f.processor.streamAll(correlationId).compile.toList.unsafeRunSync()
+    val _ = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     maxSeen.get() shouldBe 1
   }
 
@@ -585,7 +586,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     stubRepoBasics(f)
 
     val parallelCfg = config.copy(parallelism = 3)
-    val _           = f.processorWith(parallelCfg).streamAll(correlationId).compile.toList.unsafeRunSync()
+    val _           = f.processorWith(parallelCfg).streamAll(runId).compile.toList.unsafeRunSync()
     // With 3 slots and 20ms work, we expect to see more than 1 in flight at some point.
     maxSeen.get() should be > 1
   }
@@ -593,7 +594,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
   // ------------------------------------------------------------------
   // AC-05.3.17 — Correlation ID flows through all operations
   // ------------------------------------------------------------------
-  it should "propagate the correlation id into log contexts and the published event" in {
+  it should "propagate the run ID into log contexts and a fresh per-item UUID to the event publisher" in {
     val f = createFixture()
     when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emit(makeListItem()))
     when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(makeDetailDTO()))
@@ -602,16 +603,16 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
       .thenReturn(doobie.free.connection.pure(Some(makeMember(memberId = 42L))))
     stubRepoBasics(f)
 
-    val myCorrelationId = UUID.randomUUID()
-    val _               = f.processor.streamAll(myCorrelationId).compile.toList.unsafeRunSync()
+    val myRunId = 99999L
+    val _       = f.processor.streamAll(myRunId).compile.toList.unsafeRunSync()
 
-    // The publisher receives exactly this correlation id.
-    val _ = verify(f.eventPublisher, times(1)).memberUpdated(any[MemberUpdatedEvent], eqTo(myCorrelationId))
-    // Every log call should carry a LogContext whose runId matches the correlation id string form.
+    // Every log call should carry a LogContext whose runId matches the Long run ID as a string.
     val captor = org.mockito.ArgumentCaptor.forClass(classOf[LogContext])
     val _      = verify(f.logger, org.mockito.Mockito.atLeastOnce()).info(captor.capture(), anyString())
     import scala.jdk.CollectionConverters._
-    captor.getAllValues.asScala.toList.foreach(ctx => ctx.runId shouldBe myCorrelationId.toString)
+    captor.getAllValues.asScala.toList.foreach(ctx => ctx.runId shouldBe myRunId.toString)
+    // The publisher receives a per-item UUID generated inside parEvalMap — not the run-level Long.
+    val _ = verify(f.eventPublisher, times(1)).memberUpdated(any[MemberUpdatedEvent], any[UUID])
   }
 
   // ------------------------------------------------------------------

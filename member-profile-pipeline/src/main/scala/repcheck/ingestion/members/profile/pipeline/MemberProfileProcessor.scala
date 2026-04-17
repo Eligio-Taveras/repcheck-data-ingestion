@@ -57,9 +57,9 @@ class MemberProfileProcessor[F[_]: Async](
 
   private val stepName: String = "member-profile-processing"
 
-  def streamAll(correlationId: UUID): Stream[F, ProcessingResult] = {
+  def streamAll(runId: Long): Stream[F, ProcessingResult] = {
     val params = FetchParams(congress = Some(config.congress))
-    val logCtx = LogContext(correlationId.toString, stepName, Some(correlationId))
+    val logCtx = LogContext(runId.toString, stepName)
 
     apiClient
       .fetchAll(params)
@@ -74,17 +74,18 @@ class MemberProfileProcessor[F[_]: Async](
       // raw EmberClient with a semaphore-gated middleware (see `BillMetadataPipeline.rateLimitedClient` for the
       // canonical pattern) before constructing `MembersApiClient`, so the call sites here remain unchanged.
       .parEvalMap(config.parallelism) { listItem =>
-        val itemCtx = LogContext(correlationId.toString, stepName, Some(correlationId), Some(listItem.bioguideId))
-        processMember(listItem, correlationId).handleErrorWith { e =>
+        val correlationId = UUID.randomUUID()
+        val itemCtx       = LogContext(runId.toString, stepName, Some(correlationId), Some(listItem.bioguideId))
+        processMember(listItem, correlationId, runId).handleErrorWith { e =>
           logger.error(itemCtx, s"Failed to process ${listItem.bioguideId}: ${e.getMessage}", Some(e)) *>
             Async[F].pure(ProcessingResult.Failed(listItem.bioguideId, e.getMessage, e.getClass.getSimpleName))
         }
       }
   }
 
-  def processMember(listItem: MemberListItemDTO, correlationId: UUID): F[ProcessingResult] = {
+  def processMember(listItem: MemberListItemDTO, correlationId: UUID, runId: Long = 0L): F[ProcessingResult] = {
     val bioguideId = listItem.bioguideId
-    val logCtx     = LogContext(correlationId.toString, stepName, Some(correlationId), Some(bioguideId))
+    val logCtx     = LogContext(runId.toString, stepName, Some(correlationId), Some(bioguideId))
 
     for {
       detail <- apiClient.fetchDetail(listItem.url.getOrElse(""))

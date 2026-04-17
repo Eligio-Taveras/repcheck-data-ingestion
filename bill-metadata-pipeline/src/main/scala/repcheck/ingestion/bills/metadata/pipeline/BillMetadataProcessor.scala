@@ -52,10 +52,10 @@ class BillMetadataProcessor[F[_]: Async](
   private val billPersister =
     new BillPersister[F](billRepo, cosponsorRepo, subjectRepo, historyArchiver, xa)
 
-  def streamAll(correlationId: UUID): Stream[F, ProcessingResult] = {
+  def streamAll(runId: Long): Stream[F, ProcessingResult] = {
     val fromDateTime = Instant.now().minus(config.lookbackDays.toLong, ChronoUnit.DAYS)
     val params       = repcheck.ingestion.common.api.FetchParams(fromDateTime = Some(fromDateTime))
-    val logCtx       = LogContext(correlationId.toString, stepName)
+    val logCtx       = LogContext(runId.toString, stepName)
 
     apiClient
       .fetchAll(params)
@@ -65,8 +65,9 @@ class BillMetadataProcessor[F[_]: Async](
         ) *> Stream.empty
       }
       .parEvalMap(config.parallelism) { listItem =>
-        val naturalKey = buildNaturalKey(listItem)
-        val logCtxItem = LogContext(correlationId.toString, stepName, Some(correlationId), Some(naturalKey))
+        val naturalKey    = buildNaturalKey(listItem)
+        val correlationId = UUID.randomUUID()
+        val logCtxItem    = LogContext(runId.toString, stepName, Some(correlationId), Some(naturalKey))
         processListItem(listItem, correlationId).handleErrorWith { e =>
           logger.error(logCtxItem, s"Failed to process $naturalKey: ${e.getMessage}", Some(e)) *>
             Async[F].pure(ProcessingResult.Failed(naturalKey, e.getMessage))

@@ -1,7 +1,5 @@
 package repcheck.ingestion.bills.metadata.app
 
-import java.util.UUID
-
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
@@ -14,8 +12,8 @@ import repcheck.pipeline.models.metadata.ProcessingResult
 
 class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
 
-  private val correlationId = UUID.fromString("00000000-0000-0000-0000-000000000001")
-  private val pipelineName  = "test-pipeline"
+  private val runId        = 12345L
+  private val pipelineName = "test-pipeline"
 
   /**
    * A stub logger that records log messages via an AtomicReference to avoid WartRemover mutable collection
@@ -52,7 +50,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -65,7 +63,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
     result.code shouldBe 1
   }
 
@@ -78,7 +76,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -86,7 +84,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
     val logger                               = new StubPipelineLogger
     val stream: Stream[IO, ProcessingResult] = Stream.empty
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -101,7 +99,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
 
     val _          = logger.messages.size shouldBe 1
     val logMessage = logger.messages.headOption.getOrElse(fail("expected at least one log message"))
@@ -119,7 +117,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
     result.code shouldBe 1
   }
 
@@ -133,15 +131,15 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
     result.code shouldBe 0
   }
 
-  it should "include the correlation ID in the log context" in {
+  it should "include the run ID in the log context" in {
     val logger = new StubPipelineLogger
     val stream = Stream.emit(ProcessingResult.Succeeded("bill-1"))
 
-    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).unsafeRunSync()
+    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
 
     logger.messages should not be empty
   }
@@ -152,7 +150,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       Stream.emit(ProcessingResult.Succeeded("bill-1")) ++
         Stream.raiseError[IO](new RuntimeException("stream failure"))
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, correlationId).attempt.unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).attempt.unsafeRunSync()
     result.isLeft shouldBe true
   }
 

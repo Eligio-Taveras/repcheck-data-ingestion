@@ -428,7 +428,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
 
     // Step 1: Checker finds bill, publishes to real GCP Pub/Sub
     val checker        = buildChecker()
-    val checkerResults = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val checkerResults = checker.checkAll(0L).compile.toList.unsafeRunSync()
     val _              = checkerResults.size shouldBe 1
     val _              = checkerResults.headOption.exists(_.isSucceeded) shouldBe true
 
@@ -474,7 +474,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
 
     // Run full chain: checker → GCP Pub/Sub → processor → DB
     val checker = buildChecker()
-    val _       = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val _       = checker.checkAll(0L).compile.toList.unsafeRunSync()
     Thread.sleep(2000L)
     val messages = pullGcpMessages()
     val event    = parseEvent(messages.headOption.getOrElse(fail("No message")))
@@ -539,7 +539,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     // Run checker — finds both bills
     stubOllamaEmbedding(embedding1)
     val checker = buildChecker()
-    val results = checker.checkAll(UUID.randomUUID()).compile.toList.unsafeRunSync()
+    val results = checker.checkAll(0L).compile.toList.unsafeRunSync()
     val _       = results.size shouldBe 2
 
     // Pull messages with retry — Pub/Sub may not deliver all messages in one pull

@@ -35,6 +35,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     logHandler = None,
   )
 
+  private val runId         = 12345L
   private val correlationId = UUID.randomUUID()
 
   private val testRetryConfig =
@@ -298,7 +299,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
       .thenReturn(IO.pure(List.empty))
 
-    val results = f.checker.checkAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.checker.checkAll(runId).compile.toList.unsafeRunSync()
     val _       = results.size shouldBe 2
     results.foreach(_.isSkipped shouldBe true)
   }
@@ -319,7 +320,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     when(f.textApiClient.fetchTextVersions(118, "hr", "2"))
       .thenReturn(IO.pure(List.empty))
 
-    val results = f.checker.checkAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.checker.checkAll(runId).compile.toList.unsafeRunSync()
     val _       = results.size shouldBe 2
     val _       = results.count(_.isFailed) shouldBe 1
     results.count(_.isSkipped) shouldBe 1
@@ -331,7 +332,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     when(f.billRepo.findBillsNeedingTextCheck())
       .thenReturn(doobie.free.connection.pure(List.empty[BillDO]))
 
-    val results = f.checker.checkAll(correlationId).compile.toList.unsafeRunSync()
+    val results = f.checker.checkAll(runId).compile.toList.unsafeRunSync()
     results shouldBe empty
   }
 

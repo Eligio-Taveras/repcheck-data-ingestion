@@ -79,7 +79,9 @@ private[app] object BillTextPipelinePipeline {
           resultStream = resultStream,
           logger = logger,
           pipelineName = PipelineName,
-          correlationId = java.util.UUID.randomUUID(),
+          // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
+          // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
+          runId = 0L,
           workflowStateUpdater = workflowStateUpdater,
         )
       }
