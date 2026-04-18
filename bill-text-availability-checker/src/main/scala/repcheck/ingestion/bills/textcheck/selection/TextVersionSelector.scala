@@ -34,6 +34,9 @@ object TextVersionSelector {
     "Reported to Senate"           -> "RTS",
     "Reported to House"            -> "RTH",
     "Printed as Passed"            -> "PP",
+    "Reference Change House"       -> "RCH",
+    "Engrossed Amendment Senate"   -> "EAS",
+    "Referral Instructions Senate" -> "RIS",
     // Short codes the API sometimes sends directly
     "PCS" -> "PCS",
     "PCH" -> "PCH",
@@ -45,6 +48,9 @@ object TextVersionSelector {
     "ATS" -> "ATS",
     "ATH" -> "ATH",
     "PP"  -> "PP",
+    "RCH" -> "RCH",
+    "EAS" -> "EAS",
+    "RIS" -> "RIS",
   )
 
   /** Returns the short code for a known descriptive string, or the input unchanged if not recognized. */

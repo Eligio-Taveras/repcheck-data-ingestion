@@ -428,6 +428,26 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     }
   }
 
+  it should "strip null bytes from content before storing" in {
+    val f                = createFixture()
+    val event            = makeEvent()
+    val contentWithNulls = "Bill\u0000text\u0000with\u0000nulls"
+    stubBillLookup(f)
+    when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure(contentWithNulls))
+    when(f.embeddingService.generateEmbedding(anyString())).thenReturn(IO.pure(None))
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+    val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
+      .thenReturn(IO.pure("msg-id-123"))
+
+    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val captor = ArgumentCaptor.forClass(classOf[BillTextVersionDO])
+    val _      = verify(f.textVersionRepository, times(1)).storeAndUpdateBill(captor.capture())
+    val stored = captor.getValue
+
+    stored.content shouldBe Some("Billtextwithnulls")
+  }
+
   it should "classify unknown exceptions as Systemic by default" in {
     val f     = createFixture()
     val event = makeEvent()
