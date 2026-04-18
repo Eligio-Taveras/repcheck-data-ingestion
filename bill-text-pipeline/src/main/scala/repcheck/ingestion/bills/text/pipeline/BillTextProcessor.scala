@@ -90,7 +90,7 @@ class BillTextProcessor[F[_]: Async] private[text] (
         versionDate = None,
         formatType = formatType,
         url = Some(event.textUrl),
-        content = Some(content),
+        content = Some(content.replace("\u0000", "")),
         embedding = embedding,
         fetchedAt = Some(Instant.now()),
         createdAt = None,
