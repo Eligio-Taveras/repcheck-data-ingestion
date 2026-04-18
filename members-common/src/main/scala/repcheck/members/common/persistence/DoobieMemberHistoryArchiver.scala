@@ -30,9 +30,10 @@ class DoobieMemberHistoryArchiver extends MemberHistoryArchiver[ConnectionIO] {
     val termsTable     = Fragment.const(Tables.MemberTerms)
     val termHistoryTbl = Fragment.const(Tables.MemberTermHistory)
 
-    val existsQuery = sql"SELECT id FROM $membersTable WHERE natural_key = $bioguideId"
-      .query[Long]
-      .option
+    val existsQuery =
+      sql"SELECT id FROM $membersTable WHERE natural_key = $bioguideId AND update_date IS NOT NULL"
+        .query[Long]
+        .option
 
     existsQuery.flatMap(dispatchArchive(_, historyTable, membersTable, termHistoryTbl, termsTable))
   }

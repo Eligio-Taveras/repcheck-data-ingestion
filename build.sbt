@@ -178,6 +178,7 @@ lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-
 lazy val memberProfilePipeline = (project in file("member-profile-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
   .dependsOn(membersCommon % "compile->compile;test->test")
+  .dependsOn(lisMappingRefresher % "test->compile")
   .settings(pipelineSettings)
   .settings(
     name := "member-profile-pipeline",
@@ -185,6 +186,11 @@ lazy val memberProfilePipeline = (project in file("member-profile-pipeline"))
       ++ catsEffect ++ doobie ++ diff ++ pubSub ++ fs2 ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     coverageExcludedFiles := ".*MemberProfilePipelineApp",
+    // Intra-subproject parallel execution causes FK violations because PlaceholderFillIntegrationSpec
+    // and SenatorLifecycleIntegrationSpec share SharedDockerPostgres's singleton container and each
+    // suite's afterEach truncates members / member_lis_mapping — which clobbers the other suite's
+    // in-flight inserts. Matches the convention used by lisMappingRefresher.
+    Test / parallelExecution := false,
     assembly / mainClass := Some("repcheck.ingestion.members.profile.app.MemberProfilePipelineApp"),
     assembly / assemblyJarName := "member-profile-pipeline.jar",
   )

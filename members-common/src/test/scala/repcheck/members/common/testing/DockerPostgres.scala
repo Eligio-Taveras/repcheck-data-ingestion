@@ -143,3 +143,4 @@ object SharedDockerPostgres {
 }
 
 object DockerRequired extends org.scalatest.Tag("DockerRequired")
+object E2ETest        extends org.scalatest.Tag("com.repcheck.tags.E2ETest")

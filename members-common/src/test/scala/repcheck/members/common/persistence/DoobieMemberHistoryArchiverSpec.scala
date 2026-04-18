@@ -140,4 +140,19 @@ class DoobieMemberHistoryArchiverSpec extends AnyFlatSpec with Matchers with Tra
     historyCount shouldBe 0L
   }
 
+  it should "be a no-op for a placeholder member (update_date IS NULL, no rows inserted)" taggedAs DockerRequired in {
+    val _ = sql"""INSERT INTO members (natural_key) VALUES ('PLACEHOLDER-001')""".update.run
+      .transact(xa)
+      .unsafeRunSync()
+
+    archiver.archiveMember("PLACEHOLDER-001").transact(xa).unsafeRunSync()
+
+    val historyCount = sql"SELECT COUNT(*) FROM member_history"
+      .query[Long]
+      .unique
+      .transact(xa)
+      .unsafeRunSync()
+    historyCount shouldBe 0L
+  }
+
 }

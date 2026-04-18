@@ -38,9 +38,10 @@ class DoobieMemberPartyHistoryRepository extends MemberPartyHistoryRepository {
   )
 
   override def appendNew(memberId: Long, entries: List[MemberPartyHistoryDO]): ConnectionIO[Unit] = {
-    // party_name and party_abbreviation are PostgreSQL enum types (party_type, party_abbreviation_type)
-    // created by migration 013. The DO carries them as Option[String], so we cast at the bind sites to
-    // avoid `column X is of type Y but expression is of type character varying` errors.
+    // party_name is party_type ({Democrat, Republican, Independent, …}) and
+    // party_abbreviation is party_abbreviation_type ({D, R, I}).
+    // The DO carries them as Option[String], so we cast at the bind sites to avoid
+    // `column X is of type Y but expression is of type character varying` errors.
     val insert = Update[InsertRow](
       s"INSERT INTO ${Tables.MemberPartyHistory} (member_id, party_name, party_abbreviation, start_year) " +
         "VALUES (?, ?::party_type, ?::party_abbreviation_type, ?) " +

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export PATH=\"$PATH:/c/Users/elita/AppData/Local/Coursier/data/bin\")",
+      "Bash(sbt.bat \"test\")",
+      "Bash(powershell.exe -Command \"cd 'C:\\\\Users\\\\elita\\\\source\\\\repos2024\\\\repcheck-data-ingestion\\\\.claude\\\\worktrees\\\\competent-zhukovsky'; & 'C:\\\\Users\\\\elita\\\\AppData\\\\Local\\\\Coursier\\\\data\\\\bin\\\\sbt.bat' 'lisMappingRefresher/test' 2>&1 | Select-Object -Last 40\")",
+      "Bash(powershell.exe -Command \"cd 'C:\\\\Users\\\\elita\\\\source\\\\repos2024\\\\repcheck-data-ingestion\\\\.claude\\\\worktrees\\\\competent-zhukovsky'; & 'C:\\\\Users\\\\elita\\\\AppData\\\\Local\\\\Coursier\\\\data\\\\bin\\\\sbt.bat' 'lisMappingRefresher/assembly' 2>&1 | Select-Object -Last 10\")",
+      "Bash(docker compose:*)"
+    ]
+  }
+}

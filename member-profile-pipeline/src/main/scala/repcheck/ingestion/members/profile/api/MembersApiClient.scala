@@ -26,7 +26,12 @@ import repcheck.ingestion.common.api.{
 import repcheck.ingestion.members.profile.errors.MemberFetchFailed
 import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.common.PaginationInfoDTO
-import repcheck.shared.models.congress.dto.member.{MemberDetailDTO, MemberListItemDTO}
+import repcheck.shared.models.congress.dto.member.{
+  MemberDepictionDTO,
+  MemberDetailDTO,
+  MemberListItemDTO,
+  MemberTermSummaryDTO,
+}
 
 class MembersApiClient[F[_]](
   config: CongressGovClientConfig,
@@ -146,6 +151,24 @@ final private[api] case class MembersListWrapper(
 )
 
 private[api] object MembersListWrapper {
+
+  // The Congress.gov `/member/congress/{congress}` response wraps nested lists in a `{"item": [...]}` envelope:
+  //   "terms": { "item": [ {"chamber": "House", "startYear": 2021} ] }
+  // The shared-models `MemberListItemDTO.decoder` (deriveDecoder) expects a plain array, so we shadow it
+  // here with a custom decoder that unwraps `terms.item` before delegating everything else.
+  implicit private val memberListItemDecoder: Decoder[MemberListItemDTO] = Decoder.instance { c =>
+    for {
+      bioguideId <- c.downField("bioguideId").as[String]
+      name       <- c.downField("name").as[Option[String]]
+      partyName  <- c.downField("partyName").as[Option[String]]
+      state      <- c.downField("state").as[Option[String]]
+      depiction  <- c.downField("depiction").as[Option[MemberDepictionDTO]]
+      terms      <- c.downField("terms").downField("item").as[Option[List[MemberTermSummaryDTO]]]
+      updateDate <- c.downField("updateDate").as[Option[String]]
+      url        <- c.downField("url").as[Option[String]]
+    } yield MemberListItemDTO(bioguideId, name, partyName, state, depiction, terms, updateDate, url)
+  }
+
   implicit val decoder: Decoder[MembersListWrapper] = deriveDecoder[MembersListWrapper]
 }
 
@@ -154,6 +177,9 @@ final private[api] case class MemberDetailWrapper(member: MemberDetailDTO)
 
 private[api] object MemberDetailWrapper {
 
+  // The Congress.gov member detail endpoint uses plain JSON arrays for nested collections
+  // (e.g., "terms": [...], "partyHistory": [...]), so the shared-models deriveDecoder for
+  // MemberDetailDTO handles them correctly without any custom unwrapping.
   implicit val decoder: Decoder[MemberDetailWrapper] = Decoder.instance { c =>
     c.downField("member").as[MemberDetailDTO].map(MemberDetailWrapper.apply)
   }
