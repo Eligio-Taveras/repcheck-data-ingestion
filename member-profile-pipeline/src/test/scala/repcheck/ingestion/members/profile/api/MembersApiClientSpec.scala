@@ -82,6 +82,7 @@ class MembersApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
     s"""{"members": [$items], "pagination": {"count": ${members.size}}}"""
   }
 
+  // The Congress.gov detail endpoint uses plain JSON arrays (not {"item": [...]} wrappers).
   private def memberDetailJson(bioguideId: String): String =
     s"""{
        |  "member": {

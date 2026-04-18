@@ -58,7 +58,21 @@ trait TransactorFixture extends BeforeAndAfterAll with BeforeAndAfterEach { self
             $party::party_type, $state, ${Option.empty[Int]},
             ${Option.empty[String]}, ${Option.empty[String]}, ${Option.empty[String]}, $now
           )
-          ON CONFLICT (natural_key) DO UPDATE SET updated_at = NOW()
+          ON CONFLICT (natural_key) DO UPDATE SET
+            first_name = EXCLUDED.first_name,
+            last_name = EXCLUDED.last_name,
+            direct_order_name = EXCLUDED.direct_order_name,
+            inverted_order_name = EXCLUDED.inverted_order_name,
+            honorific_name = EXCLUDED.honorific_name,
+            birth_year = EXCLUDED.birth_year,
+            current_party = EXCLUDED.current_party,
+            state = EXCLUDED.state,
+            district = EXCLUDED.district,
+            image_url = EXCLUDED.image_url,
+            image_attribution = EXCLUDED.image_attribution,
+            official_url = EXCLUDED.official_url,
+            update_date = EXCLUDED.update_date,
+            updated_at = NOW()
           RETURNING id"""
       .query[Long]
       .unique

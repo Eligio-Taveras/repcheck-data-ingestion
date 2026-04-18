@@ -20,6 +20,11 @@ import repcheck.ingestion.common.xml.XmlFeedClient
 import repcheck.members.lismapping.config.LisMappingConfig
 import repcheck.pipeline.models.errors.RetryConfig
 
+/**
+ * Tests for [[SenatorLookupXmlClient]] using the real `senator-lookup.xml` schema from senate.gov. XML helpers here
+ * match the real format: `<senators>` root, `<senator>` entries, `<lisid>`, `<bioguide>`, names under `<full_name>`,
+ * isCurrent from empty `<end_date year="">`, congress terms from `<congresses><congress>`.
+ */
 class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
   private val wireMock = new WireMockServer(
@@ -98,36 +103,46 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     )
   }
 
-  private def member(
+  // Build a senator entry in the real senator-lookup.xml format.
+  // `congresses` is used for lookback window filtering; `isCurrent` is set via open/closed end_date.
+  private def senator(
     lisId: String,
     bioguide: String,
     congresses: Seq[Int],
     isCurrent: Boolean,
   ): String = {
-    val services = congresses
-      .map(c => s"<service><congress>${c.toString}</congress></service>")
-      .mkString
-    s"""<member>
-       |  <lis_member_id>$lisId</lis_member_id>
-       |  <bioguide_id>$bioguide</bioguide_id>
-       |  <first_name>First</first_name>
-       |  <last_name>Last</last_name>
+    val congressXml = congresses.map(c => s"<congress>${c.toString}</congress>").mkString
+    val endDateAttr =
+      if (isCurrent) """day="" month="" year=""""" else """congress="1" day="03" month="01" year="1800""""
+    val firstCongress = congresses.headOption.getOrElse(118)
+    s"""<senator>
+       |  <full_name>
+       |    <first_name>First</first_name>
+       |    <last_name>Last</last_name>
+       |  </full_name>
        |  <party>D</party>
        |  <state>NY</state>
-       |  <is_current>${isCurrent.toString}</is_current>
-       |  <service_dates>$services</service_dates>
-       |</member>""".stripMargin
+       |  <bioguide>$bioguide</bioguide>
+       |  <lisid>$lisId</lisid>
+       |  <congresses>$congressXml</congresses>
+       |  <service_dates>
+       |    <service_date class="1">
+       |      <begin_date congress="${firstCongress.toString}" day="03" month="01" year="2000"/>
+       |      <end_date $endDateAttr/>
+       |    </service_date>
+       |  </service_dates>
+       |</senator>""".stripMargin
   }
 
-  private def document(members: Seq[String]): String =
-    s"""<contact_information>${members.mkString}</contact_information>"""
+  private def document(senators: Seq[String]): String =
+    s"<senators>${senators.mkString}</senators>"
 
   "fetchMappings" should "emit one DTO per parsed senator on the happy path" in {
     val body = document(
       Seq(
-        member("S1", "B1", Seq(118), isCurrent = true),
-        member("S2", "B2", Seq(118), isCurrent = true),
-        member("S3", "B3", Seq(117, 118), isCurrent = true),
+        senator("S1", "B1", Seq(118), isCurrent = true),
+        senator("S2", "B2", Seq(118), isCurrent = true),
+        senator("S3", "B3", Seq(117, 118), isCurrent = true),
       )
     )
     stubXml("/senators.xml", body)
@@ -140,10 +155,10 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
   it should "filter out senators whose service entirely predates the lookback window" in {
     val body = document(
       Seq(
-        member("S-current-1", "B-c1", Seq(118), isCurrent = true),
-        member("S-current-2", "B-c2", Seq(118), isCurrent = true),
-        member("S-old-1", "B-o1", Seq(110), isCurrent = false),
-        member("S-old-2", "B-o2", Seq(100, 105), isCurrent = false),
+        senator("S-current-1", "B-c1", Seq(118), isCurrent = true),
+        senator("S-current-2", "B-c2", Seq(118), isCurrent = true),
+        senator("S-old-1", "B-o1", Seq(110), isCurrent = false),
+        senator("S-old-2", "B-o2", Seq(100, 105), isCurrent = false),
       )
     )
     stubXml("/senators.xml", body)
@@ -157,7 +172,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
   it should "include a senator with isCurrent=true even when service dates are all out of window" in {
     val body = document(
       Seq(
-        member("S-appointed", "B-a1", Seq(110), isCurrent = true)
+        senator("S-appointed", "B-a1", Seq(110), isCurrent = true)
       )
     )
     stubXml("/senators.xml", body)
@@ -171,7 +186,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     val body = document(
       Seq(
         // congress 114 is the start of the window [114, 118] with lookback=5
-        member("S-boundary", "B-b1", Seq(112, 114), isCurrent = false)
+        senator("S-boundary", "B-b1", Seq(112, 114), isCurrent = false)
       )
     )
     stubXml("/senators.xml", body)
@@ -182,7 +197,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
   }
 
   it should "fail the stream when the feed returns HTTP 404" in {
-    stubXml("/senators.xml", "<contact_information></contact_information>", status = 404)
+    stubXml("/senators.xml", "<senators></senators>", status = 404)
 
     val thrown = intercept[Exception] {
       makeClient(baseConfig()).fetchMappings(1L).compile.drain.unsafeRunSync()
@@ -190,8 +205,8 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     thrown.toString should not be empty
   }
 
-  it should "emit an empty stream when the feed has no <member> entries" in {
-    stubXml("/senators.xml", "<contact_information></contact_information>")
+  it should "emit an empty stream when the feed has no <senator> entries" in {
+    stubXml("/senators.xml", "<senators></senators>")
 
     val result = makeClient(baseConfig()).fetchMappings(1L).compile.toList.unsafeRunSync()
     result shouldBe empty
@@ -210,8 +225,8 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     val body = document(
       Seq(
         // Window: [118 - 5 + 1, 118] = [114, 118]. Congress 113 must be excluded.
-        member("S-edge-out", "B-eo", Seq(113), isCurrent = false),
-        member("S-edge-in", "B-ei", Seq(114), isCurrent = false),
+        senator("S-edge-out", "B-eo", Seq(113), isCurrent = false),
+        senator("S-edge-in", "B-ei", Seq(114), isCurrent = false),
       )
     )
     stubXml("/senators.xml", body)
@@ -221,20 +236,24 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
     result.map(_.lisId) shouldBe List("S-edge-in")
   }
 
-  it should "skip malformed member entries but keep valid ones in the same feed" in {
-    val validMember = member("S-good", "B-good", Seq(118), isCurrent = true)
-    val brokenMember =
-      """<member>
-        |  <lis_member_id>S-broken</lis_member_id>
-        |  <!-- missing bioguide_id - required field -->
-        |  <first_name>Broken</first_name>
-        |  <last_name>Entry</last_name>
+  it should "skip malformed senator entries but keep valid ones in the same feed" in {
+    val validSenator = senator("S-good", "B-good", Seq(118), isCurrent = true)
+    val brokenSenator =
+      """<senator>
+        |  <full_name><first_name>Broken</first_name><last_name>Entry</last_name></full_name>
         |  <party>D</party>
         |  <state>NY</state>
-        |  <is_current>true</is_current>
-        |</member>""".stripMargin
+        |  <!-- missing <bioguide> — required field -->
+        |  <lisid>S-broken</lisid>
+        |  <congresses><congress>118</congress></congresses>
+        |  <service_dates>
+        |    <service_date class="1">
+        |      <end_date day="" month="" year=""/>
+        |    </service_date>
+        |  </service_dates>
+        |</senator>""".stripMargin
 
-    stubXml("/senators.xml", document(Seq(validMember, brokenMember)))
+    stubXml("/senators.xml", document(Seq(validSenator, brokenSenator)))
 
     val result = makeClient(baseConfig()).fetchMappings(1L).compile.toList.unsafeRunSync()
     val _      = result.size shouldBe 1
@@ -244,7 +263,7 @@ class SenatorLookupXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAn
   it should "drop a senator with no congress service dates and isCurrent=false" in {
     val body = document(
       Seq(
-        member("S-empty-dates", "B-ed", Seq.empty, isCurrent = false)
+        senator("S-empty-dates", "B-ed", Seq.empty, isCurrent = false)
       )
     )
     stubXml("/senators.xml", body)

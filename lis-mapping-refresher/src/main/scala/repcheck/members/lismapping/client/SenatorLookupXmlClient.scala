@@ -11,19 +11,21 @@ import repcheck.members.lismapping.config.LisMappingConfig
 import repcheck.shared.models.congress.dto.vote.SenatorLookupXmlDTO
 
 /**
- * Fetches and parses the senate.gov `senators_cfm.xml` feed into a stream of [[SenatorLookupXmlDTO]]s filtered to the
+ * Fetches and parses the senate.gov `senator-lookup.xml` feed into a stream of [[SenatorLookupXmlDTO]]s filtered to the
  * configured congress lookback window.
  *
- * The full feed is a single HTTP GET returning ~100 rows, but the interface is expressed as a stream for consistency
- * with the rest of the pipeline (and so downstream processors can `parEvalMap` over it identically to paginated
- * sources).
+ * The feed (`https://www.senate.gov/about/senator-lookup.xml`) contains all senators historically, each with a
+ * `<lisid>` (LIS member ID), `<bioguide>` (bioguide ID), `<congresses>` list, and `<service_dates>`. The feed is a
+ * single HTTP GET returning ~1900 entries, but the interface is expressed as a stream for consistency with the rest of
+ * the pipeline (and so downstream processors can `parEvalMap` over it identically to paginated sources).
  *
  * Inclusion rule: a senator is emitted if either
- *   - `isCurrent == true`, OR
- *   - at least one `serviceDates` entry has a `congress` value within `[currentCongress - congressLookbackWindow + 1,
+ *   - `isCurrent == true` (derived from an empty `<end_date>` in their service dates), OR
+ *   - at least one `<congress>` value in `<congresses>` falls within `[currentCongress - congressLookbackWindow + 1,
  *     currentCongress]` (inclusive on both ends).
  *
- * Senators with no known `congress` values on any service period and `isCurrent == false` are dropped.
+ * Senators with no LIS ID (`<lisid>`), no bioguide ID (`<bioguide>`), or no congress data and `isCurrent == false` are
+ * dropped silently.
  */
 class SenatorLookupXmlClient[F[_]: Async](
   xmlFeedClient: XmlFeedClient[F],
@@ -31,9 +33,6 @@ class SenatorLookupXmlClient[F[_]: Async](
   logger: PipelineLogger[F],
 ) {
 
-  // Pipeline step identifier — constant per class, kebab-case, action-focused. Matches the convention used by
-  // BillTextAvailabilityChecker/BillMetadataProcessor (see their `StepName` vals). The per-run identity comes from
-  // the `correlationId` parameter on `fetchMappings`, not from a hardcoded string.
   private val StepName: String = "senator-lookup-xml-fetch"
 
   def fetchMappings(runId: Long): Stream[F, SenatorLookupXmlDTO] = {
