@@ -12,8 +12,8 @@ import org.http4s.client.Client
 import org.http4s.headers.Accept
 import org.http4s.{EntityDecoder, MediaType, Status, Uri}
 
-import repcheck.ingestion.bills.textcheck.errors.BillTextCheckFailed
-import repcheck.ingestion.common.api.{CongressGovApiException, CongressGovClientConfig, CongressGovErrorClassifier}
+import repcheck.ingestion.bills.textcheck.errors.{BillTextApiErrorClassifier, BillTextApiHttpError, BillTextCheckFailed}
+import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.bill.TextVersionDTO
 
@@ -30,7 +30,7 @@ class BillTextApiClient[F[_]: Temporal](
     response
       .as[String]
       .recover { case _ => response.status.reason }
-      .flatMap(body => Temporal[F].raiseError[A](CongressGovApiException(response.status.code, body)))
+      .flatMap(body => Temporal[F].raiseError[A](BillTextApiHttpError(response.status.code, body)))
 
   private def parseUri(raw: String): F[Uri] =
     Uri.fromString(raw) match {
@@ -63,7 +63,7 @@ class BillTextApiClient[F[_]: Temporal](
       retryWrapper.withRetry(
         operation = operation,
         config = config.retry,
-        classifier = CongressGovErrorClassifier,
+        classifier = BillTextApiErrorClassifier,
         errorFactory = (msg, cause) =>
           BillTextCheckFailed(
             billId = billId,

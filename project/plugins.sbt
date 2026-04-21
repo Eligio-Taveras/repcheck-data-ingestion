@@ -14,4 +14,4 @@ credentials += Credentials(
   sys.env.getOrElse("GITHUB_USERNAME", sys.env.getOrElse("GITHUB_ACTOR", "")),
   sys.env.getOrElse("GITHUB_TOKEN", "")
 )
-addSbtPlugin("com.repcheck" % "sbt-exception-uniqueness" % "0.4.0")
+addSbtPlugin("com.repcheck" % "sbt-exception-uniqueness" % "0.5.0")

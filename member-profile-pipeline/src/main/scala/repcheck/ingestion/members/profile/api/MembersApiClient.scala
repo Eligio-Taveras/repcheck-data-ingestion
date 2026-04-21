@@ -15,15 +15,8 @@ import org.http4s.client.Client
 import org.http4s.headers.Accept
 import org.http4s.{MediaType, Uri}
 
-import repcheck.ingestion.common.api.{
-  CongressGovApiException,
-  CongressGovClientConfig,
-  CongressGovErrorClassifier,
-  CongressGovPaginatedClient,
-  FetchParams,
-  PagedResponse,
-}
-import repcheck.ingestion.members.profile.errors.MemberFetchFailed
+import repcheck.ingestion.common.api.{CongressGovClientConfig, CongressGovPaginatedClient, FetchParams, PagedResponse}
+import repcheck.ingestion.members.profile.errors.{MemberFetchFailed, MembersApiErrorClassifier, MembersApiHttpError}
 import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.common.PaginationInfoDTO
 import repcheck.shared.models.congress.dto.member.{
@@ -48,7 +41,7 @@ class MembersApiClient[F[_]](
     response
       .as[String]
       .recover { case _ => response.status.reason }
-      .flatMap(body => temporal.raiseError[A](CongressGovApiException(response.status.code, body)))
+      .flatMap(body => temporal.raiseError[A](MembersApiHttpError(response.status.code, body)))
 
   private def parseUri(raw: String): F[Uri] =
     Uri.fromString(raw) match {
@@ -93,7 +86,7 @@ class MembersApiClient[F[_]](
       retryWrapper.withRetry(
         operation = operation,
         config = config.retry,
-        classifier = CongressGovErrorClassifier,
+        classifier = MembersApiErrorClassifier,
         errorFactory = (msg, cause) =>
           MemberFetchFailed(
             bioguideId = None,
@@ -120,7 +113,7 @@ class MembersApiClient[F[_]](
       retryWrapper.withRetry(
         operation = operation,
         config = config.retry,
-        classifier = CongressGovErrorClassifier,
+        classifier = MembersApiErrorClassifier,
         errorFactory = (msg, cause) =>
           MemberFetchFailed(
             bioguideId = None,
