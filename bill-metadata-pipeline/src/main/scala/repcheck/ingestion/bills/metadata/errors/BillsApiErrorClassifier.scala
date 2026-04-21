@@ -1,28 +1,23 @@
 package repcheck.ingestion.bills.metadata.errors
 
-import repcheck.pipeline.models.errors.{ErrorClass, ErrorClassifier}
+import repcheck.ingestion.common.errors.HttpStatusErrorClassifier
 
 /**
- * Classifier for [[repcheck.ingestion.bills.metadata.api.BillsApiClient]] HTTP failures. Treats the standard
- * Congress.gov transient status codes (429, 500, 502, 503, 504) as [[ErrorClass.Transient]] so the retry wrapper
- * retries them; everything else maps to [[ErrorClass.Systemic]] to fail fast.
+ * Classifier for [[repcheck.ingestion.bills.metadata.api.BillsApiClient]] HTTP failures. Concrete wiring of the shared
+ * [[HttpStatusErrorClassifier]]: supplies the Congress.gov transient status set (429/500/502/503/504) and the extractor
+ * for the locally-declared [[BillsApiHttpError]] Throwable.
  *
- * This replaces a direct reference to `CongressGovErrorClassifier` at the raise site: the client now raises a
- * project-declared [[BillsApiHttpError]] instead of the ingestion-common `CongressGovApiException` so that the
- * sbt-exception-uniqueness plugin's project-exceptions-only check sees a locally-declared Throwable.
+ * The locally-declared Throwable is necessary — the sbt-exception-uniqueness plugin's project-exceptions-only check
+ * scans per-subproject, so dependency-provided Throwables (like ingestion-common's `CongressGovApiException`) register
+ * as non-project at the raise site. `BillsApiHttpError` satisfies that scope while this classifier inherits the actual
+ * `classify` logic.
  */
-object BillsApiErrorClassifier extends ErrorClassifier {
+object BillsApiErrorClassifier extends HttpStatusErrorClassifier(Set(429, 500, 502, 503, 504)) {
 
-  private val transientStatusCodes: Set[Int] = Set(429, 500, 502, 503, 504)
-
-  def classify(error: Throwable): ErrorClass =
+  override protected def extractStatusCode(error: Throwable): Option[Int] =
     error match {
-      case e: BillsApiHttpError if transientStatusCodes.contains(e.statusCode) =>
-        ErrorClass.Transient
-      case _: BillsApiHttpError =>
-        ErrorClass.Systemic
-      case _ =>
-        ErrorClass.Systemic
+      case e: BillsApiHttpError => Some(e.statusCode)
+      case _                    => None
     }
 
 }

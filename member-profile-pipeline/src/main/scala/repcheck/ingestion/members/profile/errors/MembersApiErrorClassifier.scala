@@ -1,28 +1,23 @@
 package repcheck.ingestion.members.profile.errors
 
-import repcheck.pipeline.models.errors.{ErrorClass, ErrorClassifier}
+import repcheck.ingestion.common.errors.HttpStatusErrorClassifier
 
 /**
- * Classifier for [[repcheck.ingestion.members.profile.api.MembersApiClient]] HTTP failures. Treats the standard
- * Congress.gov transient status codes (429, 500, 502, 503, 504) as [[ErrorClass.Transient]] so the retry wrapper
- * retries them; everything else maps to [[ErrorClass.Systemic]] to fail fast.
+ * Classifier for [[repcheck.ingestion.members.profile.api.MembersApiClient]] HTTP failures. Concrete wiring of the
+ * shared [[HttpStatusErrorClassifier]]: supplies the Congress.gov transient status set (429/500/502/503/504) and the
+ * extractor for the locally-declared [[MembersApiHttpError]] Throwable.
  *
- * This replaces a direct reference to `CongressGovErrorClassifier` at the raise site: the client now raises a
- * project-declared [[MembersApiHttpError]] instead of the ingestion-common `CongressGovApiException` so that the
- * sbt-exception-uniqueness plugin's project-exceptions-only check sees a locally-declared Throwable.
+ * The locally-declared Throwable is necessary — the sbt-exception-uniqueness plugin's project-exceptions-only check
+ * scans per-subproject, so dependency-provided Throwables (like ingestion-common's `CongressGovApiException`) register
+ * as non-project at the raise site. `MembersApiHttpError` satisfies that scope while this classifier inherits the
+ * actual `classify` logic.
  */
-object MembersApiErrorClassifier extends ErrorClassifier {
+object MembersApiErrorClassifier extends HttpStatusErrorClassifier(Set(429, 500, 502, 503, 504)) {
 
-  private val transientStatusCodes: Set[Int] = Set(429, 500, 502, 503, 504)
-
-  def classify(error: Throwable): ErrorClass =
+  override protected def extractStatusCode(error: Throwable): Option[Int] =
     error match {
-      case e: MembersApiHttpError if transientStatusCodes.contains(e.statusCode) =>
-        ErrorClass.Transient
-      case _: MembersApiHttpError =>
-        ErrorClass.Systemic
-      case _ =>
-        ErrorClass.Systemic
+      case e: MembersApiHttpError => Some(e.statusCode)
+      case _                      => None
     }
 
 }
