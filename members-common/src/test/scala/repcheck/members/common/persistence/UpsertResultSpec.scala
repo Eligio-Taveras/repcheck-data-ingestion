@@ -1,4 +1,4 @@
-package repcheck.members.lismapping.repository
+package repcheck.members.common.persistence
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers

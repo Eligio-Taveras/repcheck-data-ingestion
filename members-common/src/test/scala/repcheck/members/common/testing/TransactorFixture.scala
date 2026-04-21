@@ -80,12 +80,41 @@ trait TransactorFixture extends BeforeAndAfterAll with BeforeAndAfterEach { self
       .unsafeRunSync()
   }
 
+  /**
+   * Insert a `lis_members` row using raw SQL so the fixture has no compile-time dependency on the LIS member Doobie
+   * repository (which still lives in `lis-mapping-refresher`). Mirrors the INSERT shape used by
+   * `DoobieLisMemberRepository.upsertByNaturalKey`.
+   */
+  protected def insertLisMember(
+    naturalKey: String,
+    firstName: Option[String] = Some("Test"),
+    lastName: Option[String] = Some("Senator"),
+    party: Option[String] = Some("D"),
+    state: Option[String] = Some("NY"),
+    lastVerified: Option[Instant] = Some(Instant.parse("2024-06-15T00:00:00Z")),
+  ): Long =
+    sql"""INSERT INTO lis_members (natural_key, first_name, last_name, party, state, last_verified)
+          VALUES ($naturalKey, $firstName, $lastName, $party, $state, $lastVerified)
+          ON CONFLICT (natural_key) DO UPDATE SET
+            first_name = EXCLUDED.first_name,
+            last_name = EXCLUDED.last_name,
+            party = EXCLUDED.party,
+            state = EXCLUDED.state,
+            last_verified = EXCLUDED.last_verified
+          RETURNING id"""
+      .query[Long]
+      .unique
+      .transact(xa)
+      .unsafeRunSync()
+
   private def cleanTables(): Unit = {
     val _ = sql"""
       DELETE FROM member_term_history;
       DELETE FROM member_history;
       DELETE FROM member_party_history;
       DELETE FROM member_terms;
+      DELETE FROM member_lis_mapping;
+      DELETE FROM lis_members;
       DELETE FROM members;
     """.update.run.transact(xa).unsafeRunSync()
   }

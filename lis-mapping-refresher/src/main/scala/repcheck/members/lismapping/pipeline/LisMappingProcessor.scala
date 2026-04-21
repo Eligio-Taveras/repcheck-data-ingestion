@@ -12,11 +12,11 @@ import doobie.util.transactor.Transactor
 
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.members.common.persistence.MemberRepository
+import repcheck.members.common.persistence.{LisMappingRepository, MemberRepository, UpsertResult}
 import repcheck.members.lismapping.client.SenatorLookupXmlClient
 import repcheck.members.lismapping.config.LisMappingConfig
 import repcheck.members.lismapping.errors.LisMappingUpsertFailed
-import repcheck.members.lismapping.repository.{LisMappingRepository, LisMemberRepository, UpsertResult}
+import repcheck.members.lismapping.repository.LisMemberRepository
 import repcheck.pipeline.models.events.MemberUpdatedEvent
 import repcheck.shared.models.congress.dos.member.{LisMemberDO, MemberLisMappingDO}
 import repcheck.shared.models.congress.dto.vote.SenatorLookupXmlDTO

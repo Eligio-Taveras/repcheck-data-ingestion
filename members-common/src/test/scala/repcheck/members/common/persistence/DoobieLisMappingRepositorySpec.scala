@@ -1,4 +1,4 @@
-package repcheck.members.lismapping.repository
+package repcheck.members.common.persistence
 
 import java.time.Instant
 
@@ -8,28 +8,12 @@ import doobie.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.members.common.testing.DockerRequired
-import repcheck.members.lismapping.testing.TransactorFixture
-import repcheck.shared.models.congress.dos.member.{LisMemberDO, MemberLisMappingDO}
+import repcheck.members.common.testing.{DockerRequired, TransactorFixture}
+import repcheck.shared.models.congress.dos.member.MemberLisMappingDO
 
 class DoobieLisMappingRepositorySpec extends AnyFlatSpec with Matchers with TransactorFixture {
 
-  private lazy val lisMemberRepo  = new DoobieLisMemberRepository
   private lazy val lisMappingRepo = new DoobieLisMappingRepository
-
-  private def insertLisMember(naturalKey: String): Long = {
-    val lisMember = LisMemberDO(
-      id = 0L,
-      naturalKey = naturalKey,
-      firstName = Some("Test"),
-      lastName = Some("Senator"),
-      party = Some("D"),
-      state = Some("NY"),
-      lastVerified = Some(Instant.parse("2024-06-15T00:00:00Z")),
-      createdAt = None,
-    )
-    lisMemberRepo.upsertByNaturalKey(lisMember).transact(xa).unsafeRunSync()
-  }
 
   private def makeMapping(memberId: Long, lisMemberId: Long, verified: Instant): MemberLisMappingDO =
     MemberLisMappingDO(
@@ -160,6 +144,70 @@ class DoobieLisMappingRepositorySpec extends AnyFlatSpec with Matchers with Tran
         row.lisMemberId shouldBe lisMemberId
       case None => sys.error("Expected mapping row")
     }
+  }
+
+  "findByLisMemberIds" should "return an empty map when the input is empty" taggedAs DockerRequired in {
+    val result = lisMappingRepo.findByLisMemberIds(List.empty).transact(xa).unsafeRunSync()
+    result shouldBe Map.empty[Long, Long]
+  }
+
+  it should "return an empty map when no input id has a mapping" taggedAs DockerRequired in {
+    val result = lisMappingRepo.findByLisMemberIds(List(-1L, -2L, -3L)).transact(xa).unsafeRunSync()
+    result shouldBe Map.empty[Long, Long]
+  }
+
+  it should "resolve every mapped lis_member_id to its member_id in a single query" taggedAs DockerRequired in {
+    val m1  = insertMember("LIS-BATCH-001")
+    val m2  = insertMember("LIS-BATCH-002")
+    val m3  = insertMember("LIS-BATCH-003")
+    val l1  = insertLisMember("S-BATCH-1")
+    val l2  = insertLisMember("S-BATCH-2")
+    val l3  = insertLisMember("S-BATCH-3")
+    val now = Instant.parse("2024-06-15T00:00:00Z")
+    val _ = lisMappingRepo
+      .upsertBatch(List(makeMapping(m1, l1, now), makeMapping(m2, l2, now), makeMapping(m3, l3, now)))
+      .transact(xa)
+      .unsafeRunSync()
+
+    val result = lisMappingRepo.findByLisMemberIds(List(l1, l2, l3)).transact(xa).unsafeRunSync()
+
+    result shouldBe Map(l1 -> m1, l2 -> m2, l3 -> m3)
+  }
+
+  it should "omit unmapped ids from the result, returning only the resolved subset" taggedAs DockerRequired in {
+    val m1        = insertMember("LIS-BATCH-PARTIAL-1")
+    val m2        = insertMember("LIS-BATCH-PARTIAL-2")
+    val l1        = insertLisMember("S-PARTIAL-1")
+    val l2        = insertLisMember("S-PARTIAL-2")
+    val lUnmapped = insertLisMember("S-PARTIAL-UNMAPPED") // lis_members row exists but no mapping
+    val now       = Instant.parse("2024-06-15T00:00:00Z")
+    val _ = lisMappingRepo
+      .upsertBatch(List(makeMapping(m1, l1, now), makeMapping(m2, l2, now)))
+      .transact(xa)
+      .unsafeRunSync()
+
+    val result = lisMappingRepo.findByLisMemberIds(List(l1, l2, lUnmapped, -9999L)).transact(xa).unsafeRunSync()
+
+    val _ = result shouldBe Map(l1 -> m1, l2 -> m2)
+    val _ = result.contains(lUnmapped) shouldBe false
+    result.contains(-9999L) shouldBe false
+  }
+
+  it should "return the same entries regardless of input ordering" taggedAs DockerRequired in {
+    val m1  = insertMember("LIS-BATCH-ORDER-1")
+    val m2  = insertMember("LIS-BATCH-ORDER-2")
+    val l1  = insertLisMember("S-ORDER-1")
+    val l2  = insertLisMember("S-ORDER-2")
+    val now = Instant.parse("2024-06-15T00:00:00Z")
+    val _ = lisMappingRepo
+      .upsertBatch(List(makeMapping(m1, l1, now), makeMapping(m2, l2, now)))
+      .transact(xa)
+      .unsafeRunSync()
+
+    val forward = lisMappingRepo.findByLisMemberIds(List(l1, l2)).transact(xa).unsafeRunSync()
+    val reverse = lisMappingRepo.findByLisMemberIds(List(l2, l1)).transact(xa).unsafeRunSync()
+
+    forward shouldBe reverse
   }
 
 }
