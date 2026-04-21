@@ -116,6 +116,7 @@ lazy val root = (project in file("."))
     billTextPipeline,
     memberProfilePipeline,
     lisMappingRefresher,
+    votesPipeline,
     docGenerator,
   )
   .settings(
@@ -232,6 +233,24 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
     assembly / assemblyJarName := "bill-text-pipeline.jar",
   )
 
+lazy val votesPipeline = (project in file("votes-pipeline"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(membersCommon % "compile->compile;test->test")
+  .dependsOn(billsCommon % "test->test")
+  .settings(pipelineSettings)
+  .settings(
+    name := "votes-pipeline",
+    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
+      ++ catsEffect ++ doobie ++ xml ++ pubSub ++ fs2 ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
+    coverageExcludedFiles := ".*VotesPipeline;.*VotesPipelineApp",
+    // Shared DockerPostgres singleton + per-suite table cleanup make intra-subproject parallel execution
+    // unsafe; cross-subproject parallelism (via Tags.limit(Tags.Test, 4)) still provides a speedup.
+    Test / parallelExecution := false,
+    assembly / mainClass := Some("repcheck.ingestion.votes.app.VotesPipelineApp"),
+    assembly / assemblyJarName := "votes-pipeline.jar",
+  )
+
 // `dockerTest` runs only the DB-backed integration tests against a local AlloyDB Omni
 // container. The default `Test / testOptions` exclude DockerRequired tests, so this alias
 // overrides those options for the duration of the run and then restores them.
@@ -254,7 +273,10 @@ addCommandAlias(
     "; set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; lisMappingRefresher / test" +
-    "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
+    "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; votesPipeline / test" +
+    "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
 )
 
 // `dockerTestParallel` — experimental. Flips every DockerRequired-capable subproject's test
@@ -270,13 +292,15 @@ addCommandAlias(
     "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
-    "; all billsCommon/test membersCommon/test billTextPipeline/test billTextAvailabilityChecker/test memberProfilePipeline/test lisMappingRefresher/test" +
+    "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; all billsCommon/test membersCommon/test billTextPipeline/test billTextAvailabilityChecker/test memberProfilePipeline/test lisMappingRefresher/test votesPipeline/test" +
     "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))" +
     "; set membersCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))" +
     "; set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
-    "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
+    "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
 )
 
 lazy val docGenerator = (project in file("doc-generator"))

@@ -68,6 +68,7 @@ jobs:
             lis-mapping-refresher/target/scala-3.7.3/scoverage-report/scoverage.xml
             member-profile-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
             members-common/target/scala-3.7.3/scoverage-report/scoverage.xml
+            votes-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
 
       - name: Enforce per-file coverage threshold
         # Parses every subproject's scoverage.xml and fails if any instrumented file is below
