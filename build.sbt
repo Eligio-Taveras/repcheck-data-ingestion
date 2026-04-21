@@ -48,7 +48,7 @@ lazy val commonSettings = Seq(
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
     "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.17",
-    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.19",
+    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.20",
     "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.18" % Test,
     "com.repcheck" %% "repchecksharedmodels"       % "0.1.24",
   ),
