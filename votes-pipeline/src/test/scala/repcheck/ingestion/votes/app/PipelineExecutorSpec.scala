@@ -12,7 +12,7 @@ import repcheck.pipeline.models.metadata.ProcessingResult
 
 class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
 
-  private val runId        = 12345L
+  private val runId        = "12345"
   private val pipelineName = "test-pipeline"
 
   /**
