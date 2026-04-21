@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?><roll_call_vote>
+  <congress>119</congress>
+  <session>1</session>
+  <vote_number>99</vote_number>
+  <vote_date>January 25, 2025,  11:30 AM</vote_date>
+  <question>On the Motion
+  <!-- truncated mid-element to simulate a corrupt feed: missing </question>, missing </roll_call_vote>
+</content>
+</invoke>
