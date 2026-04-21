@@ -11,9 +11,9 @@ import doobie.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.members.common.testing.DockerRequired
-import repcheck.members.lismapping.repository.{DoobieLisMappingRepository, DoobieLisMemberRepository}
-import repcheck.members.lismapping.testing.TransactorFixture
+import repcheck.members.common.persistence.DoobieLisMappingRepository
+import repcheck.members.common.testing.{DockerRequired, TransactorFixture}
+import repcheck.members.lismapping.repository.DoobieLisMemberRepository
 import repcheck.shared.models.congress.dos.member.{LisMemberDO, MemberLisMappingDO}
 
 /**

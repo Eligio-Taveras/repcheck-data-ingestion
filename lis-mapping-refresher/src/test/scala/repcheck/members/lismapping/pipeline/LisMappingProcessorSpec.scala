@@ -19,11 +19,11 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.members.common.persistence.MemberRepository
+import repcheck.members.common.persistence.{LisMappingRepository, MemberRepository, UpsertResult}
 import repcheck.members.lismapping.client.SenatorLookupXmlClient
 import repcheck.members.lismapping.config.LisMappingConfig
 import repcheck.members.lismapping.errors.LisMappingUpsertFailed
-import repcheck.members.lismapping.repository.{LisMappingRepository, LisMemberRepository, UpsertResult}
+import repcheck.members.lismapping.repository.LisMemberRepository
 import repcheck.pipeline.models.events.MemberUpdatedEvent
 import repcheck.shared.models.congress.common.{Party, UsState}
 import repcheck.shared.models.congress.dos.member.{LisMemberDO, MemberDO, MemberLisMappingDO}

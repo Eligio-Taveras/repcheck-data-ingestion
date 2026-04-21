@@ -1,4 +1,4 @@
-package repcheck.members.lismapping.repository
+package repcheck.members.common.persistence
 
 /**
  * Distinguishes insert from update when upserting LIS member mappings. PostgreSQL's `xmax` system column determines the

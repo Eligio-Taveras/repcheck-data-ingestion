@@ -9,12 +9,13 @@ import doobie.implicits._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.members.common.persistence.{
+  DoobieLisMappingRepository,
   DoobieMemberHistoryArchiver,
   DoobieMemberRepository,
   DoobieMemberTermRepository,
 }
-import repcheck.members.common.testing.DockerRequired
-import repcheck.members.lismapping.repository.{DoobieLisMappingRepository, DoobieLisMemberRepository}
+import repcheck.members.common.testing.{DockerRequired, TransactorFixture}
+import repcheck.members.lismapping.repository.DoobieLisMemberRepository
 import repcheck.shared.models.congress.common.{Chamber, UsState}
 import repcheck.shared.models.congress.dos.member.{LisMemberDO, MemberLisMappingDO, MemberTermDO}
 import repcheck.shared.models.congress.member.MemberType
@@ -37,7 +38,7 @@ import repcheck.shared.models.congress.member.MemberType
  *
  * Infrastructure: shared [[repcheck.members.common.testing.SharedDockerPostgres]] AlloyDB Omni container.
  */
-class PlaceholderFillIntegrationSpec extends AnyFlatSpec with Matchers with LisAwareTransactorFixture {
+class PlaceholderFillIntegrationSpec extends AnyFlatSpec with Matchers with TransactorFixture {
 
   private val memberRepo    = new DoobieMemberRepository()
   private val termRepo      = new DoobieMemberTermRepository()

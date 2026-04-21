@@ -1,10 +1,12 @@
-package repcheck.members.lismapping.repository
+package repcheck.members.common.persistence
 
+import cats.data.NonEmptyList
 import cats.syntax.all._
 
 import doobie._
 import doobie.implicits._
 import doobie.postgres.implicits._
+import doobie.util.fragments.in
 
 import repcheck.pipeline.models.constants.Tables
 import repcheck.shared.models.congress.dos.member.MemberLisMappingDO
@@ -62,5 +64,24 @@ class DoobieLisMappingRepository extends LisMappingRepository {
     (fr"SELECT" ++ selectColumns ++ fr"FROM" ++ table ++ fr"WHERE member_id = $memberId")
       .query[MemberLisMappingDO]
       .option
+
+  /**
+   * Issues a single `SELECT lis_member_id, member_id FROM member_lis_mapping WHERE lis_member_id IN (?, ?, ...)` query
+   * for any non-empty input, via `doobie.util.fragments.in` over a `NonEmptyList`. Senate roll calls are bounded at
+   * ~100 positions, well below PostgreSQL's 65535-parameter limit, so the straightforward IN-list is both portable and
+   * index-friendly.
+   *
+   * Empty input short-circuits with `Map.empty` and no database interaction.
+   */
+  override def findByLisMemberIds(lisMemberIds: List[Long]): ConnectionIO[Map[Long, Long]] =
+    NonEmptyList.fromList(lisMemberIds) match {
+      case None =>
+        doobie.free.connection.pure(Map.empty[Long, Long])
+      case Some(nel) =>
+        (fr"SELECT lis_member_id, member_id FROM" ++ table ++ fr"WHERE" ++ in(fr"lis_member_id", nel))
+          .query[(Long, Long)]
+          .to[List]
+          .map(_.toMap)
+    }
 
 }

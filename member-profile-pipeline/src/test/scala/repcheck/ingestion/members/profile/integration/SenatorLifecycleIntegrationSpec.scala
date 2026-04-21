@@ -8,9 +8,9 @@ import doobie.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.members.common.persistence.DoobieMemberRepository
-import repcheck.members.common.testing.DockerRequired
-import repcheck.members.lismapping.repository.{DoobieLisMappingRepository, DoobieLisMemberRepository, UpsertResult}
+import repcheck.members.common.persistence.{DoobieLisMappingRepository, DoobieMemberRepository, UpsertResult}
+import repcheck.members.common.testing.{DockerRequired, TransactorFixture}
+import repcheck.members.lismapping.repository.DoobieLisMemberRepository
 import repcheck.shared.models.congress.dos.member.{LisMemberDO, MemberLisMappingDO}
 
 /**
@@ -29,9 +29,9 @@ import repcheck.shared.models.congress.dos.member.{LisMemberDO, MemberLisMapping
  * here we verify the cross-table state transitions that only become visible when both pipelines interact.
  *
  * Infrastructure: shared [[repcheck.members.common.testing.SharedDockerPostgres]] AlloyDB Omni container (started once
- * per JVM, cleaned between tests via [[LisAwareTransactorFixture.afterEach]]).
+ * per JVM, cleaned between tests via [[repcheck.members.common.testing.TransactorFixture.afterEach]]).
  */
-class SenatorLifecycleIntegrationSpec extends AnyFlatSpec with Matchers with LisAwareTransactorFixture {
+class SenatorLifecycleIntegrationSpec extends AnyFlatSpec with Matchers with TransactorFixture {
 
   private val memberRepo    = new DoobieMemberRepository()
   private val lisMemberRepo = new DoobieLisMemberRepository()
