@@ -13,6 +13,7 @@ import repcheck.pipeline.models.metadata.ProcessingResult
 class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
 
   private val runId        = "12345"
+  private val stepRunId    = 99L
   private val pipelineName = "test-pipeline"
 
   /**
@@ -50,7 +51,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -63,7 +64,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).unsafeRunSync()
     result.code shouldBe 1
   }
 
@@ -76,7 +77,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -84,7 +85,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
     val logger                               = new StubPipelineLogger
     val stream: Stream[IO, ProcessingResult] = Stream.empty
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -99,13 +100,47 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
+    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).unsafeRunSync()
 
-    val _          = logger.messages.size shouldBe 1
+    // Summary line + failure-details line (the latter is only logged when failures > 0).
+    val _          = logger.messages.size shouldBe 2
     val logMessage = logger.messages.headOption.getOrElse(fail("expected at least one log message"))
     val _          = logMessage should include("4 processed")
     val _          = logMessage should include("2 succeeded")
     logMessage should include("1 failed")
+  }
+
+  it should "log actual failure details on a second line when failures exist" in {
+    val logger = new StubPipelineLogger
+    val stream = Stream.emits(
+      List(
+        ProcessingResult.Succeeded("vote-1"),
+        ProcessingResult.Failed("vote-2", "http 503", errorClass = "Transient"),
+        ProcessingResult.Failed("vote-3", "http 429", errorClass = "Transient"),
+      )
+    )
+
+    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).unsafeRunSync()
+
+    val details = logger.messages
+      .find(_.contains("Failure details"))
+      .getOrElse(fail("expected a failure-details log line"))
+    val _ = details should include("vote-2(Transient): http 503")
+    details should include("vote-3(Transient): http 429")
+  }
+
+  it should "not log a failure-details line when all results succeeded or were skipped" in {
+    val logger = new StubPipelineLogger
+    val stream = Stream.emits(
+      List(
+        ProcessingResult.Succeeded("vote-1"),
+        ProcessingResult.Skipped("vote-2", "unchanged"),
+      )
+    )
+
+    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).unsafeRunSync()
+
+    logger.messages.exists(_.contains("Failure details")) shouldBe false
   }
 
   it should "return ExitCode.Error when all results fail" in {
@@ -117,7 +152,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).unsafeRunSync()
     result.code shouldBe 1
   }
 
@@ -131,7 +166,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       )
     )
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).unsafeRunSync()
     result.code shouldBe 0
   }
 
@@ -139,7 +174,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
     val logger = new StubPipelineLogger
     val stream = Stream.emit(ProcessingResult.Succeeded("vote-1"))
 
-    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
+    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).unsafeRunSync()
 
     logger.messages should not be empty
   }
@@ -150,7 +185,7 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
       Stream.emit(ProcessingResult.Succeeded("vote-1")) ++
         Stream.raiseError[IO](new RuntimeException("stream failure"))
 
-    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).attempt.unsafeRunSync()
+    val result = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId).attempt.unsafeRunSync()
     result.isLeft shouldBe true
   }
 
