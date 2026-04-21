@@ -16,15 +16,8 @@ import org.http4s.client.Client
 import org.http4s.headers.Accept
 import org.http4s.{MediaType, Uri}
 
-import repcheck.ingestion.bills.metadata.errors.BillFetchFailed
-import repcheck.ingestion.common.api.{
-  CongressGovApiException,
-  CongressGovClientConfig,
-  CongressGovErrorClassifier,
-  CongressGovPaginatedClient,
-  FetchParams,
-  PagedResponse,
-}
+import repcheck.ingestion.bills.metadata.errors.{BillFetchFailed, BillsApiErrorClassifier, BillsApiHttpError}
+import repcheck.ingestion.common.api.{CongressGovClientConfig, CongressGovPaginatedClient, FetchParams, PagedResponse}
 import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.bill.{
   BillDetailDTO,
@@ -52,7 +45,7 @@ class BillsApiClient[F[_]](
     response
       .as[String]
       .recover { case _ => response.status.reason }
-      .flatMap(body => temporal.raiseError[A](CongressGovApiException(response.status.code, body)))
+      .flatMap(body => temporal.raiseError[A](BillsApiHttpError(response.status.code, body)))
 
   private def parseUri(raw: String): F[Uri] =
     Uri.fromString(raw) match {
@@ -98,7 +91,7 @@ class BillsApiClient[F[_]](
       retryWrapper.withRetry(
         operation = operation,
         config = config.retry,
-        classifier = CongressGovErrorClassifier,
+        classifier = BillsApiErrorClassifier,
         errorFactory = (msg, cause) =>
           BillFetchFailed(
             endpoint = uri.renderString,
@@ -126,7 +119,7 @@ class BillsApiClient[F[_]](
       retryWrapper.withRetry(
         operation = operation,
         config = config.retry,
-        classifier = CongressGovErrorClassifier,
+        classifier = BillsApiErrorClassifier,
         errorFactory = (msg, cause) =>
           BillFetchFailed(
             endpoint = uri.renderString,
@@ -165,7 +158,7 @@ class BillsApiClient[F[_]](
         .withRetry(
           operation = operation,
           config = config.retry,
-          classifier = CongressGovErrorClassifier,
+          classifier = BillsApiErrorClassifier,
           errorFactory = (msg, cause) =>
             BillFetchFailed(
               endpoint = uri.renderString,
