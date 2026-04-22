@@ -15,7 +15,6 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.ingestion.votes.persistence.{VotePositionRepository, VoteRepository}
 import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
@@ -35,8 +34,8 @@ import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
  *   - **New-vote short-circuit**: when `storedVote = None`, every incoming produces [[VoteChangeReport.New]] without
  *     consulting positions.
  *
- * The detector is exercised via a live [[VoteChangeDetector]] with MockitoScala-stubbed repos so we cover the full
- * `detect` call path, not just the `Differ`. Correlation ID is arbitrary; the logger is a no-op stub.
+ * The detector is exercised via a live [[VoteChangeDetector]] with MockitoScala-stubbed read callbacks so we cover the
+ * full `detect` call path, not just the `Differ`. Correlation ID is arbitrary; the logger is a no-op stub.
  */
 class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSugar with ScalaCheckPropertyChecks {
 
@@ -110,21 +109,24 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
       updatedAt = None,
     )
 
+  private type FindStoredVote      = String => IO[Option[VoteDO]]
+  private type FindStoredPositions = Long => IO[List[VotePositionDO]]
+
   private def makeDetector(
     storedVote: Option[VoteDO],
     storedPositions: List[VotePositionDO],
   ): VoteChangeDetector[IO] = {
-    val voteRepo     = mock[VoteRepository[IO]]
-    val positionRepo = mock[VotePositionRepository[IO]]
-    val loggerMock   = mock[PipelineLogger[IO]]
+    val findStoredVote      = mock[FindStoredVote]
+    val findStoredPositions = mock[FindStoredPositions]
+    val loggerMock          = mock[PipelineLogger[IO]]
     when(loggerMock.info(any[LogContext], anyString())).thenReturn(IO.unit)
     when(loggerMock.warn(any[LogContext], anyString())).thenReturn(IO.unit)
     when(loggerMock.debug(any[LogContext], anyString())).thenReturn(IO.unit)
     when(loggerMock.error(any[LogContext], anyString(), any[Option[Throwable]])).thenReturn(IO.unit)
-    when(voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(storedVote))
-    when(positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(storedPositions))
+    when(findStoredVote.apply(anyString())).thenReturn(IO.pure(storedVote))
+    when(findStoredPositions.apply(anyLong())).thenReturn(IO.pure(storedPositions))
 
-    new VoteChangeDetector[IO](voteRepo, positionRepo, loggerMock)
+    new VoteChangeDetector[IO](findStoredVote, findStoredPositions, loggerMock)
   }
 
   private val correlationId: UUID = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")

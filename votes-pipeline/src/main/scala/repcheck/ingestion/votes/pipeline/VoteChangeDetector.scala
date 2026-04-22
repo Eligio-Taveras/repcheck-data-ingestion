@@ -7,7 +7,6 @@ import cats.syntax.all._
 
 import difflicious.{DiffResult, Differ}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.ingestion.votes.persistence.{VotePositionRepository, VoteRepository}
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 
 /**
@@ -44,17 +43,25 @@ import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
  * Every log entry carries the caller-supplied `correlationId` via [[LogContext]] so a single vote can be traced across
  * the processor, detector, repository, and event publisher.
  *
- * @param voteRepo
- *   for the natural-key lookup.
- * @param positionRepo
- *   for the `findByVoteId` call. Only invoked on the "newer updateDate + stored row exists" branch — the `never()`
- *   assertions in the unit test rely on this.
+ * ==Dependency shape==
+ *
+ * The detector takes two read callbacks as function types rather than full repository traits. Each callback resolves a
+ * single read into `F[_]` — the detector doesn't need transactional composition, just "give me the stored vote" and
+ * "give me the stored positions." In production, these are wired as `nk =>
+ * DoobieVoteRepository.findByNaturalKey(nk).transact(xa)` (same for positions); in tests they are plain closures
+ * returning canned responses.
+ *
+ * @param findStoredVote
+ *   natural-key lookup on the `votes` table. Returns `None` to drive the [[VoteChangeReport.New]] branch.
+ * @param findStoredPositions
+ *   lookup of every `vote_positions` row for a given internal `vote_id`. Only invoked on the "newer updateDate + stored
+ *   row exists" branch — the unit test asserts via call tracking that it never fires on the New or Unchanged branches.
  * @param logger
  *   structured logger for info/warn entries. Diffs are logged at info, regressions at warn.
  */
 class VoteChangeDetector[F[_]: Sync](
-  voteRepo: VoteRepository[F],
-  positionRepo: VotePositionRepository[F],
+  findStoredVote: String => F[Option[VoteDO]],
+  findStoredPositions: Long => F[List[VotePositionDO]],
   logger: PipelineLogger[F],
 ) {
 
@@ -84,15 +91,15 @@ class VoteChangeDetector[F[_]: Sync](
       entityId = Some(voteDo.naturalKey),
     )
 
-    voteRepo.findByNaturalKey(voteDo.naturalKey).flatMap {
+    findStoredVote(voteDo.naturalKey).flatMap {
       case None           => handleNew(voteDo, logCtx)
       case Some(storedDo) => compareAgainstStored(voteDo, storedDo, resolvedPositions, logCtx)
     }
   }
 
   /**
-   * Stored lookup returned `None`. Log once and emit [[VoteChangeReport.New]]. Deliberately does NOT touch
-   * `positionRepo` — there is nothing stored to compare against.
+   * Stored lookup returned `None`. Log once and emit [[VoteChangeReport.New]]. Deliberately does NOT call
+   * `findStoredPositions` — there is nothing stored to compare against.
    */
   private def handleNew(voteDo: VoteDO, logCtx: LogContext): F[VoteChangeReport] =
     logger
@@ -163,7 +170,7 @@ class VoteChangeDetector[F[_]: Sync](
     logCtx: LogContext,
   ): F[VoteChangeReport] =
     for {
-      storedPositions <- positionRepo.findByVoteId(stored.voteId)
+      storedPositions <- findStoredPositions(stored.voteId)
       diff = positionsDiffer.diff(resolvedPositions, storedPositions)
       _ <- logDiffs(incoming.naturalKey, diff, logCtx)
     } yield VoteChangeReport.Updated(positionsChanged = !diff.isOk, diff = diff)

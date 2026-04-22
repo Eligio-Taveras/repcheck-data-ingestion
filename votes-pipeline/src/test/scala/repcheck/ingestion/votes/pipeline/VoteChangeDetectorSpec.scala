@@ -16,7 +16,6 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.ingestion.votes.persistence.{VotePositionRepository, VoteRepository}
 import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
@@ -35,14 +34,20 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
 
   private val correlationId: UUID = UUID.fromString("11111111-2222-3333-4444-555555555555")
 
+  // Type aliases so Mockito's `mock[A]` has a clean reference type to mock — Mockito handles Function1
+  // natively (it's a trait in Scala 3), and the stubs are invoked via `.apply` under the hood when the
+  // detector code calls `findStoredVote(nk)`.
+  private type FindStoredVote      = String => IO[Option[VoteDO]]
+  private type FindStoredPositions = Long => IO[List[VotePositionDO]]
+
   final private case class Fixture(
-    voteRepo: VoteRepository[IO],
-    positionRepo: VotePositionRepository[IO],
+    findStoredVote: FindStoredVote,
+    findStoredPositions: FindStoredPositions,
     logger: PipelineLogger[IO],
   ) {
 
     def detector: VoteChangeDetector[IO] =
-      new VoteChangeDetector[IO](voteRepo, positionRepo, logger)
+      new VoteChangeDetector[IO](findStoredVote, findStoredPositions, logger)
 
   }
 
@@ -54,8 +59,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     when(loggerMock.error(any[LogContext], anyString(), any[Option[Throwable]])).thenReturn(IO.unit)
 
     Fixture(
-      voteRepo = mock[VoteRepository[IO]],
-      positionRepo = mock[VotePositionRepository[IO]],
+      findStoredVote = mock[FindStoredVote],
+      findStoredPositions = mock[FindStoredPositions],
       logger = loggerMock,
     )
   }
@@ -119,12 +124,12 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
   "detect" should "return New when no stored vote exists" in {
     val f        = fixture()
     val incoming = makeVote()
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Option.empty[VoteDO]))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Option.empty[VoteDO]))
 
     val report = f.detector.detect(incoming, List(pos(1L), pos(2L)), correlationId).unsafeRunSync()
 
     val _ = report shouldBe VoteChangeReport.New
-    verify(f.positionRepo, never()).findByVoteId(anyLong())
+    verify(f.findStoredPositions, never()).apply(anyLong())
   }
 
   // ------------------------------------------------------------------
@@ -135,12 +140,12 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val sameDate = Instant.parse("2024-06-01T12:00:00Z")
     val incoming = makeVote(updateDate = Some(sameDate))
     val stored   = makeVote(voteId = 99L, updateDate = Some(sameDate))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
 
     val report = f.detector.detect(incoming, List(pos(1L)), correlationId).unsafeRunSync()
 
     val _ = report shouldBe VoteChangeReport.Unchanged
-    verify(f.positionRepo, never()).findByVoteId(anyLong())
+    verify(f.findStoredPositions, never()).apply(anyLong())
   }
 
   // ------------------------------------------------------------------
@@ -150,12 +155,12 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val f        = fixture()
     val incoming = makeVote(updateDate = Some(Instant.parse("2024-05-01T00:00:00Z")))
     val stored   = makeVote(voteId = 77L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
 
     val report = f.detector.detect(incoming, List(pos(1L)), correlationId).unsafeRunSync()
 
     val _ = report shouldBe VoteChangeReport.Unchanged
-    val _ = verify(f.positionRepo, never()).findByVoteId(anyLong())
+    val _ = verify(f.findStoredPositions, never()).apply(anyLong())
     verify(f.logger, times(1)).warn(any[LogContext], anyString())
   }
 
@@ -167,8 +172,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val incoming  = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored    = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val positions = List(pos(1L, VoteCast.Yea), pos(2L, VoteCast.Nay))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(positions))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(positions))
 
     val report = f.detector.detect(incoming, positions, correlationId).unsafeRunSync()
 
@@ -189,8 +194,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val stored            = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val storedPositions   = List(pos(1L, VoteCast.Yea))
     val incomingPositions = List(pos(1L, VoteCast.Yea), pos(2L, VoteCast.Nay))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(storedPositions))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(storedPositions))
 
     val report = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
@@ -216,8 +221,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val stored            = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val storedPositions   = List(pos(1L, VoteCast.Yea), pos(2L, VoteCast.Nay))
     val incomingPositions = List(pos(1L, VoteCast.Yea))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(storedPositions))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(storedPositions))
 
     val report = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
@@ -243,8 +248,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val stored            = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val storedPositions   = List(pos(1L, VoteCast.Yea))
     val incomingPositions = List(pos(1L, VoteCast.Nay))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(storedPositions))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(storedPositions))
 
     val report = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
@@ -280,8 +285,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       pos(3L, VoteCast.Nay),
       pos(4L, VoteCast.Present),
     )
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(storedPositions))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(storedPositions))
 
     val report = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
@@ -316,8 +321,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val incoming = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored   = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val base     = List(pos(1L, VoteCast.Yea), pos(2L, VoteCast.Nay), pos(3L, VoteCast.Present))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(base.reverse))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(base.reverse))
 
     val report = f.detector.detect(incoming, base, correlationId).unsafeRunSync()
 
@@ -341,8 +346,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       // 3 removed
       pos(4L, VoteCast.Present), // added
     )
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(storedPositions))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(storedPositions))
 
     val _ = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
@@ -359,8 +364,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val stored            = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val storedPositions   = List(pos(1L, VoteCast.Yea))
     val incomingPositions = List(pos(1L, VoteCast.Nay))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(storedPositions))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(storedPositions))
 
     val _ = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
@@ -379,7 +384,7 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val f        = fixture()
     val incoming = makeVote(updateDate = Some(Instant.parse("2024-05-01T00:00:00Z")))
     val stored   = makeVote(voteId = 77L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
 
     val _ = f.detector.detect(incoming, List.empty, correlationId).unsafeRunSync()
 
@@ -396,8 +401,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val f        = fixture()
     val incoming = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored   = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(List(pos(1L, VoteCast.Yea))))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(List(pos(1L, VoteCast.Yea))))
 
     val report =
       f.detector.detect(incoming, List(pos(1L, VoteCast.Nay)), correlationId).unsafeRunSync()
@@ -413,8 +418,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val incoming  = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored    = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val positions = List(pos(1L, VoteCast.Yea), pos(2L, VoteCast.Nay))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(positions))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(positions))
 
     val report = f.detector.detect(incoming, positions, correlationId).unsafeRunSync()
 
@@ -425,18 +430,18 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
   }
 
   // ------------------------------------------------------------------
-  // Edge case: stored voteId is threaded into positionRepo.findByVoteId
+  // Edge case: stored voteId is threaded into findStoredPositions
   // ------------------------------------------------------------------
   it should "fetch stored positions using the stored vote's voteId (not the incoming's 0L)" in {
     val f        = fixture()
     val incoming = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored   = makeVote(voteId = 777L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(List.empty[VotePositionDO]))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(List.empty[VotePositionDO]))
 
     val _ = f.detector.detect(incoming, List.empty, correlationId).unsafeRunSync()
 
-    verify(f.positionRepo, times(1)).findByVoteId(777L)
+    verify(f.findStoredPositions, times(1)).apply(777L)
   }
 
   // ------------------------------------------------------------------
@@ -446,12 +451,12 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val f        = fixture()
     val incoming = makeVote(updateDate = None)
     val stored   = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
 
     val report = f.detector.detect(incoming, List(pos(1L)), correlationId).unsafeRunSync()
 
     val _ = report shouldBe VoteChangeReport.Unchanged
-    val _ = verify(f.positionRepo, never()).findByVoteId(anyLong())
+    val _ = verify(f.findStoredPositions, never()).apply(anyLong())
     verify(f.logger, times(1)).warn(any[LogContext], anyString())
   }
 
@@ -459,12 +464,12 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val f        = fixture()
     val incoming = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored   = makeVote(voteId = 55L, updateDate = None)
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
 
     val report = f.detector.detect(incoming, List(pos(1L)), correlationId).unsafeRunSync()
 
     val _ = report shouldBe VoteChangeReport.Unchanged
-    val _ = verify(f.positionRepo, never()).findByVoteId(anyLong())
+    val _ = verify(f.findStoredPositions, never()).apply(anyLong())
     verify(f.logger, times(1)).warn(any[LogContext], anyString())
   }
 
@@ -476,8 +481,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val incoming  = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored    = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val positions = List(pos(1L, VoteCast.Yea))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(positions))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(positions))
 
     val _ = f.detector.detect(incoming, positions, correlationId).unsafeRunSync()
 
@@ -493,8 +498,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val stored            = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val storedPositions   = List(pos(1L, VoteCast.Yea))
     val incomingPositions = List(pos(1L).copy(position = None))
-    when(f.voteRepo.findByNaturalKey(anyString())).thenReturn(IO.pure(Some(stored)))
-    when(f.positionRepo.findByVoteId(anyLong())).thenReturn(IO.pure(storedPositions))
+    when(f.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
+    when(f.findStoredPositions.apply(anyLong())).thenReturn(IO.pure(storedPositions))
 
     val report = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
