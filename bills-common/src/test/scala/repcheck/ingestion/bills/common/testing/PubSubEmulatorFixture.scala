@@ -107,7 +107,18 @@ trait PubSubEmulatorFixture extends BeforeAndAfterAll { self: Suite =>
     val _ = Try(pullMessages(100))
   }
 
-  /** Pulls messages from the test subscription. */
+  /**
+   * Pulls messages from the test subscription. Uses a short RPC deadline (1 second) so negative- path assertions
+   * (`pullMessages() shouldBe empty`) don't long-poll against gRPC's default 60- second pull deadline — that single
+   * default was costing ~5 minutes of aggregate CI time across 5 integration tests.
+   *
+   * Positive-path assertions are unaffected: `publishMessage` blocks on `publisher.publish(...).get(10, SECONDS)` so by
+   * the time `pullMessages()` runs the message is already in the subscription and returns immediately.
+   *
+   * The non-deprecated alternative to `PullRequest.setReturnImmediately(true)` (GCP now recommends StreamingPull for
+   * production code) is a per-call deadline via `GrpcCallContext`; we catch `DeadlineExceededException` and return an
+   * empty list since that's the "no messages arrived" signal we want anyway.
+   */
   protected def pullMessages(maxMessages: Int = 10): List[PubsubMessage] = {
     val pullRequest = PullRequest
       .newBuilder()
@@ -115,8 +126,17 @@ trait PubSubEmulatorFixture extends BeforeAndAfterAll { self: Suite =>
       .setMaxMessages(maxMessages)
       .build()
 
-    val response = subscriberStub.pullCallable().call(pullRequest)
-    val messages = response.getReceivedMessagesList.asScala.toList
+    val callContext = com.google.api.gax.grpc.GrpcCallContext
+      .createDefault()
+      .withTimeout(org.threeten.bp.Duration.ofSeconds(1))
+
+    val messages: List[com.google.pubsub.v1.ReceivedMessage] =
+      try {
+        val response = subscriberStub.pullCallable().call(pullRequest, callContext)
+        response.getReceivedMessagesList.asScala.toList
+      } catch {
+        case _: com.google.api.gax.rpc.DeadlineExceededException => List.empty
+      }
 
     // Auto-ack all pulled messages
     if (messages.nonEmpty) {
