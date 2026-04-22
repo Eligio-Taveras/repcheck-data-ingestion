@@ -10,12 +10,12 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.members.common.persistence.{
   DoobieLisMappingRepository,
+  DoobieLisMemberRepository,
   DoobieMemberHistoryArchiver,
   DoobieMemberRepository,
   DoobieMemberTermRepository,
 }
 import repcheck.members.common.testing.{DockerRequired, TransactorFixture}
-import repcheck.members.lismapping.repository.DoobieLisMemberRepository
 import repcheck.shared.models.congress.common.{Chamber, UsState}
 import repcheck.shared.models.congress.dos.member.{LisMemberDO, MemberLisMappingDO, MemberTermDO}
 import repcheck.shared.models.congress.member.MemberType

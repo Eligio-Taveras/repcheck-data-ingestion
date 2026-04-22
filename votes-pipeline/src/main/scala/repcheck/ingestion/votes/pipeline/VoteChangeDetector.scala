@@ -33,10 +33,11 @@ import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
  *
  * ==Position comparison==
  *
- * Positions are compared by `memberId: Long` only — a placeholder→real merge done by `lis-mapping-refresher` shows up
- * on the next votes-pipeline run as `ObtainedOnly(realId) + ExpectedOnly(placeholderId)`, which is semantically
- * accurate — the FK really did change. Order-independence is a property: `detect(voteDo, shuffle(positions), id)`
- * returns the same report as `detect(voteDo, positions, id)` for any input. Enforced by `VotePositionDiffPropSpec`.
+ * Positions are compared by the dual identity tuple `(memberId, lisMemberId)` per migration 023 / shared-models 0.1.29
+ * — exactly one of the two is populated per row (House uses `memberId`, Senate uses `lisMemberId`), and the DB's
+ * `chk_vp_xor_identity` CHECK enforces the invariant. Order-independence is a property: `detect(voteDo,
+ * shuffle(positions), id)` returns the same report as `detect(voteDo, positions, id)` for any input. Enforced by
+ * `VotePositionDiffPropSpec`.
  *
  * ==Log context==
  *
@@ -67,9 +68,9 @@ class VoteChangeDetector[F[_]: Sync](
   /**
    * Decide whether `voteDo` represents a change relative to stored state.
    *
-   * See the class docstring for branch behavior. `resolvedPositions` must already have `memberId: Long` populated
-   * (i.e., post-LIS resolution + placeholder creation). Comparing against un-resolved rows would produce spurious
-   * pair-mismatches on every run.
+   * See the class docstring for branch behavior. Each element of `resolvedPositions` must already have exactly one side
+   * of the dual identity populated — House rows carry `memberId = Some(_)` + `lisMemberId = None`, Senate rows carry
+   * the reverse. Mixed or missing identities produce spurious pair-mismatches.
    */
   def detect(
     voteDo: VoteDO,

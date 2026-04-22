@@ -1,8 +1,11 @@
-package repcheck.members.lismapping.repository
+package repcheck.members.common.persistence
+
+import cats.data.NonEmptyList
 
 import doobie._
 import doobie.implicits._
 import doobie.postgres.implicits._
+import doobie.util.fragments.in
 
 import repcheck.pipeline.models.constants.Tables
 import repcheck.shared.models.congress.dos.member.LisMemberDO
@@ -38,8 +41,8 @@ class DoobieLisMemberRepository extends LisMemberRepository {
       RETURNING id
     """.query[Long].unique
 
-  override def findByNaturalKey(lisId: String): ConnectionIO[Option[LisMemberDO]] =
-    (fr"SELECT" ++ selectColumns ++ fr"FROM" ++ table ++ fr"WHERE natural_key = $lisId")
+  override def findByNaturalKey(naturalKey: String): ConnectionIO[Option[LisMemberDO]] =
+    (fr"SELECT" ++ selectColumns ++ fr"FROM" ++ table ++ fr"WHERE natural_key = $naturalKey")
       .query[LisMemberDO]
       .option
 
@@ -47,5 +50,17 @@ class DoobieLisMemberRepository extends LisMemberRepository {
     (fr"SELECT" ++ selectColumns ++ fr"FROM" ++ table ++ fr"WHERE id = $id")
       .query[LisMemberDO]
       .option
+
+  override def findByNaturalKeys(naturalKeys: List[String]): ConnectionIO[Map[String, Long]] =
+    NonEmptyList.fromList(naturalKeys) match {
+      case None => doobie.free.connection.pure(Map.empty[String, Long])
+      case Some(nel) =>
+        val sqlFragment =
+          fr"SELECT natural_key, id FROM" ++ table ++ fr"WHERE" ++ in(fr"natural_key", nel)
+        sqlFragment
+          .query[(String, Long)]
+          .to[List]
+          .map(_.toMap)
+    }
 
 }
