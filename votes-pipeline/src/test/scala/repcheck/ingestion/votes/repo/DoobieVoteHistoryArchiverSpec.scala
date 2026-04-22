@@ -28,12 +28,14 @@ class DoobieVoteHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
     val positions = (1 to memberCount).toList.map { i =>
       val memberId = insertMember(f"H$rollNumber-$i%04d")
       VotePositionDO(
+        id = 0L,
         voteId = voteId,
-        memberId = memberId,
+        memberId = Some(memberId),
         position = Some(VoteCast.Yea),
         partyAtVote = Some(Party.Democrat),
         stateAtVote = Some(UsState.NewYork),
         createdAt = None,
+        lisMemberId = None,
       )
     }
     positionRepo.replaceAll(voteId, positions).transact(xa).unsafeRunSync()

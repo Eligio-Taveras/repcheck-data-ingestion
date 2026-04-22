@@ -133,6 +133,8 @@ trait TransactorFixture extends BeforeAndAfterAll with BeforeAndAfterEach { self
       .unsafeRunSync()
     val _ = sql"""DELETE FROM bills""".update.run.transact(xa).unsafeRunSync()
     val _ = sql"""DELETE FROM members""".update.run.transact(xa).unsafeRunSync()
+    // Senate-arm vote_positions FK to lis_members — clear any rows seeded by per-test helpers.
+    val _ = sql"""DELETE FROM lis_members""".update.run.transact(xa).unsafeRunSync()
   }
 
 }

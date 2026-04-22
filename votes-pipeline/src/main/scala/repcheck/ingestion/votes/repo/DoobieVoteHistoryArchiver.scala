@@ -101,6 +101,16 @@ class DoobieVoteHistoryArchiver extends VoteHistoryArchiver {
   /**
    * Copies every `vote_positions` row for `voteId` into `vote_history_positions`, tagging each with the supplied
    * `historyId`. Returns the number of inserted rows so callers can log it if useful.
+   *
+   * ==Senate arm note==
+   *
+   * Migration 023 split `vote_positions` into a dual-identity XOR: House rows populate `member_id`, Senate rows
+   * populate `lis_member_id`. The history schema does NOT carry `lis_member_id` — `vote_history_positions` still has
+   * only `member_id`. We preserve this deliberately: for Senate rows, `vp.member_id` is NULL and the archived history
+   * row records `member_id = NULL`. The UNIQUE constraint on `(history_id, member_id)` tolerates this (PostgreSQL
+   * treats NULLs as distinct under UNIQUE). Scoring consumers that need the Senate identity should go through the live
+   * `vote_positions_resolved` VIEW rather than the archive — historical Senate identity is a known gap that a later
+   * migration can address if the product requirement emerges.
    */
   private[repo] def insertHistoryPositions(
     historyId: Long,
