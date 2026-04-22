@@ -45,18 +45,70 @@ jobs:
           docker pull gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators &
           wait
 
-      - name: Run all tests with coverage (unit + Docker integration)
-        # Runs non-Docker tests first (`test` excludes @DockerRequired), then Docker-backed
-        # integration tests (`dockerTestParallel` includes only @DockerRequired and runs each
-        # subproject's test task concurrently — capped at 2 concurrent subprojects via
-        # `Tags.limit(Tags.Test, 2)` in build.sbt because running all 7 at once spins up
-        # too many AlloyDB + Pub/Sub containers simultaneously and OOMs the post-test
-        # `coverageReport` aggregation on GHA's 7 GB runner. Both phases run in the same
-        # sbt-scoverage session so measurement data accumulates into a single combined
-        # report — no `clean` between runs. The concurrency knob is `-Dsbt.testConcurrency=N`
-        # for local experimentation on higher-memory dev boxes.
-        timeout-minutes: 30
-        run: sbt coverage test dockerTestParallel coverageReport
+      # ----------------------------------------------------------------------
+      # Tests are split into one step per Docker-using subproject so a failure
+      # isolates to a specific subproject AND each step runs in a fresh sbt JVM
+      # (lower peak memory than one long `dockerTestParallel` session). scoverage
+      # data accumulates on disk across invocations — `coverageReport` at the end
+      # reads every step's measurements as a single combined report.
+      # ----------------------------------------------------------------------
+
+      - name: Run non-Docker tests with coverage
+        timeout-minutes: 15
+        run: sbt coverage test
+
+      - name: Run billsCommon Docker tests
+        timeout-minutes: 10
+        run: |
+          sbt coverage \
+            'set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'billsCommon/test'
+
+      - name: Run membersCommon Docker tests
+        timeout-minutes: 10
+        run: |
+          sbt coverage \
+            'set membersCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'membersCommon/test'
+
+      - name: Run billTextPipeline Docker tests
+        timeout-minutes: 10
+        run: |
+          sbt coverage \
+            'set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'billTextPipeline/test'
+
+      - name: Run billTextAvailabilityChecker Docker tests
+        timeout-minutes: 10
+        run: |
+          sbt coverage \
+            'set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'billTextAvailabilityChecker/test'
+
+      - name: Run memberProfilePipeline Docker tests
+        timeout-minutes: 10
+        run: |
+          sbt coverage \
+            'set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'memberProfilePipeline/test'
+
+      - name: Run lisMappingRefresher Docker tests
+        timeout-minutes: 10
+        run: |
+          sbt coverage \
+            'set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'lisMappingRefresher/test'
+
+      - name: Run votesPipeline Docker tests
+        timeout-minutes: 10
+        run: |
+          sbt coverage \
+            'set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'votesPipeline/test'
+
+      - name: Generate combined coverage reports
+        timeout-minutes: 10
+        run: sbt coverageReport
 
       - name: Upload combined coverage reports to Codecov
         uses: codecov/codecov-action@v5
