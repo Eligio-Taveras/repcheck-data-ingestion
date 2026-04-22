@@ -19,20 +19,19 @@ import repcheck.shared.models.congress.dto.vote.VoteMembersDTO
  *      `BillResolver.resolve` runs the placeholder-create-if-missing + read-back sequence, so the resolved id reflects
  *      either an already-enriched bill or a placeholder that `bill-metadata-pipeline` will enrich on its next run.
  *      Procedural votes (no legislation) pass `None` through — `VoteDO.billId` stays `None` and downstream scoring
- *      logic can decide whether to consume the event.
- *   2. Pure validation (inside `toDO`): congress/chamber/session required, every enum-typed field parses or the
- *      conversion fails with [[VoteConversionFailed]] carrying the parser's reason.
- *   3. Member resolution (this class): every House bioguide from the result's `positions: List[UnresolvedVotePosition]`
- *      is batch-resolved via [[MemberResolver]], producing `Map[bioguide, members.id]`. Each resolution creates a
- *      placeholder member row if one doesn't exist, so we always end up with a Long.
- *   4. Position materialization (this class): each `UnresolvedVotePosition` with `memberSource = Left(bioguide)` is
+ *      logic can decide whether to consume the event. 2. Pure validation (inside `toDO`): congress/chamber/session
+ *      required, every enum-typed field parses or the conversion fails with [[VoteConversionFailed]] carrying the
+ *      parser's reason. 3. Member resolution (this class): every House bioguide from the result's `positions:
+ *      List[UnresolvedVotePosition]` is batch-resolved via [[MemberResolver]], producing `Map[bioguide, members.id]`.
+ *      Each resolution creates a placeholder member row if one doesn't exist, so we always end up with a Long. 4.
+ *      Position materialization (this class): each `UnresolvedVotePosition` with `memberSource = Left(bioguide)` is
  *      turned into a `VotePositionDO(memberId = Some(resolvedId), lisMemberId = None, ...)` per the dual-identity
  *      schema's House arm. `voteId` stays `0L` — the upsert path rewrites it after `INSERT RETURNING id`.
  *
  * ==Why the converter does not touch `voteId`==
  * The incoming `VoteDO` already carries `voteId = 0L` (the conversion has no way to know the DB-assigned id). The
- * processor's persister will call `VoteRepository.upsert(voteDo)` first, receive back the `VoteDO` with a real `voteId`,
- * then materialize the positions with that id populated. This class returns positions with `voteId = 0L` as a
+ * processor's persister will call `VoteRepository.upsert(voteDo)` first, receive back the `VoteDO` with a real
+ * `voteId`, then materialize the positions with that id populated. This class returns positions with `voteId = 0L` as a
  * placeholder; the persister rewrites them.
  */
 private[pipeline] class HouseVoteConverter[F[_]: Async](
@@ -69,8 +68,8 @@ private[pipeline] class HouseVoteConverter[F[_]: Async](
 
   /**
    * Construct the vote natural key directly from the DTO when the processor needs it before conversion succeeds — e.g.,
-   * to label a [[VoteConversionFailed]] on the way out. Matches [[repcheck.shared.models.congress.dto.conversions.VoteConversions.buildVoteNaturalKey]]
-   * exactly.
+   * to label a [[VoteConversionFailed]] on the way out. Matches
+   * [[repcheck.shared.models.congress.dto.conversions.VoteConversions.buildVoteNaturalKey]] exactly.
    */
   private[pipeline] def buildNaturalKey(dto: VoteMembersDTO): String = {
     val session = dto.sessionNumber.getOrElse(0)

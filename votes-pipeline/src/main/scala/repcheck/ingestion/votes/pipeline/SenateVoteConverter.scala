@@ -1,13 +1,13 @@
 package repcheck.ingestion.votes.pipeline
 
-import java.time.{LocalDate, ZoneOffset}
 import java.time.format.DateTimeFormatter
+import java.time.{LocalDate, ZoneOffset}
 import java.util.Locale
+
+import scala.util.Try
 
 import cats.effect.Async
 import cats.syntax.all._
-
-import scala.util.Try
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.errors.VoteConversionFailed
@@ -36,20 +36,19 @@ import repcheck.shared.models.congress.vote.{VoteCast, VoteType}
  *     would need a separate enrichment path (out of scope for this pipeline).
  *   - `VoteDO.voteType` classified from the `<question>` via [[VoteType.fromQuestion]] — same rule House uses.
  *   - `VoteDO.voteDate` parsed from the XML's `<vote_date>` text into a `LocalDate`. The XML's raw date string has
- *     already been format-validated by [[repcheck.ingestion.votes.xml.SenateVoteXmlDecoder]]; re-parsing here is
- *     cheap and keeps the DO self-contained. On unparseable dates, leaves `voteDate = None` rather than failing the
- *     whole vote — the detector's `updateDate` comparison does not depend on `voteDate`, and upstream analytics can
- *     handle `None`.
+ *     already been format-validated by [[repcheck.ingestion.votes.xml.SenateVoteXmlDecoder]]; re-parsing here is cheap
+ *     and keeps the DO self-contained. On unparseable dates, leaves `voteDate = None` rather than failing the whole
+ *     vote — the detector's `updateDate` comparison does not depend on `voteDate`, and upstream analytics can handle
+ *     `None`.
  *   - `VoteDO.updateDate` set to the parsed `voteDate` interpreted at 00:00 UTC, because senate.gov XML does not
- *     include a separate `updateDate` field. This makes the change detector's
- *     "incoming updateDate is newer than stored" comparison meaningful as soon as the DTO is re-ingested with a new
- *     `vote_date`.
+ *     include a separate `updateDate` field. This makes the change detector's "incoming updateDate is newer than
+ *     stored" comparison meaningful as soon as the DTO is re-ingested with a new `vote_date`.
  *   - `VoteDO.question` = XML's `<question>` text verbatim.
- *   - Positions: one `VotePositionDO` per senator in `dto.members`, with
- *     `memberId = None, lisMemberId = Some(resolvedLisId)` and cast/party/state enum-parsed from the XML strings. A
- *     senator whose natural key is missing from `lisMapping` is a defect in the LIS resolver (it should have upserted
- *     every senator seen on the DTO); this converter raises [[VoteConversionFailed]] in that case rather than silently
- *     dropping the position — position-list completeness is a scoring correctness invariant.
+ *   - Positions: one `VotePositionDO` per senator in `dto.members`, with `memberId = None, lisMemberId =
+ *     Some(resolvedLisId)` and cast/party/state enum-parsed from the XML strings. A senator whose natural key is
+ *     missing from `lisMapping` is a defect in the LIS resolver (it should have upserted every senator seen on the
+ *     DTO); this converter raises [[VoteConversionFailed]] in that case rather than silently dropping the position —
+ *     position-list completeness is a scoring correctness invariant.
  */
 private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[F]) {
 
@@ -61,8 +60,8 @@ private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[
    * @param dto
    *   the XML-decoded roll call.
    * @param lisMap
-   *   LIS natural key (e.g. `"S428"`) → `lis_members.id` Long. Must contain an entry for every senator in `dto.members`;
-   *   call [[repcheck.ingestion.votes.lis.LisResolver.resolve]] on `dto` before invoking this converter.
+   *   LIS natural key (e.g. `"S428"`) → `lis_members.id` Long. Must contain an entry for every senator in
+   *   `dto.members`; call [[repcheck.ingestion.votes.lis.LisResolver.resolve]] on `dto` before invoking this converter.
    */
   def convert(
     dto: SenateVoteXmlDTO,
@@ -78,9 +77,7 @@ private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[
 
     val voteDo = buildVoteDO(dto, naturalKey)
 
-    buildPositions(dto, lisMap, naturalKey, logCtx).map { positions =>
-      (voteDo, positions)
-    }
+    buildPositions(dto, lisMap, naturalKey, logCtx).map(positions => (voteDo, positions))
   }
 
   private def buildVoteDO(dto: SenateVoteXmlDTO, naturalKey: String): VoteDO = {

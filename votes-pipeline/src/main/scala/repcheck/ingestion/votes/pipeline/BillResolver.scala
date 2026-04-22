@@ -15,10 +15,10 @@ import repcheck.shared.models.congress.dos.bill.BillDO
  * ==Flow==
  *   1. `PlaceholderCreator.ensureExists[BillDO]` performs an idempotent insert-if-not-exists on `bills` keyed by the
  *      natural key. The next scheduled run of `bill-metadata-pipeline` enriches the placeholder with the real bill
- *      metadata (title, sponsors, etc.). Votes-pipeline only needs the surrogate id, not the full record.
- *   2. `findBillIdByNaturalKey(naturalKey)` reads back the surrogate id. Supplied as a callback so votes-pipeline does
- *      not take a compile-time dependency on bills-common's repository trait — the processor wires this at
- *      construction as `nk => billRepo.findByBillId(nk).map(_.map(_.billId)).transact(xa)`.
+ *      metadata (title, sponsors, etc.). Votes-pipeline only needs the surrogate id, not the full record. 2.
+ *      `findBillIdByNaturalKey(naturalKey)` reads back the surrogate id. Supplied as a callback so votes-pipeline does
+ *      not take a compile-time dependency on bills-common's repository trait — the processor wires this at construction
+ *      as `nk => billRepo.findByBillId(nk).map(_.map(_.billId)).transact(xa)`.
  *
  * The resolver is only invoked when the incoming vote carries a `billNaturalKey`. Procedural votes (no legislation
  * reference) bypass this step entirely — `VoteDO.billId = None` is the correct domain representation of "vote not about
@@ -59,8 +59,8 @@ private[pipeline] class BillResolver[F[_]: Async](
    */
   def resolve(naturalKey: String, logCtx: LogContext): F[Long] =
     for {
-      _          <- placeholderCreator.ensureExists[BillDO](naturalKey, billEntityRepo)
-      maybeId    <- findBillIdByNaturalKey(naturalKey)
+      _       <- placeholderCreator.ensureExists[BillDO](naturalKey, billEntityRepo)
+      maybeId <- findBillIdByNaturalKey(naturalKey)
       resolvedId <- maybeId match {
         case Some(id) => Async[F].pure(id)
         case None =>

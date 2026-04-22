@@ -22,8 +22,8 @@ import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
  *   - **Replace position set.** [[VotePositionRepository.replaceAll]] deletes every row with the matching `vote_id` and
  *     batch-inserts the incoming list. An empty list is the supported way to clear positions without deleting the
  *     parent vote. The persister rewrites each [[VotePositionDO]]'s `voteId` from `0L` to the upserted vote's id just
- *     before the insert — positions arriving from converters carry `voteId = 0L` as a placeholder because the
- *     converter has no way to know the DB-assigned value.
+ *     before the insert — positions arriving from converters carry `voteId = 0L` as a placeholder because the converter
+ *     has no way to know the DB-assigned value.
  *
  * All three operations compose into one `ConnectionIO` and are committed by a single `.transact(xa)` call, so a
  * mid-sequence failure rolls the whole write back.
@@ -67,9 +67,9 @@ private[pipeline] class VotePersister[F[_]: Async](
 
   /**
    * Archive + upsert without touching positions. Used when the change report is `Updated(positionsChanged = false)` —
-   * the vote metadata changed (new `updateDate`, maybe a corrected result string) but the positions are identical.
-   * We still archive so the prior metadata is preserved and audit queries can see the shape of every revision, but we
-   * skip the DELETE + INSERT on positions because there is nothing to change.
+   * the vote metadata changed (new `updateDate`, maybe a corrected result string) but the positions are identical. We
+   * still archive so the prior metadata is preserved and audit queries can see the shape of every revision, but we skip
+   * the DELETE + INSERT on positions because there is nothing to change.
    */
   def persistMetadataOnlyUpdate(voteDo: VoteDO, storedVoteId: Long): F[VoteDO] = {
     val program = for {
@@ -81,8 +81,8 @@ private[pipeline] class VotePersister[F[_]: Async](
 
   /**
    * Composed `ConnectionIO` that upserts the vote, rewrites each position's `voteId` to the upserted vote's id, and
-   * replaces the position list. Used by both [[persistNew]] and [[persistUpdate]]; the caller wraps it in its own
-   * outer `ConnectionIO` if an archive step must run first.
+   * replaces the position list. Used by both [[persistNew]] and [[persistUpdate]]; the caller wraps it in its own outer
+   * `ConnectionIO` if an archive step must run first.
    */
   private def upsertThenReplacePositions(
     voteDo: VoteDO,

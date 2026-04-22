@@ -3,13 +3,9 @@ package repcheck.ingestion.votes.pipeline
 import cats.effect.Async
 import cats.syntax.all._
 
-import doobie.implicits._
-import doobie.util.transactor.Transactor
-
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
 import repcheck.ingestion.votes.errors.MemberResolutionFailed
-import repcheck.members.common.persistence.MemberRepository
 import repcheck.shared.models.congress.dos.member.MemberDO
 
 /**
@@ -18,24 +14,24 @@ import repcheck.shared.models.congress.dos.member.MemberDO
  * ==Flow==
  *   1. `PlaceholderCreator.ensureExists[MemberDO]` performs an idempotent insert-if-not-exists on `members` keyed by
  *      the bioguide natural key. No-op when the row already exists; otherwise writes a stub `MemberDO` whose
- *      placeholder fields are overwritten by the next members-pipeline run.
- *   2. `MemberRepository.findByBioguideId(bioguide)` reads back the row's surrogate `members.id`. Both steps are in
- *      `F[_]`, each running its own short transaction via `.transact(xa)` — there is no need to compose them under one
- *      boundary because the insert is idempotent and the subsequent read cannot observe a torn state.
+ *      placeholder fields are overwritten by the next members-pipeline run. 2. `findMemberIdByBioguide(bioguide)` reads
+ *      back the surrogate `members.id`. Supplied as a callback so the resolver stays decoupled from the concrete Doobie
+ *      repository + transactor at compile time; in production it is wired as `bid =>
+ *      memberRepo.findByBioguideId(bid).map(_.map(_.memberId)).transact(xa)`, in tests it is a plain closure returning
+ *      canned responses.
  *
- * If `findByBioguideId` returns `None` after `ensureExists` succeeds, the resolver raises [[MemberResolutionFailed]]
- * rather than silently producing a missing identity. That scenario is pathological (would require another actor to
- * delete the row between the two calls) but we surface it as a per-vote failure so the stream keeps processing other
- * votes.
+ * If `findMemberIdByBioguide` returns `None` after `ensureExists` succeeds, the resolver raises
+ * [[MemberResolutionFailed]] rather than silently producing a missing identity. That scenario is pathological (would
+ * require another actor to delete the row between the two calls) but we surface it as a per-vote failure so the stream
+ * keeps processing other votes.
  *
  * Senate positions do NOT go through this resolver — they carry `lis_member_id` and bypass the `members` table per the
  * migration 023 dual-identity design. Only House positions are translated here.
  */
 private[pipeline] class MemberResolver[F[_]: Async](
-  memberRepo: MemberRepository,
+  findMemberIdByBioguide: String => F[Option[Long]],
   placeholderCreator: PlaceholderCreator[F],
   memberEntityRepo: EntityRepository[F, MemberDO],
-  xa: Transactor[F],
   logger: PipelineLogger[F],
 ) {
 
@@ -45,18 +41,18 @@ private[pipeline] class MemberResolver[F[_]: Async](
    */
   def resolveBioguide(bioguideId: String, logCtx: LogContext): F[Long] =
     for {
-      _         <- placeholderCreator.ensureExists[MemberDO](bioguideId, memberEntityRepo)
-      maybeRow  <- memberRepo.findByBioguideId(bioguideId).transact(xa)
-      memberRow <- maybeRow match {
-        case Some(m) => Async[F].pure(m)
+      _       <- placeholderCreator.ensureExists[MemberDO](bioguideId, memberEntityRepo)
+      maybeId <- findMemberIdByBioguide(bioguideId)
+      resolvedId <- maybeId match {
+        case Some(id) => Async[F].pure(id)
         case None =>
           val err = MemberResolutionFailed(
             bioguideId = bioguideId,
-            detail = "findByBioguideId returned None after ensureExists — placeholder row disappeared",
+            detail = "findMemberIdByBioguide returned None after ensureExists — placeholder row disappeared",
           )
-          logger.error(logCtx, err.getMessage, Some(err)) *> Async[F].raiseError[MemberDO](err)
+          logger.error(logCtx, err.getMessage, Some(err)) *> Async[F].raiseError[Long](err)
       }
-    } yield memberRow.memberId
+    } yield resolvedId
 
   /**
    * Batch version. Resolves each distinct bioguide at most once and returns a `Map[bioguide, memberId]` for the caller

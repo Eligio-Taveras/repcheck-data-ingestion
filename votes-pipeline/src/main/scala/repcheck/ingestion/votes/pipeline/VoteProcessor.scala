@@ -62,10 +62,10 @@ import repcheck.shared.models.congress.dto.vote.{VoteListItemDTO, VoteMembersDTO
  * whether to consume the event for their own purposes.
  *
  * ==Correlation IDs==
- * Each per-vote work unit generates its own `correlationId` at the top of `processHouseVote` / `processSenateVote` so
- * a single vote's trajectory through the pipeline (detector, resolvers, persister, event emitter) can be followed in
- * the logs without mixing with sibling votes. The run-level `runId` is the outer context; correlation IDs never
- * collide with `runId`.
+ * Each per-vote work unit generates its own `correlationId` at the top of `processHouseVote` / `processSenateVote` so a
+ * single vote's trajectory through the pipeline (detector, resolvers, persister, event emitter) can be followed in the
+ * logs without mixing with sibling votes. The run-level `runId` is the outer context; correlation IDs never collide
+ * with `runId`.
  */
 class VoteProcessor[F[_]: Async](
   houseClient: HouseVotesApiClient[F],
@@ -165,7 +165,7 @@ class VoteProcessor[F[_]: Async](
       entityId = Some(naturalKey),
     )
     for {
-      dto          <- houseClient.fetchMembersVotePositions(
+      dto <- houseClient.fetchMembersVotePositions(
         congress = listItem.congress,
         session = listItem.sessionNumber.getOrElse(session),
         voteNumber = listItem.rollCallNumber,
