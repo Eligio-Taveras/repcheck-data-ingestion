@@ -24,11 +24,16 @@ import repcheck.shared.models.congress.dto.vote.{VoteListItemDTO, VoteMembersDTO
 
 /**
  * Congress.gov beta `/house-vote` API client. Extends [[CongressGovPaginatedClient]] so `fetchAll` can walk the
- * paginated list endpoint; also exposes [[fetchMembers]] for the per-vote member-positions endpoint.
+ * paginated list endpoint; also exposes [[fetchMembersVotePositions]] for the per-vote member-positions endpoint.
  *
  * ==URL construction==
- *   - List: `{baseUrl}/house-vote/{congress}/{session}?format=json&offset={o}&limit={n}&api_key={k}`
- *   - Members: `{baseUrl}/house-vote/{congress}/{session}/{voteNumber}/members?format=json&api_key={k}`
+ * Both URLs match the official Congress.gov OpenAPI spec (see `congress-gov-api.yaml` in the votr docs repo):
+ *   - List: `{baseUrl}/house-vote/{congress}/{session}?format=json&offset={o}&limit={n}&api_key={k}` — confirmed
+ *     against `/house-vote/{congress}/{session}` at yaml lines 1061-1084. Only `format` / `offset` / `limit` are in the
+ *     spec's parameter list (plus `api_key` added as a global query param).
+ *   - Members: `{baseUrl}/house-vote/{congress}/{session}/{voteNumber}/members?format=json&api_key={k}` — confirmed
+ *     against `/house-vote/{congress}/{session}/{voteNumber}/members` at yaml lines 1110-1134. The spec allows `offset`
+ *     / `limit` too but the response is a single non-paginated object so we omit them.
  *
  * The beta endpoint does NOT accept `fromDateTime` / `toDateTime` / `sort` — those produce HTTP 400. `lookbackDays` is
  * applied client-side after pagination (see [[fetchRecentVotes]]).
@@ -105,7 +110,7 @@ class HouseVotesApiClient[F[_]](
    * specific vote is classified as Systemic (not retried) and surfaces as [[HouseVoteFetchFailed]] with the caller's
    * `voteNumber` preserved so the log entry identifies exactly which vote was missing.
    */
-  def fetchMembers(congress: Int, session: Int, voteNumber: Int): F[VoteMembersDTO] = {
+  def fetchMembersVotePositions(congress: Int, session: Int, voteNumber: Int): F[VoteMembersDTO] = {
     val url = s"${config.baseUrl}/house-vote/$congress/$session/$voteNumber/members"
     parseUri(url, Some(voteNumber)).flatMap { baseUri =>
       val uri = baseUri
@@ -143,7 +148,7 @@ class HouseVotesApiClient[F[_]](
    * cutoff. Calls [[fetchAll]] under the hood so pagination uses the base trait's stream-of-pages implementation.
    *
    * Memory note: one session's vote list fits in a single in-memory list (House has ≤ ~600 roll calls/year). No
-   * streaming gymnastics required here — the expensive fan-out happens downstream on [[fetchMembers]].
+   * streaming gymnastics required here — the expensive fan-out happens downstream on [[fetchMembersVotePositions]].
    *
    * A `lookbackDays` of `0` or negative keeps every item regardless of `updateDate`, which is useful for back-fill
    * runs.
@@ -220,12 +225,14 @@ object HouseVotesApiClient {
         (item, parsed)
       }
 
-    val sortedDesc = parsedPairs.sortWith { (a, b) =>
-      (a._2, b._2) match {
-        case (Some(ta), Some(tb)) => ta.isAfter(tb)
-        case (Some(_), None)      => true
-        case (None, Some(_))      => false
-        case (None, None)         => false
+    val sortedDesc = parsedPairs.sortWith { (leftPair, rightPair) =>
+      val (_, leftUpdatedAt)  = leftPair
+      val (_, rightUpdatedAt) = rightPair
+      (leftUpdatedAt, rightUpdatedAt) match {
+        case (Some(leftTime), Some(rightTime)) => leftTime.isAfter(rightTime)
+        case (Some(_), None)                   => true
+        case (None, Some(_))                   => false
+        case (None, None)                      => false
       }
     }
 

@@ -216,9 +216,15 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient()
     val _      = client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
+    // URL shape confirmed against the Congress.gov OpenAPI spec: `/house-vote/{congress}/{session}` at
+    // congress-gov-api.yaml lines 1061-1084. Allowed query params are `format` / `offset` / `limit`; we add `api_key`
+    // as the global auth param. Nothing else is emitted.
     wireMock.verify(
       getRequestedFor(urlPathEqualTo("/v3/house-vote/119/1"))
         .withQueryParam("api_key", equalTo("test-api-key"))
+        .withQueryParam("format", equalTo("json"))
+        .withQueryParam("offset", equalTo("0"))
+        .withQueryParam("limit", equalTo("250"))
     )
   }
 
@@ -307,10 +313,10 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   }
 
   // -----------------------------------------------------------------------------------------------------------------
-  // fetchMembers — AC#3 (VoteMembersDTO with results list), AC#4 (voteQuestion populated)
+  // fetchMembersVotePositions — AC#3 (VoteMembersDTO with results list), AC#4 (voteQuestion populated)
   // -----------------------------------------------------------------------------------------------------------------
 
-  "fetchMembers" should "decode the houseRollCallVoteMemberVotes envelope and return VoteMembersDTO with positions" in {
+  "fetchMembersVotePositions" should "decode the houseRollCallVoteMemberVotes envelope and return VoteMembersDTO with positions" in {
     wireMock.stubFor(
       get(urlPathEqualTo("/v3/house-vote/119/1/240/members"))
         .willReturn(
@@ -322,7 +328,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client  = makeClient()
-    val members = client.fetchMembers(congress = 119, session = 1, voteNumber = 240).unsafeRunSync()
+    val members = client.fetchMembersVotePositions(congress = 119, session = 1, voteNumber = 240).unsafeRunSync()
 
     val _       = members.congress shouldBe 119
     val _       = members.rollCallNumber shouldBe 240
@@ -349,7 +355,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client  = makeClient()
-    val members = client.fetchMembers(119, 1, 17).unsafeRunSync()
+    val members = client.fetchMembersVotePositions(119, 1, 17).unsafeRunSync()
     members.voteQuestion shouldBe Some(rawQuestion)
   }
 
@@ -365,11 +371,17 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client = makeClient()
-    val _      = client.fetchMembers(119, 1, 17).unsafeRunSync()
+    val _      = client.fetchMembersVotePositions(119, 1, 17).unsafeRunSync()
+    // URL shape confirmed against the Congress.gov OpenAPI spec: `/house-vote/{congress}/{session}/{voteNumber}/members`
+    // at congress-gov-api.yaml lines 1110-1134. Only `format` + `api_key` are emitted; we assert neither `offset` nor
+    // `limit` nor the forbidden `fromDateTime` / `toDateTime` / `sort` are present.
     wireMock.verify(
       getRequestedFor(urlPathEqualTo("/v3/house-vote/119/1/17/members"))
         .withQueryParam("api_key", equalTo("test-api-key"))
         .withQueryParam("format", equalTo("json"))
+        .withQueryParam("fromDateTime", absent())
+        .withQueryParam("toDateTime", absent())
+        .withQueryParam("sort", absent())
     )
   }
 
@@ -521,7 +533,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   // AC#10 — 404 on a specific vote surfaces as HouseVoteFetchFailed with the vote number attached.
   // -----------------------------------------------------------------------------------------------------------------
 
-  "fetchMembers" should "raise HouseVoteFetchFailed with voteNumber on 404" in {
+  "fetchMembersVotePositions" should "raise HouseVoteFetchFailed with voteNumber on 404" in {
     wireMock.stubFor(
       get(urlPathEqualTo("/v3/house-vote/119/1/9999/members"))
         .willReturn(aResponse().withStatus(404).withBody("Not Found"))
@@ -529,7 +541,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient()
     val ex = intercept[HouseVoteFetchFailed] {
-      client.fetchMembers(119, 1, 9999).unsafeRunSync()
+      client.fetchMembersVotePositions(119, 1, 9999).unsafeRunSync()
     }
     val _ = ex.voteNumber shouldBe Some(9999)
     val _ = ex.congress shouldBe 119
@@ -674,7 +686,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client  = makeClient()
-    val members = client.fetchMembers(119, 1, 5).unsafeRunSync()
+    val members = client.fetchMembersVotePositions(119, 1, 5).unsafeRunSync()
     members.results shouldBe Some(List.empty[repcheck.shared.models.congress.dto.vote.VoteResultDTO])
   }
 
@@ -803,7 +815,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     val client = HouseVotesApiClient[IO](badConfig, HouseVotesConfig(119, 1), httpClient, retryWrapper)
 
     val ex = intercept[HouseVoteFetchFailed] {
-      client.fetchMembers(119, 1, 42).unsafeRunSync()
+      client.fetchMembersVotePositions(119, 1, 42).unsafeRunSync()
     }
     ex.voteNumber shouldBe Some(42)
   }

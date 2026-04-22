@@ -28,6 +28,21 @@ import pureconfig.ConfigReader
  * @param lookbackDays
  *   client-side filter window. Items whose `updateDate` is older than `now - lookbackDays` are dropped after all pages
  *   for the congress/session have been fetched. 0 or negative disables the filter (keeps everything).
+ *
+ * ==Tuning `lookbackDays` — steady-state vs backfill==
+ * The default (`7`) is tuned for the steady-state orchestrator cadence: run daily or weekly, keep only votes touched
+ * inside the window, trust the next run to pick up anything that arrives later. Do NOT raise the default to cover
+ * backfill — that silently bloats every steady-state run and burns the API quota.
+ *
+ * Two supported backfill strategies:
+ *   1. One-off override: set `lookbackDays` to a large window in a dedicated config profile (e.g., `1825` for 5 years)
+ *      and run the pipeline once against that profile. Revert to the steady-state profile afterwards. 2.
+ *      Orchestrator-driven backfill: use the `pipeline.congress-sessions` tuple-list mechanism (per C6 execution plan
+ *      decision 21x) to fan out one run per `(congress, session)` with `lookbackDays = 0` (filter disabled). This is
+ *      preferred for the initial full-history load because it keeps each run bounded to one session.
+ *
+ * `0` or negative disables the filter entirely — keeps every paginated item regardless of `updateDate`. Use this ONLY
+ * with the tuple-list backfill path above, never in a steady-state profile.
  */
 final case class HouseVotesConfig(
   congress: Int,
