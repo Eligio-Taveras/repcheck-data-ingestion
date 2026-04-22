@@ -1,4 +1,4 @@
-package repcheck.members.lismapping.repository
+package repcheck.members.common.persistence
 
 import java.time.Instant
 
@@ -6,6 +6,11 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.shared.models.congress.dos.member.LisMemberDO
 
+/**
+ * Pure unit coverage for [[DoobieLisMemberRepository]]. Confirms every method produces a well-formed `ConnectionIO`
+ * without depending on a database — shape-level smoke tests that the Doobie interpolator compiles and executes its
+ * fragment assembly. Real-SQL coverage lives in [[DoobieLisMemberRepositorySpec]] (DockerRequired).
+ */
 class DoobieLisMemberRepositoryUnitSpec extends AnyFlatSpec with Matchers {
 
   private val repo = new DoobieLisMemberRepository
@@ -53,12 +58,12 @@ class DoobieLisMemberRepositoryUnitSpec extends AnyFlatSpec with Matchers {
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
-  "findByNaturalKey" should "produce a ConnectionIO for a non-empty lisId" in {
+  "findByNaturalKey" should "produce a ConnectionIO for a non-empty natural key" in {
     val cio = repo.findByNaturalKey("S428")
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
-  it should "produce a ConnectionIO for an empty-string lisId" in {
+  it should "produce a ConnectionIO for an empty-string natural key" in {
     val cio = repo.findByNaturalKey("")
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
@@ -75,6 +80,37 @@ class DoobieLisMemberRepositoryUnitSpec extends AnyFlatSpec with Matchers {
 
   it should "produce a ConnectionIO for a negative id" in {
     val cio = repo.findById(-1L)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  "findByNaturalKeys" should "short-circuit to the empty map for an empty input list without touching the DB" in {
+    import cats.effect.IO
+    import cats.effect.unsafe.implicits.global
+
+    import doobie.Transactor
+
+    // An in-memory H2 transactor is sufficient because the empty-input branch must never issue SQL.
+    val xa = Transactor.fromDriverManager[IO](
+      driver = "org.h2.Driver",
+      url = "jdbc:h2:mem:lismemberempty;DB_CLOSE_DELAY=-1",
+      user = "",
+      password = "",
+      logHandler = None,
+    )
+    val result = {
+      import doobie.implicits._
+      repo.findByNaturalKeys(List.empty).transact(xa).unsafeRunSync()
+    }
+    result shouldBe Map.empty[String, Long]
+  }
+
+  it should "produce a ConnectionIO for a single-element list" in {
+    val cio = repo.findByNaturalKeys(List("S428"))
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "produce a ConnectionIO for a multi-element list" in {
+    val cio = repo.findByNaturalKeys(List("S1", "S2", "S3"))
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 

@@ -13,11 +13,14 @@ import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.xml.XmlFeedClient
-import repcheck.members.common.persistence.{DoobieLisMappingRepository, DoobieMemberRepository}
+import repcheck.members.common.persistence.{
+  DoobieLisMappingRepository,
+  DoobieLisMemberRepository,
+  DoobieMemberRepository,
+}
 import repcheck.members.lismapping.client.SenatorLookupXmlClient
 import repcheck.members.lismapping.config.LisMappingConfig
 import repcheck.members.lismapping.pipeline.LisMappingProcessor
-import repcheck.members.lismapping.repository.DoobieLisMemberRepository
 import repcheck.pipeline.models.errors.{ErrorClass, RetryConfig, RetryWrapper}
 
 /**

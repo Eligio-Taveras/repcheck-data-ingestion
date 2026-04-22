@@ -19,7 +19,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.persistence.{VotePositionRepository, VoteRepository}
 import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
-import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod}
+import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
 
 /**
  * Unit spec for [[VoteChangeDetector]]. All dependencies are stubbed via MockitoScala; no infrastructure required.
@@ -74,7 +74,7 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       sessionNumber = Some(1),
       billId = Some(100L),
       question = Some("On Passage"),
-      voteType = Some("Passage"),
+      voteType = Some(VoteType.Passage),
       voteMethod = Some(VoteMethod.RecordedVote),
       result = Some("Passed"),
       voteDate = Some(LocalDate.parse("2024-05-30")),
@@ -93,12 +93,14 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     voteId: Long = 99L,
   ): VotePositionDO =
     VotePositionDO(
+      id = 0L,
       voteId = voteId,
-      memberId = memberId,
+      memberId = Some(memberId),
       position = Some(cast),
       partyAtVote = Some(Party.Democrat),
       stateAtVote = Some(UsState.NewYork),
       createdAt = None,
+      lisMemberId = None,
     )
 
   /**

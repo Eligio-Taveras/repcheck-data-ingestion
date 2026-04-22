@@ -1,4 +1,4 @@
-package repcheck.members.lismapping.repository
+package repcheck.members.common.persistence
 
 import java.time.Instant
 
@@ -11,6 +11,12 @@ import org.scalatest.matchers.should.Matchers
 import repcheck.members.common.testing.{DockerRequired, TransactorFixture}
 import repcheck.shared.models.congress.dos.member.LisMemberDO
 
+/**
+ * Integration tests for [[DoobieLisMemberRepository]] running against a real AlloyDB Omni container via
+ * [[TransactorFixture]]. Exercises the upsert contract, the natural-key-stable-across-upserts invariant, and the
+ * last-verified refresh semantics relied on by both the votes pipeline (which upserts on every roll call) and the
+ * lis-mapping-refresher (which upserts once per senator-lookup XML run).
+ */
 class DoobieLisMemberRepositorySpec extends AnyFlatSpec with Matchers with TransactorFixture {
 
   private lazy val repo = new DoobieLisMemberRepository
@@ -64,6 +70,25 @@ class DoobieLisMemberRepositorySpec extends AnyFlatSpec with Matchers with Trans
         val _ = row.party shouldBe Some("R")
         val _ = row.state shouldBe Some("CA")
         row.lastVerified shouldBe Some(Instant.parse("2025-01-10T00:00:00Z"))
+      case None => sys.error("Expected LIS member row after upsert")
+    }
+  }
+
+  it should "advance last_verified on every upsert without clobbering the other enrichment fields" taggedAs DockerRequired in {
+    val first = makeMember("S-VER-1").copy(lastVerified = Some(Instant.parse("2024-01-01T00:00:00Z")))
+    val later = first.copy(
+      firstName = Some("UpdatedFirst"),
+      lastVerified = Some(Instant.parse("2025-06-01T00:00:00Z")),
+    )
+
+    val _     = repo.upsertByNaturalKey(first).transact(xa).unsafeRunSync()
+    val _     = repo.upsertByNaturalKey(later).transact(xa).unsafeRunSync()
+    val found = repo.findByNaturalKey("S-VER-1").transact(xa).unsafeRunSync()
+
+    found match {
+      case Some(row) =>
+        val _ = row.lastVerified shouldBe Some(Instant.parse("2025-06-01T00:00:00Z"))
+        row.firstName shouldBe Some("UpdatedFirst")
       case None => sys.error("Expected LIS member row after upsert")
     }
   }
@@ -130,6 +155,34 @@ class DoobieLisMemberRepositorySpec extends AnyFlatSpec with Matchers with Trans
         row.naturalKey shouldBe "S433"
       case None => sys.error("Expected LIS member row after upsert")
     }
+  }
+
+  "findByNaturalKeys" should "return a natural_key -> id map for every matched row" taggedAs DockerRequired in {
+    val idA = repo.upsertByNaturalKey(makeMember("S-BATCH-A")).transact(xa).unsafeRunSync()
+    val idB = repo.upsertByNaturalKey(makeMember("S-BATCH-B")).transact(xa).unsafeRunSync()
+    val idC = repo.upsertByNaturalKey(makeMember("S-BATCH-C")).transact(xa).unsafeRunSync()
+
+    val resolved =
+      repo.findByNaturalKeys(List("S-BATCH-A", "S-BATCH-B", "S-BATCH-C")).transact(xa).unsafeRunSync()
+
+    val _ = resolved shouldBe Map("S-BATCH-A" -> idA, "S-BATCH-B" -> idB, "S-BATCH-C" -> idC)
+    ()
+  }
+
+  it should "omit natural keys that have no row" taggedAs DockerRequired in {
+    val idA = repo.upsertByNaturalKey(makeMember("S-PART-A")).transact(xa).unsafeRunSync()
+
+    val resolved =
+      repo.findByNaturalKeys(List("S-PART-A", "S-MISSING-ONE", "S-MISSING-TWO")).transact(xa).unsafeRunSync()
+
+    val _ = resolved.keySet shouldBe Set("S-PART-A")
+    resolved("S-PART-A") shouldBe idA
+  }
+
+  it should "return empty map for an input list with only unknown natural keys" taggedAs DockerRequired in {
+    val resolved =
+      repo.findByNaturalKeys(List("S-NONE-1", "S-NONE-2")).transact(xa).unsafeRunSync()
+    resolved shouldBe empty
   }
 
 }

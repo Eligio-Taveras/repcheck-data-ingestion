@@ -18,7 +18,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.persistence.{VotePositionRepository, VoteRepository}
 import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
-import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod}
+import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
 
 /**
  * ScalaCheck property tests for [[VoteChangeDetector]] and its underlying `Differ[List[VotePositionDO]]` from
@@ -67,12 +67,14 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
           for {
             cast <- voteCastGen
           } yield VotePositionDO(
+            id = 0L,
             voteId = voteId,
-            memberId = id,
+            memberId = Some(id),
             position = Some(cast),
             partyAtVote = Some(Party.Democrat),
             stateAtVote = Some(UsState.NewYork),
             createdAt = None,
+            lisMemberId = None,
           )
         )
       )
@@ -95,7 +97,7 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
       sessionNumber = Some(1),
       billId = Some(100L),
       question = Some("On Passage"),
-      voteType = Some("Passage"),
+      voteType = Some(VoteType.Passage),
       voteMethod = Some(VoteMethod.RecordedVote),
       result = Some("Passed"),
       voteDate = Some(LocalDate.parse("2024-05-30")),
@@ -173,7 +175,7 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
   // ------------------------------------------------------------------
   // Property: diff.isOk iff the two position sets are identical by (memberId -> VotePositionDO) equality
   // ------------------------------------------------------------------
-  it should "produce diff.isOk == (incomingSet == storedSet) keyed by memberId" in {
+  it should "produce diff.isOk == (incomingSet == storedSet) keyed by identity tuple" in {
     val stored   = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val incoming = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
 
@@ -181,8 +183,8 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
       val detector = makeDetector(Some(stored), storedPositions)
       val report   = detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
-      val storedMap    = storedPositions.map(p => p.memberId -> p).toMap
-      val incomingMap  = incomingPositions.map(p => p.memberId -> p).toMap
+      val storedMap    = storedPositions.map(p => (p.memberId, p.lisMemberId) -> p).toMap
+      val incomingMap  = incomingPositions.map(p => (p.memberId, p.lisMemberId) -> p).toMap
       val expectedIsOk = storedMap == incomingMap
 
       report match {
@@ -245,7 +247,7 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
   // ------------------------------------------------------------------
   // Property: the underlying `Differ[List[VotePositionDO]]` itself is pair-matched by memberId
   // ------------------------------------------------------------------
-  "VotePositionDiffer.votePositionsDiffer" should "match elements by memberId regardless of order" in {
+  "VotePositionDiffer.votePositionsDiffer" should "match elements by identity tuple regardless of order" in {
     val differ: Differ[List[VotePositionDO]] = VotePositionDiffer.votePositionsDiffer
 
     forAll { (positions: List[VotePositionDO]) =>
@@ -255,7 +257,7 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
     }
   }
 
-  it should "produce isOk=false when at least one memberId's cast differs" in {
+  it should "produce isOk=false when at least one member's cast differs" in {
     val differ: Differ[List[VotePositionDO]] = VotePositionDiffer.votePositionsDiffer
 
     forAll { (positions: List[VotePositionDO]) =>
@@ -272,6 +274,47 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
         result shouldBe a[DiffResult.ListResult]
       }
     }
+  }
+
+  // ------------------------------------------------------------------
+  // identityKey — exercise every branch (House, Senate, XOR violation)
+  // ------------------------------------------------------------------
+  private def pos(memberId: Option[Long], lisMemberId: Option[Long]): VotePositionDO =
+    VotePositionDO(
+      id = 0L,
+      voteId = 42L,
+      memberId = memberId,
+      position = Some(VoteCast.Yea),
+      partyAtVote = Some(Party.Democrat),
+      stateAtVote = Some(UsState.NewYork),
+      createdAt = None,
+      lisMemberId = lisMemberId,
+    )
+
+  "VotePositionDiffer.identityKey" should "tag a House row as (Chamber.House, memberId)" in {
+    VotePositionDiffer.identityKey(pos(memberId = Some(7L), lisMemberId = None)) shouldBe (
+      (Chamber.House, 7L)
+    )
+  }
+
+  it should "tag a Senate row as (Chamber.Senate, lisMemberId)" in {
+    VotePositionDiffer.identityKey(pos(memberId = None, lisMemberId = Some(99L))) shouldBe (
+      (Chamber.Senate, 99L)
+    )
+  }
+
+  it should "fail loudly when both identities are None (XOR violation — should never happen)" in {
+    val ex = intercept[RuntimeException] {
+      val _ = VotePositionDiffer.identityKey(pos(memberId = None, lisMemberId = None))
+    }
+    ex.getMessage should include("XOR identity invariant")
+  }
+
+  it should "fail loudly when both identities are Some (XOR violation — should never happen)" in {
+    val ex = intercept[RuntimeException] {
+      val _ = VotePositionDiffer.identityKey(pos(memberId = Some(1L), lisMemberId = Some(2L)))
+    }
+    ex.getMessage should include("XOR identity invariant")
   }
 
 }

@@ -1,0 +1,113 @@
+package repcheck.ingestion.votes.repo
+
+import cats.syntax.all._
+
+import doobie._
+import doobie.free.connection
+import doobie.implicits._
+
+import repcheck.ingestion.votes.errors.VoteArchiveNotFound
+import repcheck.pipeline.models.constants.Tables
+
+/**
+ * Doobie implementation of [[VoteHistoryArchiver]]. Performs three steps inside a single [[ConnectionIO]]:
+ *
+ *   1. Look up the live `votes` row by primary key. If the vote does not exist, raise [[VoteArchiveNotFound]] — callers
+ *      must only archive rows that are about to be overwritten, and a missing row indicates a precondition violation
+ *      upstream (a "New" vote has nothing to archive; only the "Updated" branch should invoke the archiver).
+ *   1. INSERT a row into `vote_history` copying every business column from the live `votes` row (not the primary key
+ *      `id` — `vote_history.id` is a separate BIGSERIAL). `RETURNING id` captures the new history id.
+ *   1. INSERT every `vote_positions` row into `vote_history_positions`, tagging each with the history id from step 2.
+ *
+ * Both INSERT-FROM-SELECT statements list columns explicitly in the order matching
+ * [[repcheck.shared.models.congress.dos.vote.VoteHistoryDO]] and
+ * [[repcheck.shared.models.congress.dos.vote.VoteHistoryPositionDO]] constructors. We deliberately do NOT use `SELECT
+ * *` because physical-table column order does not match the case-class field order (the `id` BIGSERIAL was added via
+ * ALTER TABLE by migration 011 and sits at the end of the physical row).
+ */
+class DoobieVoteHistoryArchiver extends VoteHistoryArchiver {
+
+  override def archiveVote(voteId: Long): ConnectionIO[Long] = {
+    val votesTable            = Fragment.const(Tables.Votes)
+    val historyTable          = Fragment.const(Tables.VoteHistory)
+    val positionsTable        = Fragment.const(Tables.VotePositions)
+    val historyPositionsTable = Fragment.const(Tables.VoteHistoryPositions)
+
+    val existsQuery =
+      (fr"SELECT id FROM" ++ votesTable ++ fr"WHERE id = $voteId")
+        .query[Long]
+        .option
+
+    existsQuery.flatMap {
+      case None =>
+        connection.raiseError[Long](VoteArchiveNotFound(voteId))
+      case Some(_) =>
+        insertVoteHistory(historyTable, votesTable, voteId).flatTap(
+          archivePositions(historyPositionsTable, positionsTable, voteId)
+        )
+    }
+  }
+
+  private[repo] def archivePositions(
+    historyPositionsTable: Fragment,
+    positionsTable: Fragment,
+    voteId: Long,
+  )(historyId: Long): ConnectionIO[Unit] =
+    insertHistoryPositions(historyId, historyPositionsTable, positionsTable, voteId).void
+
+  /**
+   * Copies the live `votes` row into `vote_history`. The SELECT list order MUST match the INSERT list order — Doobie is
+   * not involved at this layer because we're doing an INSERT-SELECT, but the SQL planner would silently map columns by
+   * position regardless of naming.
+   */
+  private[repo] def insertVoteHistory(
+    historyTable: Fragment,
+    votesTable: Fragment,
+    voteId: Long,
+  ): ConnectionIO[Long] =
+    sql"""
+      INSERT INTO $historyTable (
+        vote_id, congress, chamber, roll_number, session_number, bill_id,
+        question, vote_type, vote_method, result, vote_date, legislation_number,
+        legislation_type, legislation_url, source_data_url, update_date
+      )
+      SELECT
+        id, congress, chamber, roll_number, session_number, bill_id,
+        question, vote_type, vote_method, result, vote_date, legislation_number,
+        legislation_type, legislation_url, source_data_url, update_date
+      FROM $votesTable
+      WHERE id = $voteId
+      RETURNING id
+    """.query[Long].unique
+
+  /**
+   * Copies every `vote_positions` row for `voteId` into `vote_history_positions`, tagging each with the supplied
+   * `historyId`. Returns the number of inserted rows so callers can log it if useful.
+   *
+   * ==Senate arm note==
+   *
+   * Migration 023 split `vote_positions` into a dual-identity XOR: House rows populate `member_id`, Senate rows
+   * populate `lis_member_id`. The history schema does NOT carry `lis_member_id` — `vote_history_positions` still has
+   * only `member_id`. We preserve this deliberately: for Senate rows, `vp.member_id` is NULL and the archived history
+   * row records `member_id = NULL`. The UNIQUE constraint on `(history_id, member_id)` tolerates this (PostgreSQL
+   * treats NULLs as distinct under UNIQUE). Scoring consumers that need the Senate identity should go through the live
+   * `vote_positions_resolved` VIEW rather than the archive — historical Senate identity is a known gap that a later
+   * migration can address if the product requirement emerges.
+   */
+  private[repo] def insertHistoryPositions(
+    historyId: Long,
+    historyPositionsTable: Fragment,
+    positionsTable: Fragment,
+    voteId: Long,
+  ): ConnectionIO[Int] =
+    sql"""
+      INSERT INTO $historyPositionsTable (
+        history_id, member_id, position, party_at_vote, state_at_vote
+      )
+      SELECT
+        $historyId, vp.member_id, vp.position, vp.party_at_vote, vp.state_at_vote
+      FROM $positionsTable vp
+      WHERE vp.vote_id = $voteId
+    """.update.run
+
+}
