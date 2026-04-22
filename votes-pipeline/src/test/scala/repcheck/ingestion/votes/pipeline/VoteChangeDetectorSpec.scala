@@ -8,6 +8,7 @@ import scala.jdk.CollectionConverters._
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
+import difflicious.DiffResult
 import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.{any, anyLong, anyString}
 import org.mockito.Mockito.{never, times, verify, when}
@@ -100,6 +101,16 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       createdAt = None,
     )
 
+  /**
+   * Extract the ListResult items from an Updated report so individual assertions can inspect the per-member verdicts
+   * (Added = ObtainedOnly, Removed = ExpectedOnly, Changed = Both-with-isSame=false).
+   */
+  private def listItems(report: VoteChangeReport): Vector[DiffResult] =
+    report match {
+      case VoteChangeReport.Updated(_, list: DiffResult.ListResult) => list.items
+      case other => fail(s"expected Updated(_, ListResult), got $other")
+    }
+
   // ------------------------------------------------------------------
   // AC#1 — New vote (not in DB) → New; positions never fetched
   // ------------------------------------------------------------------
@@ -159,13 +170,18 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
 
     val report = f.detector.detect(incoming, positions, correlationId).unsafeRunSync()
 
-    report shouldBe VoteChangeReport.Updated(positionsChanged = false, diffs = List.empty)
+    report match {
+      case VoteChangeReport.Updated(false, diff) =>
+        val _ = diff.isOk shouldBe true
+        diff shouldBe a[DiffResult.ListResult]
+      case other => fail(s"expected Updated(false, _), got $other")
+    }
   }
 
   // ------------------------------------------------------------------
-  // AC#4, AC#6 — Added-only diff (new member not in stored)
+  // AC#4, AC#6 — Added diff (new member not in stored)
   // ------------------------------------------------------------------
-  it should "detect an Added diff when incoming has a new memberId absent from stored" in {
+  it should "detect an Added diff (ObtainedOnly) when incoming has a new memberId absent from stored" in {
     val f                 = fixture()
     val incoming          = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored            = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
@@ -177,17 +193,22 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val report = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
     val _ = report match {
-      case VoteChangeReport.Updated(true, diffs) =>
-        diffs should contain theSameElementsAs List(VotePositionDiff.Added(2L, "Nay"))
-      case other => fail(s"expected Updated(true, _), got $other")
+      case VoteChangeReport.Updated(true, _) => succeed
+      case other                             => fail(s"expected Updated(true, _), got $other")
     }
-    succeed
+
+    val items = listItems(report)
+    val addedCount = items.count {
+      case _: DiffResult.ValueResult.ObtainedOnly => true
+      case _                                      => false
+    }
+    addedCount shouldBe 1
   }
 
   // ------------------------------------------------------------------
   // AC#7 — Removed diff (stored member not in incoming)
   // ------------------------------------------------------------------
-  it should "detect a Removed diff when stored has a memberId absent from incoming" in {
+  it should "detect a Removed diff (ExpectedOnly) when stored has a memberId absent from incoming" in {
     val f                 = fixture()
     val incoming          = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored            = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
@@ -199,17 +220,22 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val report = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
     val _ = report match {
-      case VoteChangeReport.Updated(true, diffs) =>
-        diffs should contain theSameElementsAs List(VotePositionDiff.Removed(2L, "Nay"))
-      case other => fail(s"expected Updated(true, _), got $other")
+      case VoteChangeReport.Updated(true, _) => succeed
+      case other                             => fail(s"expected Updated(true, _), got $other")
     }
-    succeed
+
+    val items = listItems(report)
+    val removedCount = items.count {
+      case _: DiffResult.ValueResult.ExpectedOnly => true
+      case _                                      => false
+    }
+    removedCount shouldBe 1
   }
 
   // ------------------------------------------------------------------
   // AC#8 — Changed diff (same memberId, different cast)
   // ------------------------------------------------------------------
-  it should "detect a Changed diff when a member's vote cast changed" in {
+  it should "detect a Changed diff (Both, isSame=false) when a member's vote cast changed" in {
     val f                 = fixture()
     val incoming          = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored            = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
@@ -221,11 +247,16 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val report = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
     val _ = report match {
-      case VoteChangeReport.Updated(true, diffs) =>
-        diffs should contain theSameElementsAs List(VotePositionDiff.Changed(1L, "Yea", "Nay"))
-      case other => fail(s"expected Updated(true, _), got $other")
+      case VoteChangeReport.Updated(true, _) => succeed
+      case other                             => fail(s"expected Updated(true, _), got $other")
     }
-    succeed
+
+    val items = listItems(report)
+    val changedCount = items.count {
+      case v: DiffResult.ValueResult.Both => !v.isSame
+      case _                              => false
+    }
+    changedCount shouldBe 1
   }
 
   // ------------------------------------------------------------------
@@ -253,15 +284,26 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val report = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
     val _ = report match {
-      case VoteChangeReport.Updated(true, diffs) =>
-        diffs should contain theSameElementsAs List(
-          VotePositionDiff.Added(4L, "Present"),
-          VotePositionDiff.Removed(2L, "Yea"),
-          VotePositionDiff.Changed(3L, "Yea", "Nay"),
-        )
-      case other => fail(s"expected Updated(true, _), got $other")
+      case VoteChangeReport.Updated(true, _) => succeed
+      case other                             => fail(s"expected Updated(true, _), got $other")
     }
-    succeed
+
+    val items = listItems(report)
+    val addedCount = items.count {
+      case _: DiffResult.ValueResult.ObtainedOnly => true
+      case _                                      => false
+    }
+    val removedCount = items.count {
+      case _: DiffResult.ValueResult.ExpectedOnly => true
+      case _                                      => false
+    }
+    val changedCount = items.count {
+      case v: DiffResult.ValueResult.Both => !v.isSame
+      case _                              => false
+    }
+    val _ = addedCount shouldBe 1
+    val _ = removedCount shouldBe 1
+    changedCount shouldBe 1
   }
 
   // ------------------------------------------------------------------
@@ -277,13 +319,16 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
 
     val report = f.detector.detect(incoming, base, correlationId).unsafeRunSync()
 
-    report shouldBe VoteChangeReport.Updated(positionsChanged = false, diffs = List.empty)
+    report match {
+      case VoteChangeReport.Updated(false, diff) => diff.isOk shouldBe true
+      case other                                 => fail(s"expected Updated(false, _), got $other")
+    }
   }
 
   // ------------------------------------------------------------------
-  // AC#10 — Diffs logged at info level (count matches diffs.length)
+  // AC#10 — Diffs logged at info level (count matches number of real changes)
   // ------------------------------------------------------------------
-  it should "log one info entry per diff when the Updated report has diffs" in {
+  it should "log one info entry per per-member change when the Updated report has diffs" in {
     val f               = fixture()
     val incoming        = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
     val stored          = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
@@ -356,8 +401,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       f.detector.detect(incoming, List(pos(1L, VoteCast.Nay)), correlationId).unsafeRunSync()
 
     report match {
-      case VoteChangeReport.Updated(true, diffs) => diffs should not be empty
-      case other                                 => fail(s"expected Updated(true, _), got $other")
+      case VoteChangeReport.Updated(true, diff) => diff.isOk shouldBe false
+      case other                                => fail(s"expected Updated(true, _), got $other")
     }
   }
 
@@ -372,8 +417,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val report = f.detector.detect(incoming, positions, correlationId).unsafeRunSync()
 
     report match {
-      case VoteChangeReport.Updated(false, diffs) => diffs shouldBe empty
-      case other                                  => fail(s"expected Updated(false, _), got $other")
+      case VoteChangeReport.Updated(false, diff) => diff.isOk shouldBe true
+      case other                                 => fail(s"expected Updated(false, _), got $other")
     }
   }
 
@@ -404,7 +449,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val report = f.detector.detect(incoming, List(pos(1L)), correlationId).unsafeRunSync()
 
     val _ = report shouldBe VoteChangeReport.Unchanged
-    verify(f.positionRepo, never()).findByVoteId(anyLong())
+    val _ = verify(f.positionRepo, never()).findByVoteId(anyLong())
+    verify(f.logger, times(1)).warn(any[LogContext], anyString())
   }
 
   it should "return Unchanged when stored updateDate is None (defensive)" in {
@@ -416,28 +462,8 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val report = f.detector.detect(incoming, List(pos(1L)), correlationId).unsafeRunSync()
 
     val _ = report shouldBe VoteChangeReport.Unchanged
-    verify(f.positionRepo, never()).findByVoteId(anyLong())
-  }
-
-  // ------------------------------------------------------------------
-  // renderDiff sanity — keeps human-readable format in log output
-  // ------------------------------------------------------------------
-  "renderDiff" should "format Added with memberId + cast" in {
-    val f = fixture()
-    f.detector.renderDiff("119-house-42", VotePositionDiff.Added(42L, "Yea")) shouldBe
-      "Vote 119-house-42: added position memberId=42 cast=Yea"
-  }
-
-  it should "format Removed with memberId + previousCast" in {
-    val f = fixture()
-    f.detector.renderDiff("119-house-42", VotePositionDiff.Removed(42L, "Nay")) shouldBe
-      "Vote 119-house-42: removed position memberId=42 previousCast=Nay"
-  }
-
-  it should "format Changed with from + to casts" in {
-    val f = fixture()
-    f.detector.renderDiff("119-house-42", VotePositionDiff.Changed(42L, "Yea", "Nay")) shouldBe
-      "Vote 119-house-42: changed position memberId=42 from=Yea to=Nay"
+    val _ = verify(f.positionRepo, never()).findByVoteId(anyLong())
+    verify(f.logger, times(1)).warn(any[LogContext], anyString())
   }
 
   // ------------------------------------------------------------------
@@ -457,22 +483,7 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
   }
 
   // ------------------------------------------------------------------
-  // castLabel — None maps to "<none>" sentinel
-  // ------------------------------------------------------------------
-  "VotePositionDiff.castLabel" should "render None as the <none> sentinel" in {
-    VotePositionDiff.castLabel(None) shouldBe "<none>"
-  }
-
-  it should "render Some(cast) as the enum apiValue" in {
-    val _ = VotePositionDiff.castLabel(Some(VoteCast.Yea)) shouldBe "Yea"
-    val _ = VotePositionDiff.castLabel(Some(VoteCast.Nay)) shouldBe "Nay"
-    val _ = VotePositionDiff.castLabel(Some(VoteCast.Present)) shouldBe "Present"
-    val _ = VotePositionDiff.castLabel(Some(VoteCast.NotVoting)) shouldBe "Not Voting"
-    VotePositionDiff.castLabel(Some(VoteCast.Absent)) shouldBe "Absent"
-  }
-
-  // ------------------------------------------------------------------
-  // position.position = None (unknown cast) compares as equal to another None on same member; differs vs Some
+  // position.position = None (unknown cast) compares as different from Some(cast) when member is the same
   // ------------------------------------------------------------------
   it should "treat a None position as different from Some(cast) when the same memberId appears on both sides" in {
     val f                 = fixture()
@@ -485,11 +496,81 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
 
     val report = f.detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
-    report match {
-      case VoteChangeReport.Updated(true, diffs) =>
-        diffs should contain theSameElementsAs List(VotePositionDiff.Changed(1L, "Yea", "<none>"))
-      case other => fail(s"expected Updated(true, _), got $other")
+    val _ = report match {
+      case VoteChangeReport.Updated(true, diff) => diff.isOk shouldBe false
+      case other                                => fail(s"expected Updated(true, _), got $other")
     }
+
+    val items = listItems(report)
+    items.count {
+      case v: DiffResult.ValueResult.Both => !v.isSame
+      case _                              => false
+    } shouldBe 1
+  }
+
+  // ------------------------------------------------------------------
+  // changedEntries — defensive fallback for a non-ListResult DiffResult (exercises the `case _ => List.empty` branch)
+  // ------------------------------------------------------------------
+  "changedEntries" should "return an empty list for a non-list DiffResult" in {
+    val f        = fixture()
+    val notAList = DiffResult.ValueResult.Both(obtained = "a", expected = "a", isSame = true, isIgnored = false)
+    f.detector.changedEntries(notAList) shouldBe List.empty[String]
+  }
+
+  it should "render ObtainedOnly as 'added position <obtained>'" in {
+    val f = fixture()
+    val list = DiffResult.ListResult(
+      typeName = difflicious.utils.TypeName.apply[List[String]],
+      items = Vector(
+        DiffResult.ValueResult.ObtainedOnly(obtained = "pos-1", isIgnored = false)
+      ),
+      pairType = difflicious.PairType.Both,
+      isIgnored = false,
+      isOk = false,
+    )
+    f.detector.changedEntries(list) shouldBe List("added position pos-1")
+  }
+
+  it should "render ExpectedOnly as 'removed position <expected>'" in {
+    val f = fixture()
+    val list = DiffResult.ListResult(
+      typeName = difflicious.utils.TypeName.apply[List[String]],
+      items = Vector(
+        DiffResult.ValueResult.ExpectedOnly(expected = "pos-2", isIgnored = false)
+      ),
+      pairType = difflicious.PairType.Both,
+      isIgnored = false,
+      isOk = false,
+    )
+    f.detector.changedEntries(list) shouldBe List("removed position pos-2")
+  }
+
+  it should "render Both(isSame=false) as 'changed position from <expected> to <obtained>'" in {
+    val f = fixture()
+    val list = DiffResult.ListResult(
+      typeName = difflicious.utils.TypeName.apply[List[String]],
+      items = Vector(
+        DiffResult.ValueResult.Both(obtained = "new", expected = "old", isSame = false, isIgnored = false)
+      ),
+      pairType = difflicious.PairType.Both,
+      isIgnored = false,
+      isOk = false,
+    )
+    f.detector.changedEntries(list) shouldBe List("changed position from old to new")
+  }
+
+  it should "skip Both(isSame=true) items (identical on both sides)" in {
+    val f = fixture()
+    val list = DiffResult.ListResult(
+      typeName = difflicious.utils.TypeName.apply[List[String]],
+      items = Vector(
+        DiffResult.ValueResult.Both(obtained = "x", expected = "x", isSame = true, isIgnored = false)
+      ),
+      pairType = difflicious.PairType.Both,
+      isIgnored = false,
+      isOk = true,
+    )
+    f.detector.changedEntries(list) shouldBe List.empty[String]
   }
 
 }

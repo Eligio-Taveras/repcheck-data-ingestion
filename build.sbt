@@ -241,7 +241,7 @@ lazy val votesPipeline = (project in file("votes-pipeline"))
   .settings(
     name := "votes-pipeline",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ doobie ++ xml ++ pubSub ++ fs2 ++ logging ++ testDeps ++ propertyTestDeps,
+      ++ catsEffect ++ doobie ++ diff ++ xml ++ pubSub ++ fs2 ++ logging ++ testDeps ++ propertyTestDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     coverageExcludedFiles := ".*VotesPipeline;.*VotesPipelineApp",
     // Shared DockerPostgres singleton + per-suite table cleanup make intra-subproject parallel execution

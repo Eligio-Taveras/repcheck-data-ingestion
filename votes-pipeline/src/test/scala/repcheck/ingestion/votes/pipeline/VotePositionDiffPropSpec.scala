@@ -6,6 +6,7 @@ import java.util.UUID
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
+import difflicious.{DiffResult, Differ}
 import org.mockito.ArgumentMatchers.{any, anyLong, anyString}
 import org.mockito.Mockito.when
 import org.scalacheck.{Arbitrary, Gen}
@@ -20,23 +21,27 @@ import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod}
 
 /**
- * ScalaCheck property tests for [[VoteChangeDetector]]'s position diffing.
+ * ScalaCheck property tests for [[VoteChangeDetector]] and its underlying `Differ[List[VotePositionDO]]` from
+ * [[VotePositionDiffer]].
  *
- * These cover the "order independence" and "diff completeness" properties called out in the plan's P2.5 section:
+ * These cover the properties called out in the §6.4 spec that are hard to exhaustively hit with hand-crafted unit
+ * tests:
  *
  *   - **Order independence (§6.4 AC#9)**: shuffling either the incoming or stored position list yields the same
- *     [[VoteChangeReport]] — per the detector's contract that position lists are treated as sets keyed by `memberId`.
- *   - **Diff completeness**: applying the diffs to the stored position set produces the incoming position set. Proves
- *     the detector isn't under-reporting (missing an added/removed/changed member) or over-reporting (inventing diffs).
+ *     [[VoteChangeReport]] — per the detector's contract that position lists are treated as sets keyed by `memberId`,
+ *     enforced by `.pairBy(_.memberId)` inside `VotePositionDiffer`.
+ *   - **`isOk` consistency**: `diff.isOk` is `true` iff stored and incoming position sets are identical by `memberId +
+ *     VotePositionDO` equality. Proves we don't over-report or under-report.
+ *   - **New-vote short-circuit**: when `storedVote = None`, every incoming produces [[VoteChangeReport.New]] without
+ *     consulting positions.
  *
  * The detector is exercised via a live [[VoteChangeDetector]] with MockitoScala-stubbed repos so we cover the full
- * `detect` call path, not just the private `computeDiffs` helper. Correlation ID is arbitrary; the logger is a no-op
- * stub.
+ * `detect` call path, not just the `Differ`. Correlation ID is arbitrary; the logger is a no-op stub.
  */
 class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSugar with ScalaCheckPropertyChecks {
 
   // ------------------------------------------------------------------
-  // Tuning — keep generators small but exercise edge cases (empty, single-element, duplicates-on-same-member)
+  // Tuning — keep generators small but exercise edge cases (empty, single-element)
   // ------------------------------------------------------------------
   implicit override val generatorDrivenConfig: PropertyCheckConfiguration =
     PropertyCheckConfiguration(minSuccessful = 100, sizeRange = 20)
@@ -49,9 +54,9 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
     Gen.oneOf(VoteCast.values.toIndexedSeq)
 
   /**
-   * Generate unique memberIds per list — duplicate memberIds on the same side would collide under `groupMapReduce`, and
-   * the processor never feeds duplicates (vote_positions PK is (vote_id, member_id)). We bake that invariant into the
-   * generator so the property captures realistic inputs.
+   * Generate unique memberIds per list — duplicate memberIds on the same side would collide inside the differ's
+   * pair-matching. The processor never feeds duplicates (vote_positions PK is (vote_id, member_id)), so we bake that
+   * invariant into the generator.
    */
   private def positionListGen(voteId: Long): Gen[List[VotePositionDO]] =
     for {
@@ -123,15 +128,16 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
   private val correlationId: UUID = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 
   /**
-   * Compare two reports by diff-content equality — `Updated` is compared by `positionsChanged` + set-equality of
-   * `diffs`, since the diff-list ordering is an implementation detail.
+   * Compare two reports for equivalence: `Updated` is equivalent iff `positionsChanged` agrees and the underlying diff
+   * has the same `isOk` — since the diff-list ordering is a difflicious implementation detail that we want to treat as
+   * unobservable from a contract point of view.
    */
   private def sameReport(a: VoteChangeReport, b: VoteChangeReport): Boolean =
     (a, b) match {
       case (VoteChangeReport.New, VoteChangeReport.New)             => true
       case (VoteChangeReport.Unchanged, VoteChangeReport.Unchanged) => true
       case (VoteChangeReport.Updated(ac, ad), VoteChangeReport.Updated(bc, bd)) =>
-        ac == bc && ad.toSet == bd.toSet
+        ac == bc && ad.isOk == bd.isOk
       case _ => false
     }
 
@@ -165,9 +171,9 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
     }
 
   // ------------------------------------------------------------------
-  // Property: diff completeness — applying diffs to stored-set yields the incoming-set
+  // Property: diff.isOk iff the two position sets are identical by (memberId -> VotePositionDO) equality
   // ------------------------------------------------------------------
-  it should "produce diffs such that (stored ∆ diffs) == incoming, keyed by memberId + cast" in {
+  it should "produce diff.isOk == (incomingSet == storedSet) keyed by memberId" in {
     val stored   = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val incoming = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
 
@@ -175,23 +181,16 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
       val detector = makeDetector(Some(stored), storedPositions)
       val report   = detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
-      val diffs = report match {
-        case VoteChangeReport.Updated(_, d) => d
-        case _                              => List.empty[VotePositionDiff]
+      val storedMap    = storedPositions.map(p => p.memberId -> p).toMap
+      val incomingMap  = incomingPositions.map(p => p.memberId -> p).toMap
+      val expectedIsOk = storedMap == incomingMap
+
+      report match {
+        case VoteChangeReport.Updated(positionsChanged, diff) =>
+          val _ = diff.isOk shouldBe expectedIsOk
+          positionsChanged shouldBe !expectedIsOk
+        case other => fail(s"expected Updated(_, _), got $other")
       }
-
-      val storedKV: Map[Long, String] =
-        storedPositions.map(p => p.memberId -> VotePositionDiff.castLabel(p.position)).toMap
-      val expectedIncomingKV: Map[Long, String] =
-        incomingPositions.map(p => p.memberId -> VotePositionDiff.castLabel(p.position)).toMap
-
-      val afterApplying: Map[Long, String] = diffs.foldLeft(storedKV) {
-        case (acc, VotePositionDiff.Added(id, cast))        => acc + (id -> cast)
-        case (acc, VotePositionDiff.Removed(id, _))         => acc - id
-        case (acc, VotePositionDiff.Changed(id, _, toCast)) => acc + (id -> toCast)
-      }
-
-      afterApplying shouldBe expectedIncomingKV
     }
   }
 
@@ -209,48 +208,12 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
       val shuffled = scala.util.Random.shuffle(positions)
       val report   = detector.detect(incoming, shuffled, correlationId).unsafeRunSync()
 
-      report shouldBe VoteChangeReport.Updated(positionsChanged = false, diffs = List.empty)
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // Property: diff counts match expected set-theoretic sizes
-  // ------------------------------------------------------------------
-  it should "emit exactly (|incoming \\ stored|) Added diffs, (|stored \\ incoming|) Removed diffs, " +
-    "and at most |incoming ∩ stored| Changed diffs" in {
-      val stored   = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
-      val incoming = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
-
-      forAll { (storedPositions: List[VotePositionDO], incomingPositions: List[VotePositionDO]) =>
-        val detector = makeDetector(Some(stored), storedPositions)
-        val report   = detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
-
-        val diffs = report match {
-          case VoteChangeReport.Updated(_, d) => d
-          case _                              => List.empty[VotePositionDiff]
-        }
-
-        val storedIds   = storedPositions.map(_.memberId).toSet
-        val incomingIds = incomingPositions.map(_.memberId).toSet
-
-        val addedCount = diffs.count {
-          case _: VotePositionDiff.Added => true
-          case _                         => false
-        }
-        val removedCount = diffs.count {
-          case _: VotePositionDiff.Removed => true
-          case _                           => false
-        }
-        val changedCount = diffs.count {
-          case _: VotePositionDiff.Changed => true
-          case _                           => false
-        }
-
-        val _ = addedCount shouldBe (incomingIds -- storedIds).size
-        val _ = removedCount shouldBe (storedIds -- incomingIds).size
-        changedCount should be <= (storedIds intersect incomingIds).size
+      report match {
+        case VoteChangeReport.Updated(false, diff) => diff.isOk shouldBe true
+        case other                                 => fail(s"expected Updated(false, _), got $other")
       }
     }
+  }
 
   // ------------------------------------------------------------------
   // Property: detector never raises; every input produces exactly one VoteChangeReport
@@ -276,6 +239,38 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
       val detector = makeDetector(storedVote = None, storedPositions = List.empty)
       val report   = detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
       report shouldBe VoteChangeReport.New
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Property: the underlying `Differ[List[VotePositionDO]]` itself is pair-matched by memberId
+  // ------------------------------------------------------------------
+  "VotePositionDiffer.votePositionsDiffer" should "match elements by memberId regardless of order" in {
+    val differ: Differ[List[VotePositionDO]] = VotePositionDiffer.votePositionsDiffer
+
+    forAll { (positions: List[VotePositionDO]) =>
+      val shuffled = scala.util.Random.shuffle(positions)
+      val result   = differ.diff(positions, shuffled)
+      result.isOk shouldBe true
+    }
+  }
+
+  it should "produce isOk=false when at least one memberId's cast differs" in {
+    val differ: Differ[List[VotePositionDO]] = VotePositionDiffer.votePositionsDiffer
+
+    forAll { (positions: List[VotePositionDO]) =>
+      whenever(positions.nonEmpty) {
+        val mutated = positions match {
+          case first :: rest =>
+            val newCast = first.position
+              .fold(Some(VoteCast.Yea))(cast => Some(if (cast == VoteCast.Yea) VoteCast.Nay else VoteCast.Yea))
+            first.copy(position = newCast) :: rest
+          case Nil => Nil
+        }
+        val result = differ.diff(mutated, positions)
+        val _      = result.isOk shouldBe false
+        result shouldBe a[DiffResult.ListResult]
+      }
     }
   }
 

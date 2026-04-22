@@ -5,6 +5,7 @@ import java.util.UUID
 import cats.effect.Sync
 import cats.syntax.all._
 
+import difflicious.{DiffResult, Differ}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.persistence.{VotePositionRepository, VoteRepository}
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
@@ -18,23 +19,24 @@ import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
  * Called by `VoteProcessor` (P3.1) once per incoming vote, after DTO→DO conversion and LIS resolution. The result
  * drives the §6.4 decision matrix (archive? upsert? emit event?).
  *
- * ==Key behavior==
+ * ==Shape==
  *
- *   - **New**: stored lookup returns `None` → [[VoteChangeReport.New]]. Positions are NEVER fetched for this branch (a
- *     new vote has none stored yet).
- *   - **Unchanged (date regression)**: incoming `updateDate` is strictly older than stored → warn (the upstream API
- *     should never regress), return [[VoteChangeReport.Unchanged]]. Positions are NEVER fetched (AC#3).
- *   - **Unchanged (same date)**: incoming `updateDate` equals stored → [[VoteChangeReport.Unchanged]]. Positions are
- *     NEVER fetched — a deliberate optimization (AC#2): if the upstream `updateDate` didn't move, the payload is
- *     assumed identical, skipping the DB round-trip.
- *   - **Updated**: incoming `updateDate` strictly newer → fetch stored positions, diff against `resolvedPositions`,
- *     emit [[VoteChangeReport.Updated]] with `positionsChanged = diffs.nonEmpty`.
+ * Mirrors [[repcheck.ingestion.common.changes.ChangeDetector]] as closely as possible given the vote-specific twist:
+ *   - `stored match { None => New; Some(_) => ... }` — same first-level dispatch as `ChangeDetector`.
+ *   - `isStale = storedUpdateDate.forall(s => !incomingUpdateDate.isAfter(s))` — a single boolean collapses the
+ *     regression, equal-date, and missing-updateDate cases into one "treat as unchanged" branch (per user review on PR
+ *     #40: "let's treat something coming in on the same date as unchanged" and "let everything else fall over to the
+ *     default which treats things as unchanged"). A regression is logged at warn; everything else logs at info.
+ *   - When non-stale, delegate to difflicious via [[VotePositionDiffer]] for the actual position diff. The
+ *     `Differ[List[VotePositionDO]]` is keyed by `memberId` (via `.pairBy`), so order is irrelevant and the
+ *     `DiffResult.isOk` boolean directly encodes `positionsChanged = !isOk`.
  *
  * ==Position comparison==
  *
- * Positions are compared by `memberId: Long` only — see [[VotePositionDiff]] for the rationale and the placeholder→real
- * merge semantics. Order-independence is a property: `detect(voteDo, shuffle(positions), id)` returns the same report
- * as `detect(voteDo, positions, id)` for any input. Enforced by `VotePositionDiffPropSpec`.
+ * Positions are compared by `memberId: Long` only — a placeholder→real merge done by `lis-mapping-refresher` shows up
+ * on the next votes-pipeline run as `ObtainedOnly(realId) + ExpectedOnly(placeholderId)`, which is semantically
+ * accurate — the FK really did change. Order-independence is a property: `detect(voteDo, shuffle(positions), id)`
+ * returns the same report as `detect(voteDo, positions, id)` for any input. Enforced by `VotePositionDiffPropSpec`.
  *
  * ==Log context==
  *
@@ -57,13 +59,17 @@ class VoteChangeDetector[F[_]: Sync](
 
   private val StepName: String = "vote-change-detection"
 
+  // Summon once at construction — the given is resolved from VotePositionDiffer's given instances in scope via the
+  // import below; the detector just needs a single typeclass reference for its `diff` call.
+  import VotePositionDiffer.given
+  private val positionsDiffer: Differ[List[VotePositionDO]] = summon[Differ[List[VotePositionDO]]]
+
   /**
    * Decide whether `voteDo` represents a change relative to stored state.
    *
    * See the class docstring for branch behavior. `resolvedPositions` must already have `memberId: Long` populated
-   * (i.e., post-[[repcheck.ingestion.votes.pipeline.VoteChangeDetector]]'s upstream LIS resolution + placeholder
-   * creation). Comparing against un-resolved rows would produce spurious `Removed(placeholder) + Added(real)` diffs on
-   * every run.
+   * (i.e., post-LIS resolution + placeholder creation). Comparing against un-resolved rows would produce spurious
+   * pair-mismatches on every run.
    */
   def detect(
     voteDo: VoteDO,
@@ -93,52 +99,61 @@ class VoteChangeDetector[F[_]: Sync](
       .as(VoteChangeReport.New)
 
   /**
-   * Stored row exists. Dispatch on `updateDate` comparison per §6.4:
-   *   - incoming strictly older → warn + [[VoteChangeReport.Unchanged]] (regression).
-   *   - incoming equals stored → info + [[VoteChangeReport.Unchanged]] (fast-path; no position fetch).
-   *   - incoming strictly newer → proceed to position diff.
-   *
-   * `Option[Instant]` comparison: pipeline contract (P1.1 / P0.1) guarantees both sides carry `Some(updateDate)` by the
-   * time we get here. If either side is `None`, treat as unchanged and log — never overwrite a stored row with a
-   * payload we can't date-stamp.
+   * Stored row exists. Dispatch on a single `isStale` boolean per `ChangeDetector[T]`:
+   *   - stale (equal dates, incoming older, or missing `updateDate` on either side) → [[VoteChangeReport.Unchanged]]. A
+   *     strict regression (`incoming < stored`) is logged at warn because the upstream API should never regress;
+   *     everything else is an info-level no-op. Positions are NEVER fetched on this branch (AC#2 / AC#3 require
+   *     short-circuiting before the DB round-trip).
+   *   - non-stale (`incoming.updateDate.isAfter(stored.updateDate)`) → fetch stored positions, run difflicious, return
+   *     [[VoteChangeReport.Updated]].
    */
   private def compareAgainstStored(
     incoming: VoteDO,
     stored: VoteDO,
     resolvedPositions: List[VotePositionDO],
     logCtx: LogContext,
-  ): F[VoteChangeReport] =
+  ): F[VoteChangeReport] = {
+    val isStale: Boolean = (incoming.updateDate, stored.updateDate) match {
+      case (Some(inc), Some(sto)) => !inc.isAfter(sto)
+      case _                      => true
+    }
+
+    if (isStale) {
+      logStale(incoming, stored, logCtx).as(VoteChangeReport.Unchanged)
+    } else {
+      diffPositions(incoming, stored, resolvedPositions, logCtx)
+    }
+  }
+
+  /**
+   * Emit the appropriate log entry for the "treat as unchanged" branch. Strict regression gets a `warn`; every other
+   * shape (equal dates, missing `updateDate`) gets an `info`.
+   */
+  private def logStale(
+    incoming: VoteDO,
+    stored: VoteDO,
+    logCtx: LogContext,
+  ): F[Unit] =
     (incoming.updateDate, stored.updateDate) match {
-      case (Some(incomingDate), Some(storedDate)) if incomingDate.isBefore(storedDate) =>
-        logger
-          .warn(
-            logCtx,
-            s"Regression detected for ${incoming.naturalKey}: incoming updateDate $incomingDate " +
-              s"is older than stored $storedDate — ignoring, not overwriting",
-          )
-          .as(VoteChangeReport.Unchanged)
-
-      case (Some(incomingDate), Some(storedDate)) if !incomingDate.isAfter(storedDate) =>
-        logger
-          .info(logCtx, s"Vote ${incoming.naturalKey} unchanged (updateDate matches stored)")
-          .as(VoteChangeReport.Unchanged)
-
+      case (Some(inc), Some(sto)) if inc.isBefore(sto) =>
+        logger.warn(
+          logCtx,
+          s"Regression detected for ${incoming.naturalKey}: incoming updateDate $inc " +
+            s"is older than stored $sto — ignoring, not overwriting",
+        )
       case (Some(_), Some(_)) =>
-        diffPositions(incoming, stored, resolvedPositions, logCtx)
-
+        logger.info(logCtx, s"Vote ${incoming.naturalKey} unchanged (updateDate matches stored)")
       case _ =>
-        logger
-          .warn(
-            logCtx,
-            s"Vote ${incoming.naturalKey} has missing updateDate (incoming=${incoming.updateDate}, " +
-              s"stored=${stored.updateDate}) — treating as unchanged",
-          )
-          .as(VoteChangeReport.Unchanged)
+        logger.warn(
+          logCtx,
+          s"Vote ${incoming.naturalKey} has missing updateDate (incoming=${incoming.updateDate}, " +
+            s"stored=${stored.updateDate}) — treating as unchanged",
+        )
     }
 
   /**
-   * Only branch that actually fetches stored positions. Computes the diff, logs each entry at info, and returns
-   * [[VoteChangeReport.Updated]] with `positionsChanged = diffs.nonEmpty`.
+   * Only branch that actually fetches stored positions. Delegates to difflicious for the diff, logs the result, and
+   * derives `positionsChanged = !diff.isOk` for the emitted [[VoteChangeReport.Updated]].
    */
   private def diffPositions(
     incoming: VoteDO,
@@ -148,75 +163,44 @@ class VoteChangeDetector[F[_]: Sync](
   ): F[VoteChangeReport] =
     for {
       storedPositions <- positionRepo.findByVoteId(stored.voteId)
-      diffs = computeDiffs(resolvedPositions, storedPositions)
-      _ <- logDiffs(incoming.naturalKey, diffs, logCtx)
-    } yield VoteChangeReport.Updated(positionsChanged = diffs.nonEmpty, diffs = diffs)
+      diff = positionsDiffer.diff(resolvedPositions, storedPositions)
+      _ <- logDiffs(incoming.naturalKey, diff, logCtx)
+    } yield VoteChangeReport.Updated(positionsChanged = !diff.isOk, diff = diff)
 
   /**
-   * Pure set-diff keyed by `memberId`. Order of the output list mirrors a canonical traversal (added by incoming-order,
-   * removed by stored-order, changed by incoming-order) but downstream code must not rely on that —
-   * `VotePositionDiffPropSpec` only asserts set equivalence.
-   *
-   * Scoped `private[pipeline]` so the property test can exercise it directly without threading a [[VoteChangeDetector]]
-   * instance through the generator. The detector itself is still the canonical entry point; this is an observable seam,
-   * not public API.
-   */
-  private[pipeline] def computeDiffs(
-    incoming: List[VotePositionDO],
-    stored: List[VotePositionDO],
-  ): List[VotePositionDiff] = {
-    val incomingById = incoming.groupMapReduce(_.memberId)(identity)((a, _) => a)
-    val storedById   = stored.groupMapReduce(_.memberId)(identity)((a, _) => a)
-
-    val added = incoming.collect {
-      case p if !storedById.contains(p.memberId) =>
-        VotePositionDiff.Added(p.memberId, VotePositionDiff.castLabel(p.position))
-    }
-
-    val removed = stored.collect {
-      case p if !incomingById.contains(p.memberId) =>
-        VotePositionDiff.Removed(p.memberId, VotePositionDiff.castLabel(p.position))
-    }
-
-    val changed = incoming.flatMap { inc =>
-      storedById.get(inc.memberId).toList.collect {
-        case s if s.position != inc.position =>
-          VotePositionDiff.Changed(
-            memberId = inc.memberId,
-            from = VotePositionDiff.castLabel(s.position),
-            to = VotePositionDiff.castLabel(inc.position),
-          )
-      }
-    }
-
-    added ++ removed ++ changed
-  }
-
-  /**
-   * Emit one info log per diff when any exist — §6.4 AC#10 ("3 diffs → 3 log entries with member IDs and positions").
-   * When the list is empty (metadata-only update), emit a single info so the trail still shows the detector ran and
-   * classified the change.
+   * Emit one info log per per-member change when any exist — §6.4 AC#10 ("3 diffs → 3 log entries with member IDs and
+   * positions"). Walks the difflicious `ListResult.items`, rendering the `ValueResult` pair-type as a human-readable
+   * line. When the list is clean (metadata-only update), emit a single summary info so the trail still shows the
+   * detector ran.
    */
   private def logDiffs(
     naturalKey: String,
-    diffs: List[VotePositionDiff],
+    diff: DiffResult,
     logCtx: LogContext,
-  ): F[Unit] =
-    if (diffs.isEmpty) {
+  ): F[Unit] = {
+    val entries = changedEntries(diff)
+    if (entries.isEmpty) {
       logger.info(logCtx, s"Vote $naturalKey updated with no position changes (metadata-only)")
     } else {
-      logger.info(logCtx, s"Vote $naturalKey updated with ${diffs.length} position change(s)") *>
-        diffs.traverse_(diff => logger.info(logCtx, renderDiff(naturalKey, diff)))
+      logger.info(logCtx, s"Vote $naturalKey updated with ${entries.length} position change(s)") *>
+        entries.traverse_(entry => logger.info(logCtx, s"Vote $naturalKey: $entry"))
     }
+  }
 
-  private[pipeline] def renderDiff(naturalKey: String, diff: VotePositionDiff): String =
+  /**
+   * Walk the list-level diff and keep only items that represent a real change (`Added` / `Removed` / `Changed`). Scoped
+   * `private[pipeline]` so tests can exercise the formatting directly without threading the full detector.
+   */
+  private[pipeline] def changedEntries(diff: DiffResult): List[String] =
     diff match {
-      case VotePositionDiff.Added(memberId, cast) =>
-        s"Vote $naturalKey: added position memberId=$memberId cast=$cast"
-      case VotePositionDiff.Removed(memberId, prev) =>
-        s"Vote $naturalKey: removed position memberId=$memberId previousCast=$prev"
-      case VotePositionDiff.Changed(memberId, from, to) =>
-        s"Vote $naturalKey: changed position memberId=$memberId from=$from to=$to"
+      case list: DiffResult.ListResult =>
+        list.items.iterator.collect {
+          case v: DiffResult.ValueResult.ObtainedOnly => s"added position ${v.obtained}"
+          case v: DiffResult.ValueResult.ExpectedOnly => s"removed position ${v.expected}"
+          case v: DiffResult.ValueResult.Both if !v.isSame =>
+            s"changed position from ${v.expected} to ${v.obtained}"
+        }.toList
+      case _ => List.empty
     }
 
 }
