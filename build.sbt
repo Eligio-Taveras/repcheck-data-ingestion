@@ -11,9 +11,15 @@ val isScala212: Def.Initialize[Boolean] = Def.setting {
 ThisBuild / dynverSonatypeSnapshots := true
 
 // Cap concurrent test tasks across subprojects. Each DockerRequired-having subproject spins
-// up its own AlloyDB Omni + Pub/Sub emulator (per-classloader singletons), so 4 concurrent
-// test tasks means up to ~10 GB of containers. On a 31 GB dev box that's comfortable.
-ThisBuild / concurrentRestrictions += Tags.limit(Tags.Test, 4)
+// up its own AlloyDB Omni + Pub/Sub emulator (per-classloader singletons). At 4 concurrent
+// tasks the post-test `coverageReport` aggregation OOMs on GHA's 7 GB runner (SIGTERM with
+// all tests passing). At 2 concurrent we keep some speedup on dev boxes without blowing the
+// runner memory budget. Raise locally via `-Dsbt.testConcurrency=N` if a dev box has
+// headroom to spare.
+ThisBuild / concurrentRestrictions += Tags.limit(
+  Tags.Test,
+  sys.props.get("sbt.testConcurrency").flatMap(_.toIntOption).getOrElse(2),
+)
 
 // Common settings for all sub-projects
 lazy val commonSettings = Seq(
@@ -134,7 +140,7 @@ lazy val billsCommon = (project in file("bills-common"))
       ++ catsEffect ++ doobie ++ pubSub ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     // Intra-subproject parallel execution causes FK violations because specs truncate shared
-    // tables. Cross-subproject parallelism (via Tags.limit(Tags.Test, 4)) is safe because each
+    // tables. Cross-subproject parallelism (configurable via `-Dsbt.testConcurrency=N`, default 2) is safe because each
     // subproject gets its own AlloyDB container.
     Test / parallelExecution := false,
   )
@@ -227,7 +233,7 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
       ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ xml ++ htmlParsing ++ logging ++ testDeps,
     coverageExcludedFiles := ".*BillTextPipelineApp",
     // WireMock-based tests share a dynamic port; sequential prevents port contention.
-    // Cross-subproject parallelism (via Tags.limit(Tags.Test, 4)) gives us the speedup win.
+    // Cross-subproject parallelism (configurable via `-Dsbt.testConcurrency=N`, default 2) gives us the speedup win.
     Test / parallelExecution := false,
     assembly / mainClass := Some("repcheck.ingestion.bills.text.app.BillTextPipelineApp"),
     assembly / assemblyJarName := "bill-text-pipeline.jar",
@@ -245,7 +251,7 @@ lazy val votesPipeline = (project in file("votes-pipeline"))
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     coverageExcludedFiles := ".*VotesPipeline;.*VotesPipelineApp",
     // Shared DockerPostgres singleton + per-suite table cleanup make intra-subproject parallel execution
-    // unsafe; cross-subproject parallelism (via Tags.limit(Tags.Test, 4)) still provides a speedup.
+    // unsafe; cross-subproject parallelism (configurable via `-Dsbt.testConcurrency=N`, default 2) still provides a speedup.
     Test / parallelExecution := false,
     assembly / mainClass := Some("repcheck.ingestion.votes.app.VotesPipelineApp"),
     assembly / assemblyJarName := "votes-pipeline.jar",
