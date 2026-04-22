@@ -72,7 +72,10 @@ jobs:
             'membersCommon/test'
 
       - name: Run billTextPipeline Docker tests
-        timeout-minutes: 10
+        # Higher timeout than other subprojects: billTextPipeline carries the heaviest
+        # integration suite (Pub/Sub emulator round-trips via BillTextProcessorSpec + the
+        # DockerE2ESpec end-to-end flow). Previous run timed out at 10 min mid-BillTextProcessorSpec.
+        timeout-minutes: 20
         run: |
           sbt coverage \
             'set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
