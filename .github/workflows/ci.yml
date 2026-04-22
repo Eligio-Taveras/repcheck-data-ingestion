@@ -47,13 +47,16 @@ jobs:
 
       - name: Run all tests with coverage (unit + Docker integration)
         # Runs non-Docker tests first (`test` excludes @DockerRequired), then Docker-backed
-        # integration tests (`dockerTestParallel` includes only @DockerRequired and runs each
-        # subproject's test task concurrently via sbt's `all` command — each subproject has
-        # its own per-classloader AlloyDB + Pub/Sub container, so they don't contend. Both
-        # phases run in the same sbt-scoverage session so measurement data accumulates into a
-        # single combined report — no `clean` between runs.
-        timeout-minutes: 20
-        run: sbt coverage test dockerTestParallel coverageReport
+        # integration tests (`dockerTest` includes only @DockerRequired and runs each
+        # subproject's test task SEQUENTIALLY). The parallel variant (`dockerTestParallel`)
+        # spins up a container per subproject concurrently — on GHA's 7GB runner, aggregating
+        # coverage across all of them afterwards OOMs the post-test `coverageReport` phase
+        # (exit 143 SIGTERM observed ~46s after "All tests passed"). The sequential runner
+        # uses dramatically less peak memory at the cost of wall-clock. Both phases run in
+        # the same sbt-scoverage session so measurement data accumulates into a single
+        # combined report — no `clean` between runs.
+        timeout-minutes: 30
+        run: sbt coverage test dockerTest coverageReport
 
       - name: Upload combined coverage reports to Codecov
         uses: codecov/codecov-action@v5
