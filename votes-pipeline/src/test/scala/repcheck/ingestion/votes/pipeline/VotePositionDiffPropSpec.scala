@@ -175,7 +175,7 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
   // ------------------------------------------------------------------
   // Property: diff.isOk iff the two position sets are identical by (memberId -> VotePositionDO) equality
   // ------------------------------------------------------------------
-  it should "produce diff.isOk == (incomingSet == storedSet) keyed by memberId" in {
+  it should "produce diff.isOk == (incomingSet == storedSet) keyed by identity tuple" in {
     val stored   = makeVote(voteId = 55L, updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
     val incoming = makeVote(updateDate = Some(Instant.parse("2024-07-01T00:00:00Z")))
 
@@ -183,8 +183,8 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
       val detector = makeDetector(Some(stored), storedPositions)
       val report   = detector.detect(incoming, incomingPositions, correlationId).unsafeRunSync()
 
-      val storedMap    = storedPositions.map(p => p.memberId -> p).toMap
-      val incomingMap  = incomingPositions.map(p => p.memberId -> p).toMap
+      val storedMap    = storedPositions.map(p => (p.memberId, p.lisMemberId) -> p).toMap
+      val incomingMap  = incomingPositions.map(p => (p.memberId, p.lisMemberId) -> p).toMap
       val expectedIsOk = storedMap == incomingMap
 
       report match {
@@ -247,7 +247,7 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
   // ------------------------------------------------------------------
   // Property: the underlying `Differ[List[VotePositionDO]]` itself is pair-matched by memberId
   // ------------------------------------------------------------------
-  "VotePositionDiffer.votePositionsDiffer" should "match elements by memberId regardless of order" in {
+  "VotePositionDiffer.votePositionsDiffer" should "match elements by identity tuple regardless of order" in {
     val differ: Differ[List[VotePositionDO]] = VotePositionDiffer.votePositionsDiffer
 
     forAll { (positions: List[VotePositionDO]) =>
@@ -257,7 +257,7 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
     }
   }
 
-  it should "produce isOk=false when at least one memberId's cast differs" in {
+  it should "produce isOk=false when at least one member's cast differs" in {
     val differ: Differ[List[VotePositionDO]] = VotePositionDiffer.votePositionsDiffer
 
     forAll { (positions: List[VotePositionDO]) =>
