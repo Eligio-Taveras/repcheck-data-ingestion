@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "feature/**", "feat/**", "fix/**", "chore/**", "claude/**", "dev/**"]
+    branches: [main, "feature/**", "feat/**", "fix/**", "chore/**", "ci/**", "claude/**", "dev/**", "perf/**", "refactor/**"]
   pull_request:
     branches: [main]
 
@@ -61,14 +61,14 @@ jobs:
         timeout-minutes: 10
         run: |
           sbt coverage \
-            'set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
             'billsCommon/test'
 
       - name: Run membersCommon Docker tests
         timeout-minutes: 10
         run: |
           sbt coverage \
-            'set membersCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'set membersCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
             'membersCommon/test'
 
       - name: Run billTextPipeline Docker tests
@@ -78,35 +78,35 @@ jobs:
         timeout-minutes: 20
         run: |
           sbt coverage \
-            'set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
             'billTextPipeline/test'
 
       - name: Run billTextAvailabilityChecker Docker tests
         timeout-minutes: 10
         run: |
           sbt coverage \
-            'set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
             'billTextAvailabilityChecker/test'
 
       - name: Run memberProfilePipeline Docker tests
         timeout-minutes: 10
         run: |
           sbt coverage \
-            'set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
             'memberProfilePipeline/test'
 
       - name: Run lisMappingRefresher Docker tests
         timeout-minutes: 10
         run: |
           sbt coverage \
-            'set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
             'lisMappingRefresher/test'
 
       - name: Run votesPipeline Docker tests
         timeout-minutes: 10
         run: |
           sbt coverage \
-            'set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"))' \
+            'set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
             'votesPipeline/test'
 
       - name: Generate combined coverage reports

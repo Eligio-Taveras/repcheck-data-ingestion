@@ -94,6 +94,11 @@ lazy val commonSettings = Seq(
   // `dockerTest` or `sbt "testOnly -- -n com.repcheck.tags.E2ETest"`.
   Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-l", "DockerRequired"),
   Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-l", "com.repcheck.tags.E2ETest"),
+  // Emit per-test duration in the default reporter output (`-o` + `D` flag).
+  // Lets CI logs surface which specific tests dominate the runtime of the slow
+  // integration suites (bill-text-pipeline, bill-text-availability-checker).
+  // Safe to leave on — it only adds a duration marker to each test line.
+  Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-oD"),
 )
 
 // Pipeline-specific settings (IOApp projects get test config override)
