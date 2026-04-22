@@ -18,7 +18,7 @@ ThisBuild / dynverSonatypeSnapshots := true
 // headroom to spare.
 ThisBuild / concurrentRestrictions += Tags.limit(
   Tags.Test,
-  sys.props.get("sbt.testConcurrency").flatMap(_.toIntOption).getOrElse(2),
+  sys.props.get("sbt.testConcurrency").flatMap(s => scala.util.Try(s.toInt).toOption).getOrElse(2),
 )
 
 // Common settings for all sub-projects
