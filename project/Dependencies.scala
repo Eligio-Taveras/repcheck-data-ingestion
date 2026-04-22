@@ -61,6 +61,9 @@ object Dependencies {
   private val catsEffectTesting = "org.typelevel" %% "cats-effect-testing-scalatest" % "1.5.0" % Test
   private val catsEffectTestkit = "org.typelevel" %% "cats-effect-testkit" % catsEffectVersion % Test
   private val wiremock = "org.wiremock" % "wiremock-standalone" % wiremockVersion % Test
+  private val scalaCheck = "org.scalacheck" %% "scalacheck" % scalaCheckVersion % Test
+  private val scalaTestPlusScalaCheck =
+    "org.scalatestplus" %% "scalacheck-1-18" % scalaTestPlusScalaCheckVersion % Test
 
   val doobie: Seq[ModuleID]     = Seq(doobieCore, doobieHikari, doobiePostgres)
   val pureConfig: Seq[ModuleID] = Seq(pureConfigCore)
@@ -81,4 +84,6 @@ object Dependencies {
   val diff: Seq[ModuleID] = Seq(difflicious)
 
   val testDeps: Seq[ModuleID] = Seq(scalatestPlusMockito, catsEffectTesting, catsEffectTestkit, wiremock)
+
+  val propertyTestDeps: Seq[ModuleID] = Seq(scalaCheck, scalaTestPlusScalaCheck)
 }
