@@ -1,0 +1,419 @@
+package repcheck.ingestion.votes.xml
+
+import scala.io.Source
+import scala.xml.{Elem, XML}
+
+import org.scalatest.flatspec.AnyFlatSpec
+import org.scalatest.matchers.should.Matchers
+import repcheck.ingestion.votes.errors.XmlParseFailed
+
+/**
+ * Unit tests for the pure [[SenateVoteXmlDecoder]]. Fixture files live under
+ * `votes-pipeline/src/test/resources/senate-xml/` and carry real senate.gov XML bodies (well-formed vote document, real
+ * vote-index document, hand-corrupted sample).
+ *
+ * Test layers (plan §"Test Layer Matrix"):
+ *   - well-formed vote → `Right(SenateVoteXmlDTO)` with every DTO field populated from the fixture.
+ *   - malformed vote → `Left(XmlParseFailed)` with a `rawFragment` attached so operators can triage the source.
+ *   - index document → `Right(List[SenateVoteIndexEntry])` covering all entries and preserving order.
+ *   - date parsing: ISO-8601 success, long-form-with-day-of-week success, long-form-without-day-of-week success
+ *     (matches the real senate.gov body in the happy-path fixture), garbage → `Left`.
+ */
+class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
+
+  private def loadXml(resourcePath: String): Elem = {
+    val stream = getClass.getResourceAsStream(resourcePath)
+    require(stream != null, s"Fixture not found: $resourcePath")
+    try XML.load(stream)
+    finally stream.close()
+  }
+
+  private def readRaw(resourcePath: String): String = {
+    val stream = getClass.getResourceAsStream(resourcePath)
+    require(stream != null, s"Fixture not found: $resourcePath")
+    try Source.fromInputStream(stream, "UTF-8").mkString
+    finally stream.close()
+  }
+
+  private def voteElem(voteDate: String, members: String = sampleMemberXml): Elem =
+    XML.loadString(
+      s"""<?xml version="1.0" encoding="UTF-8"?>
+         |<roll_call_vote>
+         |  <congress>119</congress>
+         |  <session>1</session>
+         |  <vote_number>17</vote_number>
+         |  <question>On the Nomination</question>
+         |  <vote_date>$voteDate</vote_date>
+         |  <vote_result>Nomination Confirmed</vote_result>
+         |  <members>$members</members>
+         |</roll_call_vote>""".stripMargin
+    )
+
+  private val sampleMemberXml: String =
+    """<member>
+      |  <lis_member_id>S428</lis_member_id>
+      |  <first_name>Angela</first_name>
+      |  <last_name>Alsobrooks</last_name>
+      |  <party>D</party>
+      |  <state>MD</state>
+      |  <vote_cast>Nay</vote_cast>
+      |</member>""".stripMargin
+
+  "decodeVote" should "round-trip a well-formed senate.gov vote fixture into a populated SenateVoteXmlDTO" in {
+    val elem = loadXml("/senate-xml/vote_119_1_00017.xml")
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+
+    val _   = result.isRight shouldBe true
+    val dto = result.toOption.getOrElse(fail("expected Right"))
+    val _   = dto.congress shouldBe 119
+    val _   = dto.session shouldBe 1
+    val _   = dto.voteNumber shouldBe 17
+    val _   = dto.question shouldBe "On the Nomination"
+    val _   = dto.voteDate shouldBe "January 25, 2025, 11:30 AM"
+    val _   = dto.result shouldBe "Nomination Confirmed"
+    // Real fixture has 100 senators.
+    val _     = dto.members.size shouldBe 100
+    val first = dto.members.headOption.getOrElse(fail("expected at least one member"))
+    val _     = first.lisMemberId shouldBe "S428"
+    val _     = first.lastName shouldBe "Alsobrooks"
+    first.voteCast shouldBe "Nay"
+  }
+
+  it should "accept an ISO-8601 voteDate" in {
+    val elem = voteElem("2025-04-03T14:42:00")
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+    val _      = result.isRight shouldBe true
+    result.toOption.map(_.voteDate) shouldBe Some("2025-04-03T14:42:00")
+  }
+
+  it should "accept an ISO-8601 offset voteDate" in {
+    val elem = voteElem("2025-04-03T14:42:00-04:00")
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+    result.toOption.map(_.voteDate) shouldBe Some("2025-04-03T14:42:00-04:00")
+  }
+
+  it should "accept a long-form voteDate with day-of-week prefix" in {
+    val elem = voteElem("Thursday, April 3, 2025, 02:42 PM")
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+    result.toOption.map(_.voteDate) shouldBe Some("Thursday, April 3, 2025, 02:42 PM")
+  }
+
+  it should "accept a long-form voteDate without day-of-week prefix (real senate.gov format)" in {
+    val elem = voteElem("January 25, 2025, 11:30 AM")
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+    result.toOption.map(_.voteDate) shouldBe Some("January 25, 2025, 11:30 AM")
+  }
+
+  it should "reject an unparseable voteDate and return XmlParseFailed with the raw value" in {
+    val elem = voteElem("this is not a valid date at all")
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+
+    val _   = result.isLeft shouldBe true
+    val err = result.left.toOption.getOrElse(fail("expected Left"))
+    val _   = err shouldBe a[XmlParseFailed]
+    val _   = err.detail should include("Unparseable voteDate")
+    val _   = err.detail should include("this is not a valid date at all")
+    err.rawFragment.getOrElse("") should include("this is not a valid date at all")
+  }
+
+  it should "reject a malformed vote fixture (root element mismatch)" in {
+    // The hand-corrupted fixture truncates mid-element — XML.load would fail outright, so synthesize a
+    // structurally-valid root with a bad tag to cover the "unexpected root" branch too.
+    val elem = XML.loadString("<not_a_vote><congress>119</congress></not_a_vote>")
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+
+    val _   = result.isLeft shouldBe true
+    val err = result.left.toOption.getOrElse(fail("expected Left"))
+    err.detail should include("Expected <roll_call_vote> root")
+  }
+
+  it should "reject a missing required element with a clear message" in {
+    val elem = XML.loadString(
+      """<roll_call_vote>
+        |  <congress>119</congress>
+        |  <session>1</session>
+        |  <vote_number>17</vote_number>
+        |  <!-- <question> deliberately missing -->
+        |  <vote_date>2025-04-03T14:42:00</vote_date>
+        |  <vote_result>Agreed to</vote_result>
+        |  <members/>
+        |</roll_call_vote>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+
+    val _   = result.isLeft shouldBe true
+    val err = result.left.toOption.getOrElse(fail("expected Left"))
+    err.detail should include("<question>")
+  }
+
+  it should "reject a non-integer vote_number" in {
+    val elem = XML.loadString(
+      """<roll_call_vote>
+        |  <congress>119</congress>
+        |  <session>1</session>
+        |  <vote_number>abc</vote_number>
+        |  <question>Q</question>
+        |  <vote_date>2025-04-03T14:42:00</vote_date>
+        |  <vote_result>X</vote_result>
+        |  <members/>
+        |</roll_call_vote>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+
+    val _ = result.isLeft shouldBe true
+    result.left.toOption.map(_.detail).getOrElse("") should include("vote_number")
+  }
+
+  it should "fall back to <result> when <vote_result> is missing" in {
+    val elem = XML.loadString(
+      """<roll_call_vote>
+        |  <congress>119</congress>
+        |  <session>1</session>
+        |  <vote_number>5</vote_number>
+        |  <question>Q</question>
+        |  <vote_date>2025-04-03T14:42:00</vote_date>
+        |  <result>Passed</result>
+        |  <members/>
+        |</roll_call_vote>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+    result.toOption.map(_.result) shouldBe Some("Passed")
+  }
+
+  it should "fail when both <vote_result> and <result> are missing" in {
+    val elem = XML.loadString(
+      """<roll_call_vote>
+        |  <congress>119</congress>
+        |  <session>1</session>
+        |  <vote_number>5</vote_number>
+        |  <question>Q</question>
+        |  <vote_date>2025-04-03T14:42:00</vote_date>
+        |  <members/>
+        |</roll_call_vote>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+
+    val _ = result.isLeft shouldBe true
+    result.left.toOption.map(_.detail).getOrElse("") should include("Missing <vote_result>")
+  }
+
+  it should "fail the entire decode when a member entry is missing a required field" in {
+    val bad =
+      """<member>
+        |  <!-- missing <lis_member_id> -->
+        |  <first_name>Angela</first_name>
+        |  <last_name>Alsobrooks</last_name>
+        |  <party>D</party>
+        |  <state>MD</state>
+        |  <vote_cast>Nay</vote_cast>
+        |</member>""".stripMargin
+    val elem = voteElem("2025-04-03T14:42:00", members = bad)
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+
+    val _ = result.isLeft shouldBe true
+    result.left.toOption.map(_.detail).getOrElse("") should include("<lis_member_id>")
+  }
+
+  it should "decode a vote with zero members (empty <members/>) as an empty position list" in {
+    val elem = voteElem("2025-04-03T14:42:00", members = "")
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+    result.toOption.map(_.members) shouldBe Some(List.empty)
+  }
+
+  it should "truncate rawFragment in XmlParseFailed to avoid dumping full bodies" in {
+    val bigBody = "<not_a_vote>" + ("<junk>x</junk>" * 50) + "</not_a_vote>"
+    val elem    = XML.loadString(bigBody)
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+    val _      = result.isLeft shouldBe true
+    val frag   = result.left.toOption.flatMap(_.rawFragment).getOrElse("")
+    frag.length should be <= 210 // 200 + "..." + small slack
+  }
+
+  "decodeIndex" should "round-trip a real vote_menu fixture into a populated list of entries" in {
+    val elem = loadXml("/senate-xml/vote_menu_119_1.xml")
+
+    val result = SenateVoteXmlDecoder.decodeIndex(elem)
+
+    val entries = result match {
+      case Right(list) => list
+      case Left(err)   => fail(s"expected Right, got Left(detail=${err.detail})")
+    }
+    // The session 119-1 menu fixture contains many entries; assert we decoded a non-trivial count and each entry is
+    // populated rather than asserting an exact length (which would couple the test to senate.gov's ongoing updates
+    // if the fixture were ever refreshed).
+    val _ = entries.size should be >= 50
+    // First entry in the menu is vote 00659 (real fixture — highest roll-call number first).
+    val first = entries.headOption.getOrElse(fail("expected at least one entry"))
+    val _     = first.voteNumber shouldBe 659
+    val _     = first.voteDate shouldBe "18-Dec"
+    val _     = first.question should include("Cloture Motion")
+    first.result shouldBe "Agreed to"
+  }
+
+  it should "reject a malformed index document (wrong root element)" in {
+    val elem = XML.loadString("<not_an_index></not_an_index>")
+
+    val result = SenateVoteXmlDecoder.decodeIndex(elem)
+
+    val _ = result.isLeft shouldBe true
+    result.left.toOption.map(_.detail).getOrElse("") should include("Expected <vote_summary> root")
+  }
+
+  it should "fail when a vote entry has a non-numeric <vote_number>" in {
+    val elem = XML.loadString(
+      """<vote_summary>
+        |  <votes>
+        |    <vote>
+        |      <vote_number>bad</vote_number>
+        |      <vote_date>1-Jan</vote_date>
+        |      <question>Q</question>
+        |      <result>R</result>
+        |    </vote>
+        |  </votes>
+        |</vote_summary>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeIndex(elem)
+
+    val _ = result.isLeft shouldBe true
+    result.left.toOption.map(_.detail).getOrElse("") should include("vote_number")
+  }
+
+  it should "produce an empty list when the index has no <vote> entries" in {
+    val elem = XML.loadString("<vote_summary><votes/></vote_summary>")
+
+    val result = SenateVoteXmlDecoder.decodeIndex(elem)
+    result shouldBe Right(List.empty)
+  }
+
+  it should "fail with Missing <question> when a non-en-bloc vote is missing a question" in {
+    val elem = XML.loadString(
+      """<vote_summary>
+        |  <votes>
+        |    <vote>
+        |      <vote_number>00124</vote_number>
+        |      <vote_date>1-Jan</vote_date>
+        |      <!-- question missing, no en_bloc -->
+        |      <result>Agreed</result>
+        |    </vote>
+        |  </votes>
+        |</vote_summary>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeIndex(elem)
+    val _      = result.isLeft shouldBe true
+    result.left.toOption.map(_.detail).getOrElse("") should include("Missing or empty <question>")
+  }
+
+  it should "treat a direct <question> child that is only whitespace as missing (en_bloc fallback)" in {
+    val elem = XML.loadString(
+      """<vote_summary>
+        |  <votes>
+        |    <vote>
+        |      <vote_number>00125</vote_number>
+        |      <vote_date>1-Jan</vote_date>
+        |      <question>   </question>
+        |      <result>Agreed</result>
+        |      <en_bloc><matter><issue>X</issue></matter></en_bloc>
+        |    </vote>
+        |  </votes>
+        |</vote_summary>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeIndex(elem)
+    result.toOption.flatMap(_.headOption).map(_.question) shouldBe Some("En Bloc")
+  }
+
+  it should "substitute 'En Bloc' for missing <question>/<result> when the vote is an en_bloc batch" in {
+    val elem = XML.loadString(
+      """<vote_summary>
+        |  <votes>
+        |    <vote>
+        |      <vote_number>00655</vote_number>
+        |      <vote_date>18-Dec</vote_date>
+        |      <en_bloc>
+        |        <matter>
+        |          <issue>PN416-9</issue>
+        |          <question>On the Nomination</question>
+        |          <result>Confirmed</result>
+        |        </matter>
+        |      </en_bloc>
+        |    </vote>
+        |  </votes>
+        |</vote_summary>""".stripMargin
+    )
+
+    val result  = SenateVoteXmlDecoder.decodeIndex(elem)
+    val entries = result.toOption.getOrElse(fail("expected Right"))
+    val _       = entries.size shouldBe 1
+    val entry   = entries.headOption.getOrElse(fail("expected one entry"))
+    val _       = entry.voteNumber shouldBe 655
+    val _       = entry.question shouldBe "En Bloc"
+    entry.result shouldBe "En Bloc"
+  }
+
+  it should "fail with Missing <result> when a non-en-bloc vote is missing a result" in {
+    val elem = XML.loadString(
+      """<vote_summary>
+        |  <votes>
+        |    <vote>
+        |      <vote_number>00123</vote_number>
+        |      <vote_date>1-Jan</vote_date>
+        |      <question>Q</question>
+        |      <!-- result missing, no en_bloc -->
+        |    </vote>
+        |  </votes>
+        |</vote_summary>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeIndex(elem)
+    val _      = result.isLeft shouldBe true
+    result.left.toOption.map(_.detail).getOrElse("") should include("Missing or empty <result>")
+  }
+
+  it should "preserve <vote> decoding order in the returned list" in {
+    val elem = XML.loadString(
+      """<vote_summary>
+        |  <votes>
+        |    <vote><vote_number>00010</vote_number><vote_date>1-Jan</vote_date><question>Q1</question><result>R1</result></vote>
+        |    <vote><vote_number>00020</vote_number><vote_date>2-Jan</vote_date><question>Q2</question><result>R2</result></vote>
+        |    <vote><vote_number>00030</vote_number><vote_date>3-Jan</vote_date><question>Q3</question><result>R3</result></vote>
+        |  </votes>
+        |</vote_summary>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeIndex(elem)
+    result.toOption.map(_.map(_.voteNumber)) shouldBe Some(List(10, 20, 30))
+  }
+
+  it should "load the hand-corrupted fixture body but produce a structural failure" in {
+    // The malformed fixture is not well-formed XML (intentionally truncated mid-element), so XML.load blows up at
+    // parse time rather than reaching the decoder. This guards the fixture's role: verifies that the corrupted body
+    // is surfaced as a parse-level failure via scala-xml before the decoder sees it.
+    val raw = readRaw("/senate-xml/vote_malformed.xml")
+
+    an[Exception] shouldBe thrownBy {
+      val _ = XML.loadString(raw)
+    }
+  }
+
+  it should "locate the malformed fixture on the classpath" in {
+    // The fixture file is present; we just can't load it as well-formed XML.
+    Option(getClass.getResourceAsStream("/senate-xml/vote_malformed.xml")).map(_.available()).getOrElse(0) should be > 0
+  }
+
+}
