@@ -52,6 +52,14 @@ trait VotePositionRepository {
    * column is NULL. Positions that violate the XOR invariant (both `None` or both `Some`) cause the composed
    * `ConnectionIO` to fail with [[repcheck.ingestion.votes.errors.VotePositionIdentityInvalid]] before the INSERT is
    * attempted.
+   *
+   * ==Archival is the caller's responsibility==
+   *
+   * This method deletes without archiving — it is the caller's job to invoke [[VoteHistoryArchiver.archiveVote]] first
+   * when an existing set of positions is being overwritten (i.e. the `Updated` branch of the change-detection decision
+   * matrix). Composing the archive call and this `replaceAll` into a single outer `ConnectionIO` gives atomic "snapshot
+   * then replace" semantics. Callers on the `New` branch (no stored vote yet) skip the archive step. P3.1's
+   * `VoteProcessor` owns that orchestration — see its scaladoc for the full sequencing.
    */
   def replaceAll(voteId: Long, positions: List[VotePositionDO]): ConnectionIO[Unit]
 
@@ -66,6 +74,13 @@ trait VotePositionRepository {
    * A DO that violates the XOR invariant (both `None` or both `Some`) raises
    * [[repcheck.ingestion.votes.errors.VotePositionIdentityInvalid]] inside the `ConnectionIO` — the caller's
    * transaction rolls back cleanly.
+   *
+   * ==Archival is the caller's responsibility==
+   *
+   * On `DO UPDATE`, the prior values for this position are silently overwritten. Callers that need the prior snapshot
+   * preserved must invoke [[VoteHistoryArchiver.archiveVote]] on the owning vote before this method runs, composed into
+   * the same `ConnectionIO`. P3.1's `VoteProcessor` owns that sequencing for the vote-level Updated branch; ad hoc
+   * `upsert` callers are responsible for matching that discipline.
    */
   def upsert(position: VotePositionDO): ConnectionIO[Unit]
 

@@ -22,6 +22,13 @@ trait VoteRepository {
    * Insert or update the row keyed by `natural_key`. Returns the row as stored, including the database-assigned `id`
    * (BIGSERIAL) and timestamps (`created_at`, `updated_at`). On conflict, all business fields and `updated_at` are
    * refreshed — the `created_at` column is left untouched so the original creation time survives an overwrite.
+   *
+   * ==Archival is the caller's responsibility==
+   *
+   * When an existing row is about to be overwritten (the `Updated` branch of the change-detection decision matrix), the
+   * caller must invoke [[VoteHistoryArchiver.archiveVote]] BEFORE this method, composed into the same `ConnectionIO`,
+   * so the prior version survives in `vote_history` alongside its children. Callers on the `New` branch skip the
+   * archive step. P3.1's `VoteProcessor` owns this sequencing.
    */
   def upsert(vote: VoteDO): ConnectionIO[VoteDO]
 }

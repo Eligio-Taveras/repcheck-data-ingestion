@@ -2,6 +2,7 @@ package repcheck.ingestion.votes.pipeline
 
 import difflicious.Differ
 import difflicious.implicits._
+import repcheck.shared.models.congress.common.Chamber
 import repcheck.shared.models.congress.dos.vote.VotePositionDO
 
 /**
@@ -21,10 +22,13 @@ import repcheck.shared.models.congress.dos.vote.VotePositionDO
  * ==Identity key post-migration 023==
  *
  * Each `VotePositionDO` carries either a House-arm `memberId: Option[Long]` or a Senate-arm `lisMemberId: Option[Long]`
- * (per the XOR invariant). To build a single comparison key per row, we project to `("M", memberId)` for House and
- * `("L", lisMemberId)` for Senate — the tag prevents a House row with `memberId = 5L` from colliding with a Senate row
- * whose `lisMemberId = 5L`. Rows that somehow violate the XOR (both `None` or both `Some`) degenerate to `("?", 0L)`
- * and are still comparable via the element-level `useEquals`.
+ * (per the XOR invariant enforced by the DB `chk_vp_xor_identity` CHECK). To build a single comparison key per row, we
+ * project to `(Chamber.House, memberId)` for House and `(Chamber.Senate, lisMemberId)` for Senate — the tag prevents a
+ * House row with `memberId = 5L` from colliding with a Senate row whose `lisMemberId = 5L`. Rows that violate the XOR
+ * (both `None` or both `Some`) are a contract violation — migration 023 keeps them out of the database, and the
+ * repository layer validates inbound DOs before persisting. If one still reaches the differ, [[identityKey]] raises
+ * [[VotePositionIdentityInvalid]] so the diagnostic surfaces immediately rather than degenerating into a silent
+ * sentinel tuple.
  *
  * ==Produced `DiffResult` shape==
  *
@@ -50,14 +54,31 @@ object VotePositionDiffer {
     Differ.useEquals[VotePositionDO](_.toString)
 
   /**
-   * Builds the identity pair-key for a single position row. House rows are tagged `"M"`, Senate rows `"L"`; the tag
-   * prevents identity collisions between a member and an LIS senator that happen to share a numeric id.
+   * Builds the identity pair-key for a single position row. House rows project to `(Chamber.House, memberId)`, Senate
+   * rows to `(Chamber.Senate, lisMemberId)`; the chamber tag prevents identity collisions between a member and an LIS
+   * senator that happen to share a numeric id.
+   *
+   * ==Upstream contract==
+   *
+   * The XOR invariant (exactly one of `memberId` / `lisMemberId` populated) is guaranteed by every code path that
+   * reaches this function: migration 023's `chk_vp_xor_identity` CHECK prevents malformed rows at the database
+   * boundary; [[DoobieVotePositionRepository.validatePositions]] raises
+   * [[repcheck.ingestion.votes.errors.VotePositionIdentityInvalid]] before inserting; and [[VoteChangeDetector]]
+   * validates both sides of an in-memory position list before invoking the differ. The `sys.error` branch below is
+   * therefore unreachable under the repository's public contract — it exists only as a loud fail-fast should a future
+   * regression break the invariant. A pure [[Differ.pairBy]] cannot carry an `F[_]` effect, so raising a project
+   * exception here would require suppressing WartRemover's `Wart.Throw`; callers that need structured failure handling
+   * go through the detector's upstream validation, which raises the project exception in `F[_]` context.
    */
-  private[pipeline] def identityKey(p: VotePositionDO): (String, Long) =
+  private[pipeline] def identityKey(p: VotePositionDO): (Chamber, Long) =
     (p.memberId, p.lisMemberId) match {
-      case (Some(id), None) => ("M", id)
-      case (None, Some(id)) => ("L", id)
-      case _                => ("?", 0L)
+      case (Some(id), None) => (Chamber.House, id)
+      case (None, Some(id)) => (Chamber.Senate, id)
+      case _ =>
+        sys.error(
+          s"VotePositionDO violates XOR identity invariant: voteId=${p.voteId.toString} " +
+            s"memberId=${p.memberId.toString} lisMemberId=${p.lisMemberId.toString}"
+        )
     }
 
   /**

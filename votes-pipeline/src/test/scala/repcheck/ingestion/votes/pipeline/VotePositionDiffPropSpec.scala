@@ -291,20 +291,30 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
       lisMemberId = lisMemberId,
     )
 
-  "VotePositionDiffer.identityKey" should "tag a House row as (\"M\", memberId)" in {
-    VotePositionDiffer.identityKey(pos(memberId = Some(7L), lisMemberId = None)) shouldBe (("M", 7L))
+  "VotePositionDiffer.identityKey" should "tag a House row as (Chamber.House, memberId)" in {
+    VotePositionDiffer.identityKey(pos(memberId = Some(7L), lisMemberId = None)) shouldBe (
+      (Chamber.House, 7L)
+    )
   }
 
-  it should "tag a Senate row as (\"L\", lisMemberId)" in {
-    VotePositionDiffer.identityKey(pos(memberId = None, lisMemberId = Some(99L))) shouldBe (("L", 99L))
+  it should "tag a Senate row as (Chamber.Senate, lisMemberId)" in {
+    VotePositionDiffer.identityKey(pos(memberId = None, lisMemberId = Some(99L))) shouldBe (
+      (Chamber.Senate, 99L)
+    )
   }
 
-  it should "degenerate to (\"?\", 0L) when both identities are None (XOR violation — defensive)" in {
-    VotePositionDiffer.identityKey(pos(memberId = None, lisMemberId = None)) shouldBe (("?", 0L))
+  it should "fail loudly when both identities are None (XOR violation — should never happen)" in {
+    val ex = intercept[RuntimeException] {
+      val _ = VotePositionDiffer.identityKey(pos(memberId = None, lisMemberId = None))
+    }
+    ex.getMessage should include("XOR identity invariant")
   }
 
-  it should "degenerate to (\"?\", 0L) when both identities are Some (XOR violation — defensive)" in {
-    VotePositionDiffer.identityKey(pos(memberId = Some(1L), lisMemberId = Some(2L))) shouldBe (("?", 0L))
+  it should "fail loudly when both identities are Some (XOR violation — should never happen)" in {
+    val ex = intercept[RuntimeException] {
+      val _ = VotePositionDiffer.identityKey(pos(memberId = Some(1L), lisMemberId = Some(2L)))
+    }
+    ex.getMessage should include("XOR identity invariant")
   }
 
 }

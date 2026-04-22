@@ -8,7 +8,8 @@ import doobie.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.ingestion.votes.testing.{DockerRequired, TransactorFixture}
+import repcheck.ingestion.votes.testing.TransactorFixture
+import repcheck.members.common.testing.DockerRequired
 import repcheck.shared.models.congress.common.{Party, UsState}
 import repcheck.shared.models.congress.dos.vote.VotePositionDO
 import repcheck.shared.models.congress.vote.VoteCast
@@ -102,10 +103,12 @@ class DoobieVoteHistoryArchiverSpec extends AnyFlatSpec with Matchers with Trans
     List(firstId, secondId, thirdId).distinct.size shouldBe 3
   }
 
-  // AC#14
-  it should "be a no-op for a non-existent vote id (no history rows, no error)" taggedAs DockerRequired in {
-    val result = archiver.archiveVote(999999L).transact(xa).unsafeRunSync()
-    val _      = result shouldBe 0L
+  // AC#14 (revised per PR #44 review): missing vote is a precondition violation, not a silent no-op.
+  it should "raise VoteArchiveNotFound for a non-existent vote id (no history rows written)" taggedAs DockerRequired in {
+    val ex = intercept[repcheck.ingestion.votes.errors.VoteArchiveNotFound] {
+      val _ = archiver.archiveVote(999999L).transact(xa).unsafeRunSync()
+    }
+    val _ = ex.voteId shouldBe 999999L
 
     val historyCount =
       sql"SELECT COUNT(*) FROM vote_history WHERE vote_id = 999999".query[Long].unique.transact(xa).unsafeRunSync()

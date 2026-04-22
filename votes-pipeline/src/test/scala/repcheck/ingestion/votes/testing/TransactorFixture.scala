@@ -2,57 +2,31 @@ package repcheck.ingestion.votes.testing
 
 import java.time.{Instant, LocalDate}
 
-import cats.effect.IO
-
-import doobie.Transactor
 import doobie.implicits._
 import doobie.postgres.implicits._
 
-import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach, Suite}
+import org.scalatest.Suite
 import repcheck.ingestion.votes.repo.VoteDoobieInstances._
+import repcheck.members.common.testing.{TransactorFixture => SharedTransactorFixture}
 import repcheck.shared.models.congress.common.DoobieEnumInstances._
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.vote.{VoteMethod, VoteType}
 
 /**
- * Provides a shared AlloyDB Omni container and Doobie transactor for Docker-backed integration tests in
- * `votes-pipeline`. All suites share one container (via [[SharedDockerPostgres]]) and run sequentially (`Test /
- * parallelExecution := false` in `build.sbt`) to avoid cross-suite FK violations during cleanup.
+ * Votes-pipeline integration-test fixture. Extends `members-common`'s [[SharedTransactorFixture]] to inherit the shared
+ * AlloyDB Omni container, the Doobie transactor, and the members/lis-members cleanup + insert helpers, and adds
+ * vote-specific helpers (`insertVote`, `insertBill`) plus cleanup for the vote family of tables.
+ *
+ * ==Cleanup ordering==
+ *
+ * `afterEach` first truncates the vote family (vote_history_positions → vote_history → vote_positions → votes →
+ * stance_materialization_status → bills) so the members-common super cleanup can then delete members/lis_members
+ * without FK violations — `vote_positions.member_id` and `vote_positions.lis_member_id` are FKs to `members` and
+ * `lis_members` respectively.
  */
-trait TransactorFixture extends BeforeAndAfterAll with BeforeAndAfterEach { self: Suite =>
+trait TransactorFixture extends SharedTransactorFixture { self: Suite =>
 
   import cats.effect.unsafe.implicits.global
-
-  protected lazy val containerInfo: PostgresContainerInfo = SharedDockerPostgres.info
-
-  protected lazy val xa: Transactor[IO] = Transactor.fromDriverManager[IO](
-    driver = "org.postgresql.Driver",
-    url = containerInfo.jdbcUrl,
-    user = containerInfo.user,
-    password = containerInfo.password,
-    logHandler = None,
-  )
-
-  override def beforeAll(): Unit = {
-    super.beforeAll()
-    val _ = containerInfo
-  }
-
-  override def afterEach(): Unit = {
-    cleanTables()
-    super.afterEach()
-  }
-
-  /** Insert a minimal `members` row (placeholder OK) and return its auto-generated `id`. */
-  protected def insertMember(bioguideId: String): Long =
-    sql"""INSERT INTO members (natural_key)
-          VALUES ($bioguideId)
-          ON CONFLICT (natural_key) DO UPDATE SET natural_key = EXCLUDED.natural_key
-          RETURNING id"""
-      .query[Long]
-      .unique
-      .transact(xa)
-      .unsafeRunSync()
 
   /**
    * Insert a minimal `bills` row and return its auto-generated `id`. The `bills` table has no single natural-key column
@@ -114,8 +88,11 @@ trait TransactorFixture extends BeforeAndAfterAll with BeforeAndAfterEach { self
       .unsafeRunSync()
   }
 
-  /** Fully reset every table that votes-pipeline specs write to. Order honors FK direction. */
-  private def cleanTables(): Unit = {
+  /**
+   * Clear every vote-family table before `super.afterEach` deletes members / lis_members. Order honors FK direction:
+   * vote_history_positions → vote_history → vote_positions → votes → stance_materialization_status → bills.
+   */
+  override def afterEach(): Unit = {
     val _ = sql"""TRUNCATE TABLE vote_history_positions RESTART IDENTITY CASCADE""".update.run
       .transact(xa)
       .unsafeRunSync()
@@ -132,9 +109,7 @@ trait TransactorFixture extends BeforeAndAfterAll with BeforeAndAfterEach { self
       .transact(xa)
       .unsafeRunSync()
     val _ = sql"""DELETE FROM bills""".update.run.transact(xa).unsafeRunSync()
-    val _ = sql"""DELETE FROM members""".update.run.transact(xa).unsafeRunSync()
-    // Senate-arm vote_positions FK to lis_members — clear any rows seeded by per-test helpers.
-    val _ = sql"""DELETE FROM lis_members""".update.run.transact(xa).unsafeRunSync()
+    super.afterEach()
   }
 
 }

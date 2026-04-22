@@ -6,13 +6,15 @@ import doobie._
 import doobie.free.connection
 import doobie.implicits._
 
+import repcheck.ingestion.votes.errors.VoteArchiveNotFound
 import repcheck.pipeline.models.constants.Tables
 
 /**
  * Doobie implementation of [[VoteHistoryArchiver]]. Performs three steps inside a single [[ConnectionIO]]:
  *
- *   1. Look up the live `votes` row by primary key. If the vote does not exist, return `0L` (no-op — the caller's
- *      transaction continues uninterrupted).
+ *   1. Look up the live `votes` row by primary key. If the vote does not exist, raise [[VoteArchiveNotFound]] — callers
+ *      must only archive rows that are about to be overwritten, and a missing row indicates a precondition violation
+ *      upstream (a "New" vote has nothing to archive; only the "Updated" branch should invoke the archiver).
  *   1. INSERT a row into `vote_history` copying every business column from the live `votes` row (not the primary key
  *      `id` — `vote_history.id` is a separate BIGSERIAL). `RETURNING id` captures the new history id.
  *   1. INSERT every `vote_positions` row into `vote_history_positions`, tagging each with the history id from step 2.
@@ -36,35 +38,15 @@ class DoobieVoteHistoryArchiver extends VoteHistoryArchiver {
         .query[Long]
         .option
 
-    existsQuery.flatMap(dispatchArchive(_, historyTable, votesTable, historyPositionsTable, positionsTable))
+    existsQuery.flatMap {
+      case None =>
+        connection.raiseError[Long](VoteArchiveNotFound(voteId))
+      case Some(_) =>
+        insertVoteHistory(historyTable, votesTable, voteId).flatTap(
+          archivePositions(historyPositionsTable, positionsTable, voteId)
+        )
+    }
   }
-
-  /**
-   * Branches on whether the live vote exists. A missing vote returns `0L` so the composed `ConnectionIO` stays
-   * well-typed without forcing the caller to handle an `Option`. The alternative — `ConnectionIO[Option[Long]]` — would
-   * push optionality into every caller for a case they usually don't care about.
-   */
-  private[repo] def dispatchArchive(
-    existingId: Option[Long],
-    historyTable: Fragment,
-    votesTable: Fragment,
-    historyPositionsTable: Fragment,
-    positionsTable: Fragment,
-  ): ConnectionIO[Long] = existingId match {
-    case None         => connection.pure(0L)
-    case Some(voteId) => archiveExisting(historyTable, votesTable, historyPositionsTable, positionsTable, voteId)
-  }
-
-  private[repo] def archiveExisting(
-    historyTable: Fragment,
-    votesTable: Fragment,
-    historyPositionsTable: Fragment,
-    positionsTable: Fragment,
-    voteId: Long,
-  ): ConnectionIO[Long] =
-    insertVoteHistory(historyTable, votesTable, voteId).flatTap(
-      archivePositions(historyPositionsTable, positionsTable, voteId)
-    )
 
   private[repo] def archivePositions(
     historyPositionsTable: Fragment,

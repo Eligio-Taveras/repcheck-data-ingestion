@@ -7,7 +7,8 @@ import doobie.implicits._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.votes.errors.VotePositionIdentityInvalid
-import repcheck.ingestion.votes.testing.{DockerRequired, TransactorFixture}
+import repcheck.ingestion.votes.testing.TransactorFixture
+import repcheck.members.common.testing.DockerRequired
 import repcheck.shared.models.congress.common.{Party, UsState}
 import repcheck.shared.models.congress.dos.vote.VotePositionDO
 import repcheck.shared.models.congress.vote.VoteCast

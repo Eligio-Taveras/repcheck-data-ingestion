@@ -35,26 +35,6 @@ class DoobieVoteHistoryArchiverUnitSpec extends AnyFlatSpec with Matchers {
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
-  "dispatchArchive" should "return a ConnectionIO that yields 0L for None (vote not found)" in {
-    val cio = archiver.dispatchArchive(None, historyTable, votesTable, historyPosTable, positionsTable)
-    cio shouldBe a[doobie.ConnectionIO[?]]
-  }
-
-  it should "return an archiveExisting ConnectionIO for Some(voteId)" in {
-    val cio = archiver.dispatchArchive(Some(7L), historyTable, votesTable, historyPosTable, positionsTable)
-    cio shouldBe a[doobie.ConnectionIO[?]]
-  }
-
-  "archiveExisting" should "produce a ConnectionIO[Long]" in {
-    val cio = archiver.archiveExisting(historyTable, votesTable, historyPosTable, positionsTable, voteId = 1L)
-    cio shouldBe a[doobie.ConnectionIO[?]]
-  }
-
-  it should "produce a ConnectionIO for any vote id" in {
-    val cio = archiver.archiveExisting(historyTable, votesTable, historyPosTable, positionsTable, voteId = 99L)
-    cio shouldBe a[doobie.ConnectionIO[?]]
-  }
-
   "archivePositions" should "produce a ConnectionIO[Unit]" in {
     val cio = archiver.archivePositions(historyPosTable, positionsTable, voteId = 1L)(historyId = 10L)
     cio shouldBe a[doobie.ConnectionIO[?]]

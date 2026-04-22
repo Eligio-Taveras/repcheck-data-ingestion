@@ -9,7 +9,8 @@ import doobie.postgres.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.ingestion.votes.testing.{DockerRequired, TransactorFixture}
+import repcheck.ingestion.votes.testing.TransactorFixture
+import repcheck.members.common.testing.DockerRequired
 
 /**
  * Integration tests for [[DoobieStanceMaterializationStatusRepository]] against DockerPostgres. Supports §6.5 AC rows
