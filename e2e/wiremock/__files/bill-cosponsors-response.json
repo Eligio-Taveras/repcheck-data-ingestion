@@ -1,0 +1,45 @@
+{
+  "cosponsors": [
+    {
+      "bioguideId": "M001159",
+      "district": 5,
+      "firstName": "Cathy",
+      "fullName": "Rep. McMorris Rodgers, Cathy [R-WA-5]",
+      "isOriginalCosponsor": true,
+      "lastName": "Rodgers",
+      "middleName": "McMorris",
+      "party": "R",
+      "sponsorshipDate": "2023-03-14",
+      "state": "WA",
+      "url": "http://wiremock:8080/v3/member/M001159?format=json"
+    },
+    {
+      "bioguideId": "W000821",
+      "district": 4,
+      "firstName": "Bruce",
+      "fullName": "Rep. Westerman, Bruce [R-AR-4]",
+      "isOriginalCosponsor": true,
+      "lastName": "Westerman",
+      "party": "R",
+      "sponsorshipDate": "2023-03-14",
+      "state": "AR",
+      "url": "http://wiremock:8080/v3/member/W000821?format=json"
+    },
+    {
+      "bioguideId": "G000546",
+      "district": 6,
+      "firstName": "SAM",
+      "fullName": "Rep. Graves, Sam [R-MO-6]",
+      "isOriginalCosponsor": true,
+      "lastName": "GRAVES",
+      "party": "R",
+      "sponsorshipDate": "2023-03-14",
+      "state": "MO",
+      "url": "http://wiremock:8080/v3/member/G000546?format=json"
+    }
+  ],
+  "pagination": {
+    "count": 49,
+    "countIncludingWithdrawnCosponsors": 49
+  }
+}

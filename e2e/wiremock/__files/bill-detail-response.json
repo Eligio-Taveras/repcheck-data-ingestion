@@ -1,54 +1,87 @@
 {
   "bill": {
+    "actions": {
+      "count": 93,
+      "url": "http://wiremock:8080/v3/bill/118/hr/1/actions?format=json"
+    },
+    "amendments": {
+      "count": 37,
+      "url": "http://wiremock:8080/v3/bill/118/hr/1/amendments?format=json"
+    },
+    "cboCostEstimates": [
+      {
+        "description": "As posted on the website of the House Committee on Rules on\nMarch 14, 2023\n",
+        "pubDate": "2023-03-23T20:59:00Z",
+        "title": "Estimated Budgetary Effects of Divisions A and B of H.R. 1, the Lower Energy Costs Act",
+        "url": "https://www.cbo.gov/publication/59022"
+      },
+      {
+        "description": "As posted on the website of the House Committee on Rules on March 14, 2023 and March 27, 2023\n",
+        "pubDate": "2023-03-28T21:18:00Z",
+        "title": "Estimated Budgetary Effects of Divisions A and B of H.R. 1, the Lower Energy Costs Act, as modified by Amendment 154, the Manager&#039;s Amendment",
+        "url": "https://www.cbo.gov/publication/59029"
+      }
+    ],
+    "committees": {
+      "count": 5,
+      "url": "http://wiremock:8080/v3/bill/118/hr/1/committees?format=json"
+    },
     "congress": 118,
+    "constitutionalAuthorityStatementText": "<pre>\n[Congressional Record Volume 169, Number 47 (Tuesday, March 14, 2023)]\n[House]\nFrom the Congressional Record Online through the Government Publishing Office [<a href=\"https://www.gpo.gov\">www.gpo.gov</a>]\nBy Mr. SCALISE:\nH.R. 1.\nCongress has the power to enact this legislation pursuant\nto the following:\nThe power granted to Congress under Article I, Section 8 of\nthe United States Constitution.\nThe single subject of this legislation is:\nTo lower energy costs by increasing American energy\nproduction and restoring energy leadership.\n[Page H1286]\n</pre>",
+    "cosponsors": {
+      "count": 49,
+      "countIncludingWithdrawnCosponsors": 49,
+      "url": "http://wiremock:8080/v3/bill/118/hr/1/cosponsors?format=json"
+    },
+    "introducedDate": "2023-03-14",
+    "latestAction": {
+      "actionDate": "2023-03-30",
+      "actionTime": "11:47:06",
+      "text": "The Clerk was authorized to correct section numbers, punctuation, and cross references, and to make other necessary technical and conforming corrections in the engrossment of H.R. 1."
+    },
+    "legislationUrl": "http://wiremock:8080/www/bill/118th-congress/house-bill/1",
     "number": "1",
     "originChamber": "House",
     "originChamberCode": "H",
-    "title": "E2E Test Healthcare Reform Act",
-    "type": "HR",
-    "updateDate": "2024-06-15T12:00:00Z",
-    "introducedDate": "2024-01-10",
-    "constitutionalAuthorityStatementText": "Article I, Section 8",
+    "policyArea": {
+      "name": "Energy"
+    },
+    "relatedBills": {
+      "count": 44,
+      "url": "http://wiremock:8080/v3/bill/118/hr/1/relatedbills?format=json"
+    },
     "sponsors": [
       {
-        "bioguideId": "T000001",
-        "fullName": "Rep. Test Sponsor",
-        "firstName": "Test",
-        "lastName": "Sponsor",
-        "party": "D",
-        "state": "CA",
+        "bioguideId": "S001176",
         "district": 1,
-        "isByRequest": "N"
+        "firstName": "Steve",
+        "fullName": "Rep. Scalise, Steve [R-LA-1]",
+        "isByRequest": "N",
+        "lastName": "Scalise",
+        "party": "R",
+        "state": "LA",
+        "url": "http://wiremock:8080/v3/member/S001176?format=json"
       }
     ],
-    "cosponsors": {
-      "url": "https://api.congress.gov/v3/bill/118/hr/1/cosponsors",
-      "count": 0
-    },
     "subjects": {
-      "legislativeSubjects": [
-        {"name": "Health care coverage and access"},
-        {"name": "Medicare"}
-      ],
-      "policyArea": {
-        "name": "Health"
-      }
+      "count": 53,
+      "url": "http://wiremock:8080/v3/bill/118/hr/1/subjects?format=json"
     },
     "summaries": {
-      "url": "https://api.congress.gov/v3/bill/118/hr/1/summaries",
-      "count": 0
+      "count": 2,
+      "url": "http://wiremock:8080/v3/bill/118/hr/1/summaries?format=json"
     },
     "textVersions": {
-      "url": "https://api.congress.gov/v3/bill/118/hr/1/text",
-      "count": 1
+      "count": 2,
+      "url": "http://wiremock:8080/v3/bill/118/hr/1/text?format=json"
     },
-    "actions": {
-      "url": "https://api.congress.gov/v3/bill/118/hr/1/actions",
-      "count": 1
+    "title": "Lower Energy Costs Act",
+    "titles": {
+      "count": 10,
+      "url": "http://wiremock:8080/v3/bill/118/hr/1/titles?format=json"
     },
-    "latestAction": {
-      "actionDate": "2024-06-15",
-      "text": "Referred to the Committee on Energy and Commerce."
-    }
+    "type": "HR",
+    "updateDate": "2026-01-09T22:25:21Z",
+    "updateDateIncludingText": "2026-01-09T22:25:21Z"
   }
 }

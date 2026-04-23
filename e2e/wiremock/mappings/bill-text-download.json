@@ -1,7 +1,7 @@
 {
   "request": {
     "method": "GET",
-    "urlPathPattern": "/v3/bill/118/hr/1/text/ih"
+    "urlPathPattern": "/www/[0-9]+/bills/.+\\.htm"
   },
   "response": {
     "status": 200,
