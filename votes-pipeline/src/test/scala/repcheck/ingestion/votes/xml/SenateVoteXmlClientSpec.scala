@@ -128,6 +128,14 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         |  <question>Q</question>
         |  <vote_date>2025-04-03T14:42:00</vote_date>
         |  <vote_result>Passed</vote_result>
+        |  <document>
+        |    <document_congress>119</document_congress>
+        |    <document_type>S.</document_type>
+        |    <document_number>42</document_number>
+        |    <document_name>S. 42</document_name>
+        |    <document_title>Test bill</document_title>
+        |    <document_short_title/>
+        |  </document>
         |  <members/>
         |</roll_call_vote>""".stripMargin
     stubXml("/roll_call_lists/vote_menu_119_1/vote_119_1_00007.xml", minimal)
@@ -179,6 +187,14 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         |  <question>Q</question>
         |  <vote_date>2025-04-03T14:42:00</vote_date>
         |  <vote_result>Passed</vote_result>
+        |  <document>
+        |    <document_congress>119</document_congress>
+        |    <document_type>S.</document_type>
+        |    <document_number>42</document_number>
+        |    <document_name>S. 42</document_name>
+        |    <document_title>Test bill</document_title>
+        |    <document_short_title/>
+        |  </document>
         |  <members/>
         |</roll_call_vote>""".stripMargin
 
@@ -228,6 +244,14 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         |  <question>Q</question>
         |  <vote_date>2025-04-03T14:42:00</vote_date>
         |  <vote_result>Passed</vote_result>
+        |  <document>
+        |    <document_congress>119</document_congress>
+        |    <document_type>S.</document_type>
+        |    <document_number>1</document_number>
+        |    <document_name>S. 1</document_name>
+        |    <document_title>Test bill</document_title>
+        |    <document_short_title/>
+        |  </document>
         |  <members/>
         |</roll_call_vote>""".stripMargin
     stubXml("/roll_call_lists/vote_menu_119_1/vote_119_1_00001.xml", fixture)

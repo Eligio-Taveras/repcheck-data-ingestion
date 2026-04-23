@@ -16,28 +16,30 @@ import org.mockito.Mockito.{never, times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
+import repcheck.ingestion.bills.common.persistence.BillRepository
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
 import repcheck.ingestion.votes.api.HouseVotesApiClient
 import repcheck.ingestion.votes.config.{HouseVotesConfig, SenateVoteXmlConfig}
 import repcheck.ingestion.votes.lis.LisResolver
 import repcheck.ingestion.votes.repo.StanceMaterializationStatusRepository
 import repcheck.ingestion.votes.xml.{SenateVoteIndexEntry, SenateVoteXmlClient}
+import repcheck.members.common.persistence.MemberRepository
 import repcheck.pipeline.models.events.VoteRecordedEvent
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
+import repcheck.shared.models.congress.dos.bill.BillDO
+import repcheck.shared.models.congress.dos.member.MemberDO
+import repcheck.shared.models.congress.dos.results.VoteConversionResult
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
+import repcheck.shared.models.placeholder.HasPlaceholder
 
 /**
- * Unit spec for [[VoteProcessor]]. All collaborators (API clients, resolvers, converters, detector, persister, event
- * publisher, stance repo, transactor) are mocked via MockitoScala; the spec exercises the processor's orchestration
- * without touching any real HTTP or DB infrastructure.
- *
- * Primary focus: `processVote` (the common tail) — every [[VoteChangeReport]] branch, the stance-mark gate driven by
- * `billId.isDefined`, and the event emission / skip semantics.
- *
- * Secondary focus: `streamAll` chamber- and per-vote-level failure isolation via `Stream.handleErrorWith`.
+ * Unit spec for [[VoteProcessor]]. All collaborators are mocked via MockitoScala; the spec exercises the processor's
+ * orchestration without touching real HTTP or DB infrastructure. Primary focus: `processVote` (the common tail — bill
+ * resolution → change detection → persist → event emission) and `streamAll` chamber-level failure isolation.
  */
 class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -51,18 +53,24 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     logHandler = None,
   )
 
-  // ------------------------------------------------------------------
-  // Fixtures
-  // ------------------------------------------------------------------
-
   private def houseConfig(p: Int = 1)  = HouseVotesConfig(congress = 119, session = 1, parallelism = p)
   private def senateConfig(p: Int = 1) = SenateVoteXmlConfig(parallelism = p)
+
+  // Hand-rolled StubPlaceholderCreator — Mockito struggles with Scala 3's `using` arg list on ensureExists.
+  final private class StubPlaceholderCreator extends PlaceholderCreator[IO] {
+
+    def ensureExists[T <: Product](
+      naturalKey: String,
+      repository: EntityRepository[IO, T],
+    )(using HasPlaceholder[T]): IO[Unit] = IO.unit
+
+  }
 
   private def voteDO(
     voteId: Long = 0L,
     naturalKey: String = "119-House-1-42",
     chamber: Chamber = Chamber.House,
-    billId: Option[Long] = Some(100L),
+    billId: Option[Long] = None,
     updateDate: Option[Instant] = Some(Instant.parse("2024-06-01T12:00:00Z")),
   ): VoteDO =
     VoteDO(
@@ -107,9 +115,7 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     m
   }
 
-  /**
-   * Holder for every mocked collaborator — keeps the arg list out of each test.
-   */
+  /** All collaborators bundled so each test doesn't re-thread the giant arg list. */
   final private case class ProcessorMocks(
     houseClient: HouseVotesApiClient[IO],
     senateClient: SenateVoteXmlClient[IO],
@@ -120,8 +126,11 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     persister: VotePersister[IO],
     stanceRepo: StanceMaterializationStatusRepository,
     eventPublisher: IngestionEventPublisher[IO],
+    memberRepo: MemberRepository,
+    billRepo: BillRepository[ConnectionIO],
+    memberEntityRepo: EntityRepository[IO, MemberDO],
+    billEntityRepo: EntityRepository[IO, BillDO],
     findStoredVote: String => IO[Option[VoteDO]],
-    logger: PipelineLogger[IO],
   ) {
 
     def build: VoteProcessor[IO] = new VoteProcessor[IO](
@@ -134,6 +143,11 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       persister = persister,
       stanceRepo = stanceRepo,
       eventPublisher = eventPublisher,
+      memberRepo = memberRepo,
+      billRepo = billRepo,
+      memberEntityRepo = memberEntityRepo,
+      billEntityRepo = billEntityRepo,
+      placeholderCreator = new StubPlaceholderCreator,
       findStoredVote = findStoredVote,
       xa = testXa,
       houseConfig = houseConfig(),
@@ -156,8 +170,11 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       persister = mock[VotePersister[IO]],
       stanceRepo = mock[StanceMaterializationStatusRepository],
       eventPublisher = mock[IngestionEventPublisher[IO]],
+      memberRepo = mock[MemberRepository],
+      billRepo = mock[BillRepository[ConnectionIO]],
+      memberEntityRepo = mock[EntityRepository[IO, MemberDO]],
+      billEntityRepo = mock[EntityRepository[IO, BillDO]],
       findStoredVote = mock[String => IO[Option[VoteDO]]],
-      logger = mkLogger,
     )
     // Sensible defaults — tests override as needed.
     when(mocks.stanceRepo.markHasVotes(anyLong())).thenReturn(connection.pure(()))
@@ -169,65 +186,114 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
   // processVote — decision matrix
   // ------------------------------------------------------------------
 
-  "processVote" should "persist New + mark stance (bill-linked) + emit VoteRecordedEvent(isUpdate=false) and return Succeeded(eventEmitted=true)" in {
+  "processVote" should "persist New + emit event(isUpdate=false) for procedural votes and return Succeeded" in {
     val mocks = mkMocks()
-    val vote  = voteDO(billId = Some(100L))
-    val ps    = List(pos(1L))
+    // Procedural: billNaturalKey = None, so bill resolution short-circuits
+    val vote       = voteDO(billId = None)
+    val conversion = VoteConversionResult(vote, billNaturalKey = None, positions = List.empty)
+    val buildPositions: Long => List[VotePositionDO] = _ => List.empty
 
     when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Option.empty[VoteDO]))
     when(mocks.changeDetector.detect(any[VoteDO], any[List[VotePositionDO]], any[UUID]))
       .thenReturn(IO.pure(VoteChangeReport.New))
-    when(mocks.persister.persistNew(any[VoteDO], any[List[VotePositionDO]]))
+    when(mocks.persister.persistNew(any[VoteDO], any()))
       .thenReturn(IO.pure(vote.copy(voteId = 42L)))
 
     val result = mocks.build
-      .processVote(vote, ps, billNaturalKey = Some("119-HR-1234"), correlationId, LogContext("r", "s"))
+      .processVote(conversion, buildPositions, dtoBillNaturalKey = None, correlationId, LogContext("r", "s"))
       .unsafeRunSync()
 
-    val _           = result shouldBe ProcessingResult.Succeeded(vote.naturalKey, eventEmitted = true)
-    val _           = verify(mocks.persister, times(1)).persistNew(eqTo(vote), eqTo(ps))
-    val _           = verify(mocks.persister, never()).persistUpdate(any[VoteDO], any[List[VotePositionDO]], anyLong())
-    val _           = verify(mocks.persister, never()).persistMetadataOnlyUpdate(any[VoteDO], anyLong())
-    val _           = verify(mocks.stanceRepo, times(1)).markHasVotes(100L)
-    val eventCaptor = ArgumentCaptor.forClass(classOf[VoteRecordedEvent])
-    val _           = verify(mocks.eventPublisher, times(1)).voteRecorded(eventCaptor.capture(), any[UUID])
-    val event       = eventCaptor.getValue
-    val _           = event.isUpdate shouldBe false
-    val _           = event.billNaturalKey shouldBe Some("119-HR-1234")
-    event.voteNaturalKey shouldBe vote.naturalKey
+    val _ = result shouldBe ProcessingResult.Succeeded(vote.naturalKey, eventEmitted = true)
+    // Stance mark never fires for procedural votes (mechanical — schema has no row shape for them).
+    val _ = verify(mocks.stanceRepo, never()).markHasVotes(anyLong())
+    // Event still fires — downstream consumers decide what to do with billNaturalKey=None.
+    val captor = ArgumentCaptor.forClass(classOf[VoteRecordedEvent])
+    val _      = verify(mocks.eventPublisher, times(1)).voteRecorded(captor.capture(), any[UUID])
+    val _      = captor.getValue.billNaturalKey shouldBe None
+    captor.getValue.isUpdate shouldBe false
   }
 
-  it should "persist Updated(positionsChanged=true) + mark stance + emit VoteRecordedEvent(isUpdate=true) and return Succeeded(eventEmitted=true)" in {
-    val mocks  = mkMocks()
-    val vote   = voteDO(billId = Some(200L))
-    val ps     = List(pos(1L))
-    val stored = vote.copy(voteId = 77L)
+  it should "persist Updated(positionsChanged=true) + emit event(isUpdate=true) + mark stance when bill-linked" in {
+    val mocks      = mkMocks()
+    val vote       = voteDO(billId = None) // converter output: billId unset; processor resolves via billNK
+    val stored     = vote.copy(voteId = 77L, billId = Some(200L))
+    val conversion = VoteConversionResult(vote, billNaturalKey = Some("119-HR-9999"), positions = List.empty)
+    val buildPositions: Long => List[VotePositionDO] = _ => List(pos(1L))
+
+    // Bill resolution: placeholder + findByBillId returns Some(BillDO(billId=200))
+    when(mocks.billRepo.findByBillId(eqTo("119-HR-9999"))).thenReturn(
+      connection.pure(
+        Some(
+          BillDO(
+            billId = 200L,
+            naturalKey = "119-HR-9999",
+            congress = 119,
+            billType = BillType.HR,
+            number = "9999",
+            title = "A bill",
+            originChamber = None,
+            originChamberCode = None,
+            introducedDate = None,
+            policyArea = None,
+            latestActionDate = None,
+            latestActionText = None,
+            constitutionalAuthorityText = None,
+            sponsorMemberId = None,
+            textUrl = None,
+            textFormat = None,
+            textVersionType = None,
+            textDate = None,
+            textContent = None,
+            summaryText = None,
+            summaryActionDesc = None,
+            summaryActionDate = None,
+            updateDate = None,
+            updateDateIncludingText = None,
+            legislationUrl = None,
+            apiUrl = None,
+            createdAt = None,
+            updatedAt = None,
+            latestTextVersionId = None,
+          )
+        )
+      )
+    )
 
     when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
     val diff = DiffResult.ValueResult.Both("a", "b", isSame = false, isIgnored = false)
     when(mocks.changeDetector.detect(any[VoteDO], any[List[VotePositionDO]], any[UUID]))
       .thenReturn(IO.pure(VoteChangeReport.Updated(positionsChanged = true, diff = diff)))
-    when(mocks.persister.persistUpdate(any[VoteDO], any[List[VotePositionDO]], anyLong()))
+    when(mocks.persister.persistUpdate(any[VoteDO], anyLong(), any()))
       .thenReturn(IO.pure(stored.copy(voteId = 42L)))
 
     val result = mocks.build
-      .processVote(vote, ps, billNaturalKey = Some("119-HR-9999"), correlationId, LogContext("r", "s"))
+      .processVote(
+        conversion,
+        buildPositions,
+        dtoBillNaturalKey = None,
+        correlationId,
+        LogContext("r", "s"),
+      )
       .unsafeRunSync()
 
     val _ = result shouldBe ProcessingResult.Succeeded(vote.naturalKey, eventEmitted = true)
     // persistUpdate was called with the stored voteId (77L)
-    val _           = verify(mocks.persister, times(1)).persistUpdate(eqTo(vote), eqTo(ps), eqTo(77L))
-    val _           = verify(mocks.stanceRepo, times(1)).markHasVotes(200L)
-    val eventCaptor = ArgumentCaptor.forClass(classOf[VoteRecordedEvent])
-    val _           = verify(mocks.eventPublisher, times(1)).voteRecorded(eventCaptor.capture(), any[UUID])
-    eventCaptor.getValue.isUpdate shouldBe true
+    val _ = verify(mocks.persister, times(1))
+      .persistUpdate(any[VoteDO], eqTo(77L), any())
+    // Stance mark fires because the persisted vote has billId = Some(200L)
+    val _      = verify(mocks.stanceRepo, times(1)).markHasVotes(200L)
+    val captor = ArgumentCaptor.forClass(classOf[VoteRecordedEvent])
+    val _      = verify(mocks.eventPublisher, times(1)).voteRecorded(captor.capture(), any[UUID])
+    val _      = captor.getValue.isUpdate shouldBe true
+    captor.getValue.billNaturalKey shouldBe Some("119-HR-9999")
   }
 
-  it should "persist Updated(positionsChanged=false) via persistMetadataOnlyUpdate, SKIP stance mark and SKIP event, return Succeeded(eventEmitted=false)" in {
-    val mocks  = mkMocks()
-    val vote   = voteDO(billId = Some(300L))
-    val ps     = List(pos(1L))
-    val stored = vote.copy(voteId = 88L)
+  it should "persist Updated(positionsChanged=false) via persistMetadataOnlyUpdate and SKIP stance+event" in {
+    val mocks      = mkMocks()
+    val vote       = voteDO(billId = None)
+    val stored     = vote.copy(voteId = 88L, billId = Some(300L))
+    val conversion = VoteConversionResult(vote, billNaturalKey = None, positions = List.empty)
+    val buildPositions: Long => List[VotePositionDO] = _ => List.empty
 
     when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
     val diff = DiffResult.ValueResult.Both("x", "x", isSame = true, isIgnored = false)
@@ -237,74 +303,46 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       .thenReturn(IO.pure(stored.copy(voteId = 42L)))
 
     val result = mocks.build
-      .processVote(vote, ps, billNaturalKey = Some("119-HR-1234"), correlationId, LogContext("r", "s"))
+      .processVote(conversion, buildPositions, dtoBillNaturalKey = None, correlationId, LogContext("r", "s"))
       .unsafeRunSync()
 
     val _ = result shouldBe ProcessingResult.Succeeded(vote.naturalKey, eventEmitted = false)
-    val _ = verify(mocks.persister, times(1)).persistMetadataOnlyUpdate(eqTo(vote), eqTo(88L))
-    val _ = verify(mocks.persister, never()).persistNew(any[VoteDO], any[List[VotePositionDO]])
-    val _ = verify(mocks.persister, never()).persistUpdate(any[VoteDO], any[List[VotePositionDO]], anyLong())
+    val _ = verify(mocks.persister, times(1)).persistMetadataOnlyUpdate(any[VoteDO], eqTo(88L))
+    val _ = verify(mocks.persister, never()).persistNew(any[VoteDO], any())
+    val _ =
+      verify(mocks.persister, never()).persistUpdate(any[VoteDO], anyLong(), any())
     val _ = verify(mocks.stanceRepo, never()).markHasVotes(anyLong())
     verify(mocks.eventPublisher, never()).voteRecorded(any[VoteRecordedEvent], any[UUID])
   }
 
   it should "no-op on Unchanged and return Skipped(reason=unchanged)" in {
-    val mocks = mkMocks()
-    val vote  = voteDO()
-    val ps    = List(pos(1L))
+    val mocks      = mkMocks()
+    val vote       = voteDO()
+    val conversion = VoteConversionResult(vote, billNaturalKey = None, positions = List.empty)
+    val buildPositions: Long => List[VotePositionDO] = _ => List.empty
 
     when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(vote.copy(voteId = 99L))))
     when(mocks.changeDetector.detect(any[VoteDO], any[List[VotePositionDO]], any[UUID]))
       .thenReturn(IO.pure(VoteChangeReport.Unchanged))
 
     val result = mocks.build
-      .processVote(vote, ps, billNaturalKey = Some("119-HR-1234"), correlationId, LogContext("r", "s"))
+      .processVote(conversion, buildPositions, dtoBillNaturalKey = None, correlationId, LogContext("r", "s"))
       .unsafeRunSync()
 
     val _ = result shouldBe ProcessingResult.Skipped(vote.naturalKey, "unchanged")
-    val _ = verify(mocks.persister, never()).persistNew(any[VoteDO], any[List[VotePositionDO]])
-    val _ = verify(mocks.persister, never()).persistUpdate(any[VoteDO], any[List[VotePositionDO]], anyLong())
+    val _ = verify(mocks.persister, never()).persistNew(any[VoteDO], any())
     val _ = verify(mocks.persister, never()).persistMetadataOnlyUpdate(any[VoteDO], anyLong())
     val _ = verify(mocks.stanceRepo, never()).markHasVotes(anyLong())
     verify(mocks.eventPublisher, never()).voteRecorded(any[VoteRecordedEvent], any[UUID])
   }
 
   // ------------------------------------------------------------------
-  // Procedural (billId = None) — persist + event, skip stance mark only
-  // ------------------------------------------------------------------
-
-  it should "emit VoteRecordedEvent with billNaturalKey=None for procedural votes but SKIP stance mark (schema-driven)" in {
-    val mocks = mkMocks()
-    val vote  = voteDO(billId = None)
-    val ps    = List(pos(1L))
-
-    when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Option.empty[VoteDO]))
-    when(mocks.changeDetector.detect(any[VoteDO], any[List[VotePositionDO]], any[UUID]))
-      .thenReturn(IO.pure(VoteChangeReport.New))
-    when(mocks.persister.persistNew(any[VoteDO], any[List[VotePositionDO]]))
-      .thenReturn(IO.pure(vote.copy(voteId = 42L)))
-
-    val result = mocks.build
-      .processVote(vote, ps, billNaturalKey = None, correlationId, LogContext("r", "s"))
-      .unsafeRunSync()
-
-    val _           = result shouldBe ProcessingResult.Succeeded(vote.naturalKey, eventEmitted = true)
-    val _           = verify(mocks.stanceRepo, never()).markHasVotes(anyLong())
-    val eventCaptor = ArgumentCaptor.forClass(classOf[VoteRecordedEvent])
-    val _           = verify(mocks.eventPublisher, times(1)).voteRecorded(eventCaptor.capture(), any[UUID])
-    val _           = eventCaptor.getValue.billNaturalKey shouldBe None
-    eventCaptor.getValue.chamber shouldBe "House"
-  }
-
-  // ------------------------------------------------------------------
   // Chamber-level failure isolation
   // ------------------------------------------------------------------
 
-  "streamAll" should "emit a chamber-level ProcessingResult.Failed when fetchRecentVotes raises and the other chamber still runs" in {
+  "streamAll" should "emit house-chamber Failed when fetchRecentVotes raises; senate stream still runs" in {
     val mocks = mkMocks()
-    // House fails at the list endpoint
     when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.raiseError(new RuntimeException("house 401")))
-    // Senate returns an empty index — no work, but stream completes cleanly
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1)))
       .thenReturn(IO.pure(List.empty[SenateVoteIndexEntry]))
 
@@ -314,17 +352,10 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       case f @ ProcessingResult.Failed(id, _, _) if id == "house-chamber" => f
     }
     val _ = houseFailures.length shouldBe 1
-    houseFailures.headOption.foreach { f =>
-      val _ = f.reason should include("house 401")
-    }
-    // Senate produces no results (empty index) but the stream did NOT abort
-    val senateFailures = results.collect {
-      case f @ ProcessingResult.Failed(id, _, _) if id == "senate-chamber" => f
-    }
-    senateFailures shouldBe List.empty
+    houseFailures.headOption.foreach(f => f.reason should include("house 401"))
   }
 
-  it should "emit a chamber-level ProcessingResult.Failed when fetchVoteIndex raises (mirror of the house case)" in {
+  it should "emit senate-chamber Failed when fetchVoteIndex raises" in {
     val mocks = mkMocks()
     when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List.empty))
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1)))
@@ -340,10 +371,41 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
   }
 
   // ------------------------------------------------------------------
-  // End-to-end-through-the-processor: House list → fetch members → convert → process
+  // Event publish failure surfaces as VoteProcessingFailed
   // ------------------------------------------------------------------
 
-  it should "process a single House vote end-to-end: fetch list → fetch members → convert → Succeeded" in {
+  it should "surface an event-publish failure as VoteProcessingFailed (caught by per-vote handleErrorWith)" in {
+    val mocks      = mkMocks()
+    val vote       = voteDO(billId = None, updateDate = None)
+    val conversion = VoteConversionResult(vote, billNaturalKey = None, positions = List.empty)
+    val buildPositions: Long => List[VotePositionDO] = _ => List.empty
+
+    when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Option.empty[VoteDO]))
+    when(mocks.changeDetector.detect(any[VoteDO], any[List[VotePositionDO]], any[UUID]))
+      .thenReturn(IO.pure(VoteChangeReport.New))
+    when(mocks.persister.persistNew(any[VoteDO], any()))
+      .thenReturn(IO.pure(vote.copy(voteId = 42L)))
+    when(mocks.eventPublisher.voteRecorded(any[VoteRecordedEvent], any[UUID]))
+      .thenReturn(IO.raiseError(new RuntimeException("pubsub topic not found")))
+
+    val outcome = mocks.build
+      .processVote(conversion, buildPositions, dtoBillNaturalKey = None, correlationId, LogContext("r", "s"))
+      .attempt
+      .unsafeRunSync()
+
+    outcome match {
+      case Left(e: repcheck.ingestion.votes.errors.VoteProcessingFailed) =>
+        val _ = e.getMessage should include("event publish failed")
+        e.getMessage should include(vote.naturalKey)
+      case other => fail(s"expected Left(VoteProcessingFailed), got $other")
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // End-to-end House + Senate via streamAll (covers processHouseVote + processSenateVote + buildPositions)
+  // ------------------------------------------------------------------
+
+  it should "process one House vote end-to-end via streamAll: fetch list → fetch members → convert → resolve members → persist + emit" in {
     val mocks = mkMocks()
 
     val listItem = repcheck.shared.models.congress.dto.vote.VoteListItemDTO(
@@ -380,21 +442,40 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       voteQuestion = Some("On Passage"),
       results = Some(List.empty),
     )
-    val vote = voteDO(naturalKey = "119-House-1-42")
-    val ps   = List(pos(1L))
+    val vote = voteDO(naturalKey = "119-House-1-42", billId = None)
+    val unresolved = repcheck.shared.models.congress.dos.results.UnresolvedVotePosition(
+      memberSource = Left("A000055"),
+      voteCast = Some(VoteCast.Yea),
+      partyAtVote = Some(Party.Democrat),
+      stateAtVote = Some(UsState.NewYork),
+    )
 
     when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List(listItem)))
     when(mocks.houseClient.fetchMembersVotePositions(eqTo(119), eqTo(1), eqTo(42)))
       .thenReturn(IO.pure(membersDto))
     when(mocks.houseConverter.convert(any[repcheck.shared.models.congress.dto.vote.VoteMembersDTO], any[LogContext]))
-      .thenReturn(IO.pure((vote, ps)))
+      .thenReturn(IO.pure(VoteConversionResult(vote, billNaturalKey = None, positions = List(unresolved))))
+
+    // Member resolution: placeholder creator is a no-op stub; memberRepo returns Some(MemberDO) with memberId=7
+    import doobie.free.connection
+    val resolvedMember = mock[repcheck.shared.models.congress.dos.member.MemberDO]
+    when(resolvedMember.memberId).thenReturn(7L)
+    when(mocks.memberRepo.findByBioguideId(eqTo("A000055")))
+      .thenReturn(connection.pure(Some(resolvedMember)))
+
+    // Bill resolution: buildHouseBillNaturalKey produces "119-HR-1234" from the DTO fields, so the processor
+    // calls billRepo.findByBillId with that key.
+    val resolvedBill = mock[repcheck.shared.models.congress.dos.bill.BillDO]
+    when(resolvedBill.billId).thenReturn(900L)
+    when(mocks.billRepo.findByBillId(eqTo("119-HR-1234"))).thenReturn(connection.pure(Some(resolvedBill)))
+
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1)))
       .thenReturn(IO.pure(List.empty[SenateVoteIndexEntry]))
 
     when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Option.empty[VoteDO]))
     when(mocks.changeDetector.detect(any[VoteDO], any[List[VotePositionDO]], any[UUID]))
       .thenReturn(IO.pure(VoteChangeReport.New))
-    when(mocks.persister.persistNew(any[VoteDO], any[List[VotePositionDO]]))
+    when(mocks.persister.persistNew(any[VoteDO], any()))
       .thenReturn(IO.pure(vote.copy(voteId = 42L)))
 
     val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
@@ -408,10 +489,18 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     }
   }
 
-  it should "process a single Senate vote end-to-end: fetch index → fetch vote → resolve LIS → convert → process" in {
+  it should "process one Senate vote end-to-end via streamAll: fetch index → fetch XML → LIS resolve → convert → persist + emit" in {
     val mocks = mkMocks()
 
     val entry = SenateVoteIndexEntry(voteNumber = 17, voteDate = "Jan 25", question = "On Passage", result = "Passed")
+    val senDoc = repcheck.shared.models.congress.dto.vote.SenateVoteDocumentDTO(
+      documentCongress = 119,
+      documentType = "S.",
+      documentNumber = "1071",
+      documentName = "S. 1071",
+      documentTitle = "Title",
+      documentShortTitle = None,
+    )
     val senDto = repcheck.shared.models.congress.dto.vote.SenateVoteXmlDTO(
       congress = 119,
       session = 1,
@@ -419,83 +508,182 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       question = "On Passage of the Bill",
       voteDate = "January 25, 2025, 11:30 AM",
       result = "Bill Passed",
+      document = senDoc,
       members = List.empty,
     )
     val vote = voteDO(naturalKey = "119-Senate-1-17", chamber = Chamber.Senate, billId = None)
+    val unresolved = repcheck.shared.models.congress.dos.results.UnresolvedVotePosition(
+      memberSource = Right("S428"),
+      voteCast = Some(VoteCast.Yea),
+      partyAtVote = Some(Party.Democrat),
+      stateAtVote = Some(UsState.NewYork),
+    )
 
     when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List.empty))
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(entry)))
     when(mocks.senateClient.fetchVote(eqTo(119), eqTo(1), eqTo(17))).thenReturn(IO.pure(senDto))
-    when(mocks.lisResolver.resolve(eqTo(senDto))).thenReturn(IO.pure(Map.empty[String, Long]))
-    when(mocks.senateConverter.convert(eqTo(senDto), any[Map[String, Long]], any[LogContext]))
-      .thenReturn(IO.pure((vote, List.empty[VotePositionDO])))
+    when(mocks.lisResolver.resolve(eqTo(senDto))).thenReturn(IO.pure(Map("S428" -> 99L)))
+    when(mocks.senateConverter.convert(eqTo(senDto), any[LogContext]))
+      .thenReturn(
+        IO.pure(VoteConversionResult(vote, billNaturalKey = Some("119-S-1071"), positions = List(unresolved)))
+      )
+
+    // Bill resolution path: billRepo returns Some(BillDO) with billId=500
+    import doobie.free.connection
+    val resolvedBill = mock[repcheck.shared.models.congress.dos.bill.BillDO]
+    when(resolvedBill.billId).thenReturn(500L)
+    when(mocks.billRepo.findByBillId(eqTo("119-S-1071"))).thenReturn(connection.pure(Some(resolvedBill)))
 
     when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Option.empty[VoteDO]))
     when(mocks.changeDetector.detect(any[VoteDO], any[List[VotePositionDO]], any[UUID]))
       .thenReturn(IO.pure(VoteChangeReport.New))
-    when(mocks.persister.persistNew(any[VoteDO], any[List[VotePositionDO]]))
-      .thenReturn(IO.pure(vote.copy(voteId = 77L)))
+    when(mocks.persister.persistNew(any[VoteDO], any()))
+      .thenReturn(IO.pure(vote.copy(voteId = 77L, billId = Some(500L))))
 
     val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
 
     val _ = results.length shouldBe 1
-    // Senate vote is procedural by design (billId = None) — event emitted, no stance mark
-    val _ = verify(mocks.stanceRepo, never()).markHasVotes(anyLong())
+    // Stance mark fires because the persisted vote has billId = Some(500L)
+    val _ = verify(mocks.stanceRepo, times(1)).markHasVotes(500L)
     verify(mocks.eventPublisher, times(1)).voteRecorded(any[VoteRecordedEvent], any[UUID])
   }
 
   // ------------------------------------------------------------------
-  // Per-vote failure isolation — one bad vote doesn't abort the chamber stream
+  // Bill / member resolution failure paths
   // ------------------------------------------------------------------
 
-  it should "isolate per-vote failures on the Senate side: a failing fetchVote emits Failed, other chamber unaffected" in {
+  "resolveOptionalBillId" should "raise BillResolutionFailed when findByBillId returns None after ensureExists" in {
     val mocks = mkMocks()
-    val entry = SenateVoteIndexEntry(voteNumber = 44, voteDate = "Mar 1", question = "On Passage", result = "Passed")
-
-    when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List.empty))
-    when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(entry)))
-    when(mocks.senateClient.fetchVote(eqTo(119), eqTo(1), eqTo(44)))
-      .thenReturn(IO.raiseError(new RuntimeException("senate xml 500")))
-
-    val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
-
-    val failures = results.collect { case f: ProcessingResult.Failed => f }
-    val _        = failures.length shouldBe 1
-    val f        = failures.headOption.getOrElse(fail("expected one failure"))
-    val _        = f.entityId shouldBe "119-Senate-1-44"
-    f.reason should include("senate xml 500")
-  }
-
-  it should "surface an event-publish failure as a per-vote ProcessingResult.Failed (wrapped in VoteProcessingFailed)" in {
-    val mocks = mkMocks()
-    // Vote with updateDate=None so we exercise the voteDate fallback on line 276
-    val vote = voteDO(updateDate = None)
-    val ps   = List(pos(1L))
-
-    when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Option.empty[VoteDO]))
-    when(mocks.changeDetector.detect(any[VoteDO], any[List[VotePositionDO]], any[UUID]))
-      .thenReturn(IO.pure(VoteChangeReport.New))
-    when(mocks.persister.persistNew(any[VoteDO], any[List[VotePositionDO]]))
-      .thenReturn(IO.pure(vote.copy(voteId = 42L)))
-    when(mocks.eventPublisher.voteRecorded(any[VoteRecordedEvent], any[UUID]))
-      .thenReturn(IO.raiseError(new RuntimeException("pubsub topic not found")))
+    import doobie.free.connection
+    when(mocks.billRepo.findByBillId(eqTo("119-HR-1234"))).thenReturn(connection.pure(Option.empty))
 
     val outcome = mocks.build
-      .processVote(vote, ps, billNaturalKey = Some("119-HR-1234"), correlationId, LogContext("r", "s"))
+      .resolveOptionalBillId(Some("119-HR-1234"), LogContext("r", "s"))
       .attempt
       .unsafeRunSync()
 
     outcome match {
-      case Left(e: repcheck.ingestion.votes.errors.VoteProcessingFailed) =>
-        val _ = e.getMessage should include("event publish failed")
-        e.getMessage should include(vote.naturalKey)
-      case other => fail(s"expected Left(VoteProcessingFailed), got $other")
+      case Left(e: repcheck.ingestion.votes.errors.BillResolutionFailed) =>
+        e.billNaturalKey shouldBe "119-HR-1234"
+      case other => fail(s"expected Left(BillResolutionFailed), got $other")
     }
   }
 
-  it should "isolate per-vote failures: a failing converter on one House vote emits Failed, other chamber unaffected" in {
+  it should "short-circuit to None for None input (no DB calls at all)" in {
     val mocks = mkMocks()
+    mocks.build.resolveOptionalBillId(None, LogContext("r", "s")).unsafeRunSync() shouldBe None
+  }
 
+  "resolveHouseMembers" should "short-circuit on empty position list" in {
+    val mocks = mkMocks()
+    mocks.build.resolveHouseMembers(List.empty, LogContext("r", "s")).unsafeRunSync() shouldBe Map.empty[String, Long]
+  }
+
+  it should "raise MemberResolutionFailed when a bioguide lookup returns None after ensureExists" in {
+    val mocks = mkMocks()
+    import doobie.free.connection
+    when(mocks.memberRepo.findByBioguideId(eqTo("B000999"))).thenReturn(connection.pure(Option.empty))
+
+    val unresolved = repcheck.shared.models.congress.dos.results.UnresolvedVotePosition(
+      memberSource = Left("B000999"),
+      voteCast = Some(VoteCast.Yea),
+      partyAtVote = Some(Party.Democrat),
+      stateAtVote = Some(UsState.NewYork),
+    )
+
+    val outcome = mocks.build
+      .resolveHouseMembers(List(unresolved), LogContext("r", "s"))
+      .attempt
+      .unsafeRunSync()
+
+    outcome match {
+      case Left(e: repcheck.ingestion.votes.errors.MemberResolutionFailed) =>
+        e.bioguideId shouldBe "B000999"
+      case other => fail(s"expected Left(MemberResolutionFailed), got $other")
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Position builders — pure helpers
+  // ------------------------------------------------------------------
+
+  "buildHousePositions" should "materialize House-arm VotePositionDOs with the given voteId + resolved member_ids" in {
+    val mocks = mkMocks()
+    val unresolved = List(
+      repcheck.shared.models.congress.dos.results.UnresolvedVotePosition(
+        memberSource = Left("A000055"),
+        voteCast = Some(VoteCast.Yea),
+        partyAtVote = Some(Party.Democrat),
+        stateAtVote = Some(UsState.NewYork),
+      ),
+      repcheck.shared.models.congress.dos.results.UnresolvedVotePosition(
+        memberSource = Right("S428"), // Senate entry — should be dropped by House builder
+        voteCast = Some(VoteCast.Nay),
+        partyAtVote = Some(Party.Democrat),
+        stateAtVote = Some(UsState.Maryland),
+      ),
+    )
+    val result = mocks.build.buildHousePositions(42L, unresolved, Map("A000055" -> 7L))
+
+    val _ = result.length shouldBe 1
+    val p = result.headOption.getOrElse(fail("expected one position"))
+    val _ = p.voteId shouldBe 42L
+    val _ = p.memberId shouldBe Some(7L)
+    p.lisMemberId shouldBe None
+  }
+
+  "buildSenatePositions" should "materialize Senate-arm VotePositionDOs with the given voteId + resolved lis_members.id" in {
+    val mocks = mkMocks()
+    val unresolved = List(
+      repcheck.shared.models.congress.dos.results.UnresolvedVotePosition(
+        memberSource = Right("S428"),
+        voteCast = Some(VoteCast.Yea),
+        partyAtVote = Some(Party.Democrat),
+        stateAtVote = Some(UsState.NewYork),
+      ),
+      repcheck.shared.models.congress.dos.results.UnresolvedVotePosition(
+        memberSource = Left("A000055"), // House entry — dropped by Senate builder
+        voteCast = Some(VoteCast.Nay),
+        partyAtVote = Some(Party.Democrat),
+        stateAtVote = Some(UsState.Maryland),
+      ),
+    )
+    val result = mocks.build.buildSenatePositions(88L, unresolved, Map("S428" -> 99L))
+
+    val _ = result.length shouldBe 1
+    val p = result.headOption.getOrElse(fail("expected one position"))
+    val _ = p.voteId shouldBe 88L
+    val _ = p.lisMemberId shouldBe Some(99L)
+    p.memberId shouldBe None
+  }
+
+  "buildHouseNaturalKey" should "use the DTO's sessionNumber when present" in {
+    val mocks = mkMocks()
+    val listItem = repcheck.shared.models.congress.dto.vote.VoteListItemDTO(
+      congress = 119,
+      chamber = "House",
+      rollCallNumber = 5,
+      sessionNumber = Some(2),
+      startDate = None,
+      updateDate = None,
+      result = None,
+      voteType = None,
+      legislationNumber = None,
+      legislationType = None,
+      legislationUrl = None,
+      url = None,
+      identifier = None,
+      sourceDataUrl = None,
+    )
+    mocks.build.buildHouseNaturalKey(listItem) shouldBe "119-House-2-5"
+  }
+
+  // ------------------------------------------------------------------
+  // Per-vote failure isolation (as distinct from chamber-level failure isolation)
+  // ------------------------------------------------------------------
+
+  it should "isolate House per-vote failures: fetchMembersVotePositions raises, chamber stream continues" in {
+    val mocks = mkMocks()
     val listItem = repcheck.shared.models.congress.dto.vote.VoteListItemDTO(
       congress = 119,
       chamber = "House",
@@ -514,17 +702,58 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     )
     when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List(listItem)))
     when(mocks.houseClient.fetchMembersVotePositions(eqTo(119), eqTo(1), eqTo(99)))
-      .thenReturn(IO.raiseError(new RuntimeException("detail fetch 404")))
+      .thenReturn(IO.raiseError(new RuntimeException("fetch detail 404")))
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1)))
       .thenReturn(IO.pure(List.empty[SenateVoteIndexEntry]))
 
     val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
 
-    val failures = results.collect { case f: ProcessingResult.Failed => f }
-    val _        = failures.length shouldBe 1
-    val f        = failures.headOption.getOrElse(fail("expected one failure"))
-    val _        = f.entityId shouldBe "119-House-1-99"
-    f.reason should include("detail fetch 404")
+    val perVoteFailures = results.collect { case f: ProcessingResult.Failed => f }
+    val _               = perVoteFailures.length shouldBe 1
+    val f               = perVoteFailures.headOption.getOrElse(fail("expected one per-vote failure"))
+    val _               = f.entityId shouldBe "119-House-1-99"
+    f.reason should include("fetch detail 404")
+  }
+
+  it should "isolate Senate per-vote failures: fetchVote raises, chamber stream continues" in {
+    val mocks = mkMocks()
+    val entry = SenateVoteIndexEntry(voteNumber = 44, voteDate = "Mar 1", question = "On Passage", result = "Passed")
+
+    when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List.empty))
+    when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(entry)))
+    when(mocks.senateClient.fetchVote(eqTo(119), eqTo(1), eqTo(44)))
+      .thenReturn(IO.raiseError(new RuntimeException("senate xml 500")))
+
+    val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
+
+    val perVoteFailures = results.collect { case f: ProcessingResult.Failed => f }
+    val _               = perVoteFailures.length shouldBe 1
+    val f               = perVoteFailures.headOption.getOrElse(fail("expected one per-vote failure"))
+    val _               = f.entityId shouldBe "119-Senate-1-44"
+    f.reason should include("senate xml 500")
+  }
+
+  "buildSenateBillNaturalKey" should "always return None (senate paths go through the converter's classifyDocument)" in {
+    val mocks = mkMocks()
+    val doc = repcheck.shared.models.congress.dto.vote.SenateVoteDocumentDTO(
+      documentCongress = 119,
+      documentType = "S.",
+      documentNumber = "1",
+      documentName = "S. 1",
+      documentTitle = "Test",
+      documentShortTitle = None,
+    )
+    val dto = repcheck.shared.models.congress.dto.vote.SenateVoteXmlDTO(
+      congress = 119,
+      session = 1,
+      voteNumber = 1,
+      question = "Q",
+      voteDate = "2025-01-25T00:00:00",
+      result = "Passed",
+      document = doc,
+      members = List.empty,
+    )
+    mocks.build.buildSenateBillNaturalKey(dto) shouldBe None
   }
 
 }

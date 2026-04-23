@@ -35,7 +35,11 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
     finally stream.close()
   }
 
-  private def voteElem(voteDate: String, members: String = sampleMemberXml): Elem =
+  private def voteElem(
+    voteDate: String,
+    members: String = sampleMemberXml,
+    document: String = sampleDocumentXml,
+  ): Elem =
     XML.loadString(
       s"""<?xml version="1.0" encoding="UTF-8"?>
          |<roll_call_vote>
@@ -45,6 +49,7 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
          |  <question>On the Nomination</question>
          |  <vote_date>$voteDate</vote_date>
          |  <vote_result>Nomination Confirmed</vote_result>
+         |  $document
          |  <members>$members</members>
          |</roll_call_vote>""".stripMargin
     )
@@ -58,6 +63,16 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
       |  <state>MD</state>
       |  <vote_cast>Nay</vote_cast>
       |</member>""".stripMargin
+
+  private val sampleDocumentXml: String =
+    """<document>
+      |  <document_congress>119</document_congress>
+      |  <document_type>PN</document_type>
+      |  <document_number>11-11</document_number>
+      |  <document_name>PN11-11</document_name>
+      |  <document_title>Kristi Noem, of South Dakota, to be Secretary of Homeland Security</document_title>
+      |  <document_short_title/>
+      |</document>""".stripMargin
 
   "decodeVote" should "round-trip a well-formed senate.gov vote fixture into a populated SenateVoteXmlDTO" in {
     val elem = loadXml("/senate-xml/vote_119_1_00017.xml")
@@ -136,13 +151,14 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
 
   it should "reject a missing required element with a clear message" in {
     val elem = XML.loadString(
-      """<roll_call_vote>
+      s"""<roll_call_vote>
         |  <congress>119</congress>
         |  <session>1</session>
         |  <vote_number>17</vote_number>
         |  <!-- <question> deliberately missing -->
         |  <vote_date>2025-04-03T14:42:00</vote_date>
         |  <vote_result>Agreed to</vote_result>
+        |  $sampleDocumentXml
         |  <members/>
         |</roll_call_vote>""".stripMargin
     )
@@ -156,13 +172,14 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
 
   it should "reject a non-integer vote_number" in {
     val elem = XML.loadString(
-      """<roll_call_vote>
+      s"""<roll_call_vote>
         |  <congress>119</congress>
         |  <session>1</session>
         |  <vote_number>abc</vote_number>
         |  <question>Q</question>
         |  <vote_date>2025-04-03T14:42:00</vote_date>
         |  <vote_result>X</vote_result>
+        |  $sampleDocumentXml
         |  <members/>
         |</roll_call_vote>""".stripMargin
     )
@@ -175,13 +192,14 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
 
   it should "fall back to <result> when <vote_result> is missing" in {
     val elem = XML.loadString(
-      """<roll_call_vote>
+      s"""<roll_call_vote>
         |  <congress>119</congress>
         |  <session>1</session>
         |  <vote_number>5</vote_number>
         |  <question>Q</question>
         |  <vote_date>2025-04-03T14:42:00</vote_date>
         |  <result>Passed</result>
+        |  $sampleDocumentXml
         |  <members/>
         |</roll_call_vote>""".stripMargin
     )
@@ -192,12 +210,13 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
 
   it should "fail when both <vote_result> and <result> are missing" in {
     val elem = XML.loadString(
-      """<roll_call_vote>
+      s"""<roll_call_vote>
         |  <congress>119</congress>
         |  <session>1</session>
         |  <vote_number>5</vote_number>
         |  <question>Q</question>
         |  <vote_date>2025-04-03T14:42:00</vote_date>
+        |  $sampleDocumentXml
         |  <members/>
         |</roll_call_vote>""".stripMargin
     )
@@ -206,6 +225,85 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
 
     val _ = result.isLeft shouldBe true
     result.left.toOption.map(_.detail).getOrElse("") should include("Missing <vote_result>")
+  }
+
+  it should "reject a missing <document> element" in {
+    val elem = XML.loadString(
+      """<roll_call_vote>
+        |  <congress>119</congress>
+        |  <session>1</session>
+        |  <vote_number>5</vote_number>
+        |  <question>Q</question>
+        |  <vote_date>2025-04-03T14:42:00</vote_date>
+        |  <vote_result>Agreed to</vote_result>
+        |  <members/>
+        |</roll_call_vote>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+
+    val _ = result.isLeft shouldBe true
+    result.left.toOption.map(_.detail).getOrElse("") should include("Missing required <document>")
+  }
+
+  it should "decode the <document> element populating every field" in {
+    val elem = XML.loadString(
+      s"""<roll_call_vote>
+         |  <congress>119</congress>
+         |  <session>1</session>
+         |  <vote_number>648</vote_number>
+         |  <question>On the Motion</question>
+         |  <vote_date>December 17, 2025, 11:39 AM</vote_date>
+         |  <vote_result>Motion Agreed to</vote_result>
+         |  <document>
+         |    <document_congress>119</document_congress>
+         |    <document_type>S.</document_type>
+         |    <document_number>1071</document_number>
+         |    <document_name>S. 1071</document_name>
+         |    <document_title>A bill to require the Secretary of Veterans Affairs to disinter the remains of Fernando V. Cota.</document_title>
+         |    <document_short_title/>
+         |  </document>
+         |  <members>$sampleMemberXml</members>
+         |</roll_call_vote>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+    val dto    = result.toOption.getOrElse(fail("expected Right"))
+
+    val _ = dto.document.documentCongress shouldBe 119
+    val _ = dto.document.documentType shouldBe "S."
+    val _ = dto.document.documentNumber shouldBe "1071"
+    val _ = dto.document.documentName shouldBe "S. 1071"
+    val _ =
+      dto.document.documentTitle should include("A bill to require the Secretary of Veterans Affairs")
+    dto.document.documentShortTitle shouldBe None
+  }
+
+  it should "decode the <document> element with a populated documentShortTitle" in {
+    val elem = XML.loadString(
+      s"""<roll_call_vote>
+         |  <congress>117</congress>
+         |  <session>1</session>
+         |  <vote_number>50</vote_number>
+         |  <question>On Passage</question>
+         |  <vote_date>2021-03-06T00:00:00</vote_date>
+         |  <vote_result>Agreed to</vote_result>
+         |  <document>
+         |    <document_congress>117</document_congress>
+         |    <document_type>H.R.</document_type>
+         |    <document_number>1319</document_number>
+         |    <document_name>H.R. 1319</document_name>
+         |    <document_title>American Rescue Plan Act of 2021</document_title>
+         |    <document_short_title>ARPA</document_short_title>
+         |  </document>
+         |  <members>$sampleMemberXml</members>
+         |</roll_call_vote>""".stripMargin
+    )
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+    val dto    = result.toOption.getOrElse(fail("expected Right"))
+
+    dto.document.documentShortTitle shouldBe Some("ARPA")
   }
 
   it should "fail the entire decode when a member entry is missing a required field" in {

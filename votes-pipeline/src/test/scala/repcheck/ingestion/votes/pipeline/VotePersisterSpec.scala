@@ -19,11 +19,12 @@ import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
 
 /**
- * Unit spec for [[VotePersister]]. The three repositories are mocked; each mocked method returns a `ConnectionIO.pure`
- * value so no actual SQL runs. A minimal in-memory H2 transactor satisfies the `.transact(xa)` boundary — the
- * `ConnectionIO.pure`s compose without touching the connection.
+ * Unit spec for [[VotePersister]]. The three repositories are mocked; the caller supplies a `positionsFactory: Long =>
+ * List[VotePositionDO]` that the persister invokes INSIDE the transaction once the upsert returns the real `voteId`. No
+ * `VotePositionDO` with a fake `voteId = 0L` is carried through the pipeline.
  *
- * Matches the pattern used by `bill-metadata-pipeline/BillPersisterSpec`.
+ * An in-memory H2 transactor satisfies the `.transact(xa)` boundary — the mocked `ConnectionIO.pure` values compose
+ * without touching the connection.
  */
 class VotePersisterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -58,17 +59,21 @@ class VotePersisterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       updatedAt = None,
     )
 
-  private def pos(memberId: Long, voteId: Long = 0L): VotePositionDO =
-    VotePositionDO(
-      id = 0L,
-      voteId = voteId,
-      memberId = Some(memberId),
-      position = Some(VoteCast.Yea),
-      partyAtVote = Some(Party.Democrat),
-      stateAtVote = Some(UsState.NewYork),
-      createdAt = None,
-      lisMemberId = None,
-    )
+  /** Factory closure that materializes positions with a given voteId — exactly how the processor passes it in. */
+  private def factory(members: List[Long]): Long => List[VotePositionDO] =
+    voteId =>
+      members.map(memberId =>
+        VotePositionDO(
+          id = 0L,
+          voteId = voteId,
+          memberId = Some(memberId),
+          position = Some(VoteCast.Yea),
+          partyAtVote = Some(Party.Democrat),
+          stateAtVote = Some(UsState.NewYork),
+          createdAt = None,
+          lisMemberId = None,
+        )
+      )
 
   private def mkFixture(): (VotePersister[IO], VoteRepository, VotePositionRepository, VoteHistoryArchiver) = {
     val voteRepo        = mock[VoteRepository]
@@ -82,7 +87,7 @@ class VotePersisterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
   // persistNew
   // ------------------------------------------------------------------
 
-  "persistNew" should "upsert the vote, rewrite position voteIds to the returned id, and replace positions — without archiving" in {
+  "persistNew" should "upsert the vote, then invoke positionsFactory with the upserted voteId, then replaceAll" in {
     val (persister, voteRepo, positionRepo, historyArchiver) = mkFixture()
 
     val incoming  = baseVoteDO(voteId = 0L)
@@ -90,26 +95,43 @@ class VotePersisterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     when(voteRepo.upsert(any[VoteDO])).thenReturn(connection.pure(persisted))
     when(positionRepo.replaceAll(anyLong(), any[List[VotePositionDO]])).thenReturn(connection.pure(()))
 
-    val positions = List(pos(1L), pos(2L))
+    val positionsFactory = factory(List(1L, 2L))
 
-    val result = persister.persistNew(incoming, positions).unsafeRunSync()
+    val result = persister.persistNew(incoming, positionsFactory).unsafeRunSync()
 
     val _ = result shouldBe persisted
     val _ = verify(historyArchiver, never()).archiveVote(anyLong())
     val _ = verify(voteRepo, times(1)).upsert(incoming)
 
-    // Positions should have been rewritten to the upserted vote's voteId (42L), then handed to replaceAll(42L, ...)
+    // replaceAll MUST be called with voteId=42L and positions built by the factory using that same id.
     val captor = org.mockito.ArgumentCaptor.forClass(classOf[List[VotePositionDO]])
     val _      = verify(positionRepo, times(1)).replaceAll(org.mockito.ArgumentMatchers.eq(42L), captor.capture())
-    val actualPositions = captor.getValue
-    all(actualPositions.map(_.voteId)) shouldBe 42L
+    val actual = captor.getValue
+    val _      = actual.length shouldBe 2
+    all(actual.map(_.voteId)) shouldBe 42L
+  }
+
+  it should "invoke the factory ONCE with the persisted voteId (no reuse with 0L or any other value)" in {
+    val (persister, voteRepo, positionRepo, _) = mkFixture()
+
+    val callsRef = new java.util.concurrent.atomic.AtomicReference[List[Long]](List.empty)
+    val spyFactory: Long => List[VotePositionDO] = voteId => {
+      val _ = callsRef.updateAndGet(_ :+ voteId)
+      List.empty
+    }
+    when(voteRepo.upsert(any[VoteDO])).thenReturn(connection.pure(baseVoteDO(voteId = 777L)))
+    when(positionRepo.replaceAll(anyLong(), any[List[VotePositionDO]])).thenReturn(connection.pure(()))
+
+    val _ = persister.persistNew(baseVoteDO(), spyFactory).unsafeRunSync()
+
+    callsRef.get() shouldBe List(777L)
   }
 
   // ------------------------------------------------------------------
   // persistUpdate
   // ------------------------------------------------------------------
 
-  "persistUpdate" should "archive the stored vote first, then upsert + replaceAll" in {
+  "persistUpdate" should "archive the stored voteId first, then upsert, then invoke the factory with the new voteId" in {
     val (persister, voteRepo, positionRepo, historyArchiver) = mkFixture()
 
     val incoming  = baseVoteDO(voteId = 0L)
@@ -118,14 +140,13 @@ class VotePersisterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     when(voteRepo.upsert(any[VoteDO])).thenReturn(connection.pure(persisted))
     when(positionRepo.replaceAll(anyLong(), any[List[VotePositionDO]])).thenReturn(connection.pure(()))
 
-    val result = persister.persistUpdate(incoming, List(pos(1L)), storedVoteId = 99L).unsafeRunSync()
+    val result = persister.persistUpdate(incoming, storedVoteId = 99L, factory(List(1L))).unsafeRunSync()
 
     val _ = result shouldBe persisted
-    // Archive uses the stored id
+    // Archive uses the stored id (99L), not the upserted id (42L)
     val _ = verify(historyArchiver, times(1)).archiveVote(99L)
-    // Upsert runs with the incoming DO
     val _ = verify(voteRepo, times(1)).upsert(incoming)
-    // replaceAll runs with the upsert's returned voteId (42L)
+    // replaceAll uses the upserted id (42L)
     verify(positionRepo, times(1))
       .replaceAll(org.mockito.ArgumentMatchers.eq(42L), any[List[VotePositionDO]])
   }
@@ -134,7 +155,7 @@ class VotePersisterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
   // persistMetadataOnlyUpdate
   // ------------------------------------------------------------------
 
-  "persistMetadataOnlyUpdate" should "archive the stored vote and upsert, but NEVER touch the position repository" in {
+  "persistMetadataOnlyUpdate" should "archive and upsert, but NEVER touch the position repository" in {
     val (persister, voteRepo, positionRepo, historyArchiver) = mkFixture()
 
     val incoming  = baseVoteDO(voteId = 0L)
@@ -152,17 +173,16 @@ class VotePersisterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
   }
 
   // ------------------------------------------------------------------
-  // Empty-position list path
+  // Empty-factory-result edge case
   // ------------------------------------------------------------------
 
-  it should "still call replaceAll with Nil when persistNew is given an empty position list (clears the vote's positions)" in {
+  it should "still call replaceAll with Nil when the factory yields an empty position list" in {
     val (persister, voteRepo, positionRepo, _) = mkFixture()
 
-    val persisted = baseVoteDO(voteId = 42L)
-    when(voteRepo.upsert(any[VoteDO])).thenReturn(connection.pure(persisted))
+    when(voteRepo.upsert(any[VoteDO])).thenReturn(connection.pure(baseVoteDO(voteId = 42L)))
     when(positionRepo.replaceAll(anyLong(), any[List[VotePositionDO]])).thenReturn(connection.pure(()))
 
-    val _ = persister.persistNew(baseVoteDO(), List.empty).unsafeRunSync()
+    val _ = persister.persistNew(baseVoteDO(), _ => List.empty).unsafeRunSync()
 
     verify(positionRepo, times(1))
       .replaceAll(org.mockito.ArgumentMatchers.eq(42L), org.mockito.ArgumentMatchers.eq(List.empty[VotePositionDO]))

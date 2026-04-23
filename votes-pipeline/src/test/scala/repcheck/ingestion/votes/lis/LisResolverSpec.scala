@@ -85,6 +85,14 @@ class LisResolverSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       question = "On Passage",
       voteDate = "2024-06-15",
       result = "Passed",
+      document = repcheck.shared.models.congress.dto.vote.SenateVoteDocumentDTO(
+        documentCongress = 118,
+        documentType = "S.",
+        documentNumber = "42",
+        documentName = "S. 42",
+        documentTitle = "Fixture bill title",
+        documentShortTitle = None,
+      ),
       members = members,
     )
 

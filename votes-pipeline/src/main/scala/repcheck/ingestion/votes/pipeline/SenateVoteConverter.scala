@@ -10,64 +10,51 @@ import cats.effect.Async
 import cats.syntax.all._
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.ingestion.votes.errors.VoteConversionFailed
-import repcheck.shared.models.congress.common.{Chamber, Party, UsState}
-import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
-import repcheck.shared.models.congress.dto.conversions.VoteConversions
-import repcheck.shared.models.congress.dto.vote.SenateVoteXmlDTO
+import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
+import repcheck.shared.models.congress.dos.results.{UnresolvedVotePosition, VoteConversionResult}
+import repcheck.shared.models.congress.dos.vote.VoteDO
+import repcheck.shared.models.congress.dto.conversions.{BillConversions, VoteConversions}
+import repcheck.shared.models.congress.dto.vote.{SenateVoteDocumentDTO, SenateVoteXmlDTO}
 import repcheck.shared.models.congress.vote.{VoteCast, VoteType}
 
 /**
- * Converts a senate.gov `<roll_call_vote>` XML document (as a decoded [[SenateVoteXmlDTO]]) into a persist-ready
- * `(VoteDO, List[VotePositionDO])` pair, using the `Map[lisNaturalKey, lis_members.id]` produced by
- * [[repcheck.ingestion.votes.lis.LisResolver]] to populate the Senate arm of the dual-identity `vote_positions` schema.
+ * Converts a senate.gov `<roll_call_vote>` XML document (as a decoded [[SenateVoteXmlDTO]]) into a
+ * [[VoteConversionResult]] — `VoteDO` + `billNaturalKey` + `List[UnresolvedVotePosition]`. Like [[HouseVoteConverter]],
+ * this class does NOT resolve any ids to database rows; the processor handles member and bill resolution after the
+ * converter produces its pure structural output.
  *
- * ==Why this converter exists separately from `VoteConversions`==
+ * ==Document classification==
  *
- * The existing `SenateVoteXmlDTOOps.toDO(lisMapping: Map[String, String])` in shared-models predates the migration 023
- * dual-identity design — it shoehorns senate data into a `VoteMembersDTO` where `memberId` holds a bioguide string,
- * which is wrong for positions that should be keyed by `lis_member_id`. This converter supersedes that path for
- * votes-pipeline; the shared-models conversion is effectively dead code and should be removed in a follow-up
- * shared-models bump.
+ * Every senate.gov vote XML carries a `<document>` element (required per senate.gov's schema) identifying the
+ * underlying bill, resolution, nomination, or treaty. The converter classifies `document.documentType`:
+ *
+ *   - Bill-like (`"S."`, `"H.R."`, `"S.J.Res."`, `"H.J.Res."`, `"S.Res."`, `"H.Res."`, `"S.Con.Res."`, `"H.Con.Res."`):
+ *     normalizes the type to a [[BillType]] enum value (apiValue), constructs a bill natural key via
+ *     [[BillConversions.buildBillNaturalKey]], and populates `VoteDO.legislationType` / `legislationNumber` /
+ *     `legislationUrl`. The processor resolves this natural key to a `bills.id` via the same placeholder+lookup flow
+ *     used for House votes.
+ *   - `"PN"` (Presidential Nomination), `"Treaty Doc."`, or any other unknown documentType: `billNaturalKey = None`,
+ *     `VoteDO.billId = None`, `legislationType = None`, etc. Logged at info (for PN / Treaty) or warn (for unknown).
+ *     Nominations and treaties are legitimate votes; they just don't link to our `bills` table.
  *
  * ==Output shape==
  *   - `VoteDO.chamber = Chamber.Senate`.
- *   - `VoteDO.billId = None` — senate.gov roll-call XML does not carry bill-linkage metadata. Senate votes about bills
- *     would need a separate enrichment path (out of scope for this pipeline).
+ *   - `VoteDO.billId = None` (processor overwrites after resolving `billNaturalKey`).
  *   - `VoteDO.voteType` classified from the `<question>` via [[VoteType.fromQuestion]] — same rule House uses.
- *   - `VoteDO.voteDate` parsed from the XML's `<vote_date>` text into a `LocalDate`. The XML's raw date string has
- *     already been format-validated by [[repcheck.ingestion.votes.xml.SenateVoteXmlDecoder]]; re-parsing here is cheap
- *     and keeps the DO self-contained. On unparseable dates, leaves `voteDate = None` rather than failing the whole
- *     vote — the detector's `updateDate` comparison does not depend on `voteDate`, and upstream analytics can handle
- *     `None`.
- *   - `VoteDO.updateDate` set to the parsed `voteDate` interpreted at 00:00 UTC, because senate.gov XML does not
- *     include a separate `updateDate` field. This makes the change detector's "incoming updateDate is newer than
- *     stored" comparison meaningful as soon as the DTO is re-ingested with a new `vote_date`.
- *   - `VoteDO.question` = XML's `<question>` text verbatim.
- *   - Positions: one `VotePositionDO` per senator in `dto.members`, with `memberId = None, lisMemberId =
- *     Some(resolvedLisId)` and cast/party/state enum-parsed from the XML strings. A senator whose natural key is
- *     missing from `lisMapping` is a defect in the LIS resolver (it should have upserted every senator seen on the
- *     DTO); this converter raises [[VoteConversionFailed]] in that case rather than silently dropping the position —
- *     position-list completeness is a scoring correctness invariant.
+ *   - `VoteDO.voteDate` parsed from the XML's `<vote_date>` text into a `LocalDate`.
+ *   - `VoteDO.updateDate` set to the parsed `voteDate` at 00:00 UTC (senate.gov XML has no separate updateDate).
+ *   - Positions: one [[UnresolvedVotePosition]] per senator, with `memberSource = Right(lisMemberId)`. The processor
+ *     resolves each LIS id to a `lis_members.id` via [[repcheck.ingestion.votes.lis.LisResolver]] and materializes the
+ *     Senate-arm `VotePositionDO` rows inside the persister's transaction.
  */
 private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[F]) {
 
   import SenateVoteConverter._
 
   /**
-   * Convert one senate vote DTO + its LIS-resolution map into a (VoteDO, List[VotePositionDO]) pair.
-   *
-   * @param dto
-   *   the XML-decoded roll call.
-   * @param lisMap
-   *   LIS natural key (e.g. `"S428"`) → `lis_members.id` Long. Must contain an entry for every senator in
-   *   `dto.members`; call [[repcheck.ingestion.votes.lis.LisResolver.resolve]] on `dto` before invoking this converter.
+   * Convert one senate vote DTO into a [[VoteConversionResult]].
    */
-  def convert(
-    dto: SenateVoteXmlDTO,
-    lisMap: Map[String, Long],
-    logCtx: LogContext,
-  ): F[(VoteDO, List[VotePositionDO])] = {
+  def convert(dto: SenateVoteXmlDTO, logCtx: LogContext): F[VoteConversionResult] = {
     val naturalKey = VoteConversions.buildVoteNaturalKey(
       congress = dto.congress,
       chamber = "Senate",
@@ -75,12 +62,65 @@ private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[
       rollCallNumber = dto.voteNumber,
     )
 
-    val voteDo = buildVoteDO(dto, naturalKey)
-
-    buildPositions(dto, lisMap, naturalKey, logCtx).map(positions => (voteDo, positions))
+    for {
+      docClassification <- classifyDocument(dto.document, naturalKey, logCtx)
+      voteDo    = buildVoteDO(dto, naturalKey, docClassification)
+      positions = buildUnresolvedPositions(dto)
+    } yield VoteConversionResult(
+      vote = voteDo,
+      billNaturalKey = docClassification.billNaturalKey,
+      positions = positions,
+    )
   }
 
-  private def buildVoteDO(dto: SenateVoteXmlDTO, naturalKey: String): VoteDO = {
+  /**
+   * Classify the `<document>` element, log at the appropriate level, and return:
+   *   - `billNaturalKey: Option[String]` — populated for bill-like types (drives `VoteDO.billId` resolution upstream).
+   *   - `legislationType: Option[BillType]` — populated for bill-like types.
+   *   - `legislationNumber: Option[String]` — populated for bill-like types (raw number from senate.gov).
+   */
+  private[pipeline] def classifyDocument(
+    document: SenateVoteDocumentDTO,
+    voteNaturalKey: String,
+    logCtx: LogContext,
+  ): F[DocumentClassification] =
+    normalizeDocumentType(document.documentType) match {
+      case Right(billType) =>
+        val billNK = BillConversions.buildBillNaturalKey(
+          congress = document.documentCongress,
+          billType = billType.apiValue,
+          number = document.documentNumber,
+        )
+        Async[F].pure(
+          DocumentClassification(
+            billNaturalKey = Some(billNK),
+            legislationType = Some(billType),
+            legislationNumber = Some(document.documentNumber),
+          )
+        )
+      case Left(NonBillDocument(docType)) =>
+        logger
+          .info(
+            logCtx,
+            s"Senate vote $voteNaturalKey has non-bill documentType '$docType' (${document.documentName}) — " +
+              "persisting with billId=None",
+          )
+          .as(DocumentClassification.empty)
+      case Left(UnknownDocument(docType)) =>
+        logger
+          .warn(
+            logCtx,
+            s"Senate vote $voteNaturalKey has unrecognized documentType '$docType' (${document.documentName}) — " +
+              "persisting with billId=None; add the type to normalizeDocumentType if it should resolve to a bill",
+          )
+          .as(DocumentClassification.empty)
+    }
+
+  private def buildVoteDO(
+    dto: SenateVoteXmlDTO,
+    naturalKey: String,
+    classification: DocumentClassification,
+  ): VoteDO = {
     val parsedDate = parseVoteDate(dto.voteDate)
     VoteDO(
       voteId = 0L,
@@ -95,8 +135,8 @@ private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[
       voteMethod = None,
       result = Some(dto.result),
       voteDate = parsedDate,
-      legislationNumber = None,
-      legislationType = None,
+      legislationNumber = classification.legislationNumber,
+      legislationType = classification.legislationType,
       legislationUrl = None,
       sourceDataUrl = None,
       updateDate = parsedDate.map(_.atStartOfDay().toInstant(ZoneOffset.UTC)),
@@ -105,43 +145,68 @@ private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[
     )
   }
 
-  private def buildPositions(
-    dto: SenateVoteXmlDTO,
-    lisMap: Map[String, Long],
-    naturalKey: String,
-    logCtx: LogContext,
-  ): F[List[VotePositionDO]] =
-    dto.members.traverse { member =>
-      lisMap.get(member.lisMemberId) match {
-        case Some(lisId) =>
-          val cast  = VoteCast.fromString(member.voteCast).toOption
-          val party = Party.fromString(member.party).toOption
-          val state = UsState.fromString(member.state).toOption
-          Async[F].pure(
-            VotePositionDO(
-              id = 0L,
-              voteId = 0L,
-              memberId = None,
-              position = cast,
-              partyAtVote = party,
-              stateAtVote = state,
-              createdAt = None,
-              lisMemberId = Some(lisId),
-            )
-          )
-        case None =>
-          val err = VoteConversionFailed(
-            naturalKey,
-            s"LIS resolver did not produce a mapping for senator ${member.lisMemberId} — position list is incomplete",
-          )
-          logger.error(logCtx, err.getMessage, Some(err)) *>
-            Async[F].raiseError[VotePositionDO](err)
-      }
+  /**
+   * Turn each senator row into an [[UnresolvedVotePosition]] with `memberSource = Right(lisMemberId)` (Senate arm per
+   * the shared-models comment on `memberSource`). Vote cast, party, and state are enum-parsed defensively — unparseable
+   * strings become `None` so the position still materializes.
+   */
+  private[pipeline] def buildUnresolvedPositions(dto: SenateVoteXmlDTO): List[UnresolvedVotePosition] =
+    dto.members.map { m =>
+      UnresolvedVotePosition(
+        memberSource = Right(m.lisMemberId),
+        voteCast = VoteCast.fromString(m.voteCast).toOption,
+        partyAtVote = Party.fromString(m.party).toOption,
+        stateAtVote = UsState.fromString(m.state).toOption,
+      )
     }
 
 }
 
-private object SenateVoteConverter {
+private[pipeline] object SenateVoteConverter {
+
+  /**
+   * Outcome of [[SenateVoteConverter.classifyDocument]]. When the document represents a bill or resolution the
+   * `billNaturalKey` is populated and the processor resolves it downstream; non-bill documents (PN, Treaty Doc.,
+   * unknown) produce the empty classification.
+   */
+  final case class DocumentClassification(
+    billNaturalKey: Option[String],
+    legislationType: Option[BillType],
+    legislationNumber: Option[String],
+  )
+
+  object DocumentClassification {
+    val empty: DocumentClassification = DocumentClassification(None, None, None)
+  }
+
+  /**
+   * Senate.gov's `<document_type>` values are period-punctuated ("S.", "H.R.", "S.J.Res.", etc.). Normalize to a
+   * `BillType` enum when possible; return a tagged rejection otherwise so the caller can choose between info-level
+   * (recognized non-bill) and warn-level (unknown) logging.
+   */
+  private[pipeline] def normalizeDocumentType(raw: String): Either[NonBillOrUnknown, BillType] = {
+    val cleaned = raw.trim
+    cleaned match {
+      case "S."          => Right(BillType.S)
+      case "H.R."        => Right(BillType.HR)
+      case "S.J.Res."    => Right(BillType.SJRES)
+      case "H.J.Res."    => Right(BillType.HJRES)
+      case "S.Res."      => Right(BillType.SRES)
+      case "H.Res."      => Right(BillType.HRES)
+      case "S.Con.Res."  => Right(BillType.SCONRES)
+      case "H.Con.Res."  => Right(BillType.HCONRES)
+      case "PN"          => Left(NonBillDocument(cleaned))
+      case "Treaty Doc." => Left(NonBillDocument(cleaned))
+      case other         => Left(UnknownDocument(other))
+    }
+  }
+
+  sealed trait NonBillOrUnknown {
+    def rawType: String
+  }
+
+  final case class NonBillDocument(rawType: String) extends NonBillOrUnknown
+  final case class UnknownDocument(rawType: String) extends NonBillOrUnknown
 
   private val LongWithDayOfWeek: DateTimeFormatter =
     DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy, hh:mm a", Locale.US)

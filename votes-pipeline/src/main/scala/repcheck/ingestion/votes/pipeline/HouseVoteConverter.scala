@@ -5,65 +5,52 @@ import cats.syntax.all._
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.errors.VoteConversionFailed
-import repcheck.shared.models.congress.dos.results.UnresolvedVotePosition
-import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
+import repcheck.shared.models.congress.dos.results.VoteConversionResult
+import repcheck.shared.models.congress.dto.conversions.VoteConversions.VoteMembersDTOOps
 import repcheck.shared.models.congress.dto.vote.VoteMembersDTO
 
 /**
- * Converts a House-side `VoteMembersDTO` (already fetched from Congress.gov `/house-vote/.../members`) into a
- * persist-ready `(VoteDO, List[VotePositionDO])` pair.
+ * Converts a House-side [[VoteMembersDTO]] (already fetched from Congress.gov `/house-vote/.../members`) into a
+ * [[VoteConversionResult]] — `VoteDO` + `billNaturalKey` + `List[UnresolvedVotePosition]`. The converter does NOT build
+ * [[repcheck.shared.models.congress.dos.vote.VotePositionDO]] rows and does NOT resolve bioguides to `members.id` or
+ * bill natural keys to `bills.id`. Those are processor-level concerns that only make sense once the persisted vote's
+ * `voteId` is known (for positions) and the caller is ready to run the placeholder+lookup sequence (for members and
+ * bills).
  *
- * ==Pipeline==
- *   1. Bill resolution (inside `VoteConversions.VoteMembersDTOOps.toDO`): the converter hands `toDO` a `billLookup`
- *      callback that maps the DTO's `legislationType + legislationNumber + congress` into the bill's `bills.id` Long.
- *      `BillResolver.resolve` runs the placeholder-create-if-missing + read-back sequence, so the resolved id reflects
- *      either an already-enriched bill or a placeholder that `bill-metadata-pipeline` will enrich on its next run.
- *      Procedural votes (no legislation) pass `None` through — `VoteDO.billId` stays `None` and downstream scoring
- *      logic can decide whether to consume the event. 2. Pure validation (inside `toDO`): congress/chamber/session
- *      required, every enum-typed field parses or the conversion fails with [[VoteConversionFailed]] carrying the
- *      parser's reason. 3. Member resolution (this class): every House bioguide from the result's `positions:
- *      List[UnresolvedVotePosition]` is batch-resolved via [[MemberResolver]], producing `Map[bioguide, members.id]`.
- *      Each resolution creates a placeholder member row if one doesn't exist, so we always end up with a Long. 4.
- *      Position materialization (this class): each `UnresolvedVotePosition` with `memberSource = Left(bioguide)` is
- *      turned into a `VotePositionDO(memberId = Some(resolvedId), lisMemberId = None, ...)` per the dual-identity
- *      schema's House arm. `voteId` stays `0L` — the upsert path rewrites it after `INSERT RETURNING id`.
+ * The resulting shape keeps the conversion purely structural:
+ *   - `vote: VoteDO` carries the new vote metadata, with `billId = None` (the processor sets this after resolving
+ *     `billNaturalKey` via the bill repository + placeholder creator).
+ *   - `billNaturalKey: Option[String]` — derived from the DTO's `legislationType + legislationNumber + congress` when
+ *     present; `None` for procedural votes (no legislation reference).
+ *   - `positions: List[UnresolvedVotePosition]` — one entry per House voter, with `memberSource = Left(bioguide)`. No
+ *     DB-assigned ids (no `voteId`, no `memberId`) are present; the processor resolves bioguides and materializes the
+ *     final `VotePositionDO` rows inside the persister's transaction once the parent vote's `voteId` is known.
  *
- * ==Why the converter does not touch `voteId`==
- * The incoming `VoteDO` already carries `voteId = 0L` (the conversion has no way to know the DB-assigned id). The
- * processor's persister will call `VoteRepository.upsert(voteDo)` first, receive back the `VoteDO` with a real
- * `voteId`, then materialize the positions with that id populated. This class returns positions with `voteId = 0L` as a
- * placeholder; the persister rewrites them.
+ * Delegates the pure DTO→DO validation + enum parsing to
+ * [[repcheck.shared.models.congress.dto.conversions.VoteConversions.VoteMembersDTOOps.toDO]], passing a no-op
+ * `billLookup` (always `F.pure(None)`) because bill resolution happens in the processor, not here. The resulting
+ * `VoteDO.billId` is always `None` in the converter's output; the processor overwrites it with the resolved id.
  */
-private[pipeline] class HouseVoteConverter[F[_]: Async](
-  memberResolver: MemberResolver[F],
-  billResolver: BillResolver[F],
-  logger: PipelineLogger[F],
-) {
-
-  import repcheck.shared.models.congress.dto.conversions.VoteConversions.VoteMembersDTOOps
+private[pipeline] class HouseVoteConverter[F[_]: Async](logger: PipelineLogger[F]) {
 
   /**
-   * Convert a single `VoteMembersDTO` into the (vote, positions) pair ready for persistence. Raises
-   * [[VoteConversionFailed]] when validation fails; propagates [[repcheck.ingestion.votes.errors.BillResolutionFailed]]
-   * or [[repcheck.ingestion.votes.errors.MemberResolutionFailed]] from the resolvers.
+   * Convert a single `VoteMembersDTO` into a [[VoteConversionResult]]. Raises [[VoteConversionFailed]] when the DTO
+   * fails validation (bad congress, missing session, unparseable enum value, etc.).
    */
-  def convert(dto: VoteMembersDTO, logCtx: LogContext): F[(VoteDO, List[VotePositionDO])] = {
-    val billLookup: String => F[Option[Long]] = nk => billResolver.resolve(nk, logCtx).map(Some(_))
+  def convert(dto: VoteMembersDTO, logCtx: LogContext): F[VoteConversionResult] = {
+    val noopBillLookup: String => F[Option[Long]] = _ => Async[F].pure(None)
 
     for {
-      conversionEither <- dto.toDO(billLookup)
-      result <- conversionEither match {
-        case Right(cr) => Async[F].pure(cr)
+      attempt <- dto.toDO(noopBillLookup)
+      converted <- attempt match {
+        case Right(result) => Async[F].pure(result)
         case Left(reason) =>
           val voteKey = buildNaturalKey(dto)
           val err     = VoteConversionFailed(voteKey, reason)
           logger.error(logCtx, err.getMessage, Some(err)) *>
-            Async[F].raiseError[repcheck.shared.models.congress.dos.results.VoteConversionResult](err)
+            Async[F].raiseError[VoteConversionResult](err)
       }
-      bioguideIds = result.positions.flatMap(_.memberSource.left.toOption).filter(_.nonEmpty)
-      resolvedMap <- memberResolver.resolveBatch(bioguideIds, logCtx)
-      positionDOs = materializePositions(result.positions, resolvedMap)
-    } yield (result.vote, positionDOs)
+    } yield converted
   }
 
   /**
@@ -75,36 +62,5 @@ private[pipeline] class HouseVoteConverter[F[_]: Async](
     val session = dto.sessionNumber.getOrElse(0)
     s"${dto.congress.toString}-${dto.chamber}-${session.toString}-${dto.rollCallNumber.toString}"
   }
-
-  /**
-   * Materialize the resolved bioguide list into House-arm `VotePositionDO` rows. Positions with `memberSource =
-   * Right(_)` (Senate) are silently dropped — this converter is House-only. Positions whose bioguide is missing from
-   * the resolver's output map (shouldn't happen — resolveBatch raises on unresolvable bioguides) are also dropped
-   * defensively.
-   *
-   * `voteId = 0L` is a placeholder; the persister rewrites it after the parent vote's INSERT RETURNING.
-   */
-  private[pipeline] def materializePositions(
-    unresolved: List[UnresolvedVotePosition],
-    bioguideToMemberId: Map[String, Long],
-  ): List[VotePositionDO] =
-    unresolved.flatMap { uvp =>
-      uvp.memberSource match {
-        case Left(bioguide) =>
-          bioguideToMemberId.get(bioguide).map { memberId =>
-            VotePositionDO(
-              id = 0L,
-              voteId = 0L,
-              memberId = Some(memberId),
-              position = uvp.voteCast,
-              partyAtVote = uvp.partyAtVote,
-              stateAtVote = uvp.stateAtVote,
-              createdAt = None,
-              lisMemberId = None,
-            )
-          }
-        case Right(_) => None
-      }
-    }
 
 }

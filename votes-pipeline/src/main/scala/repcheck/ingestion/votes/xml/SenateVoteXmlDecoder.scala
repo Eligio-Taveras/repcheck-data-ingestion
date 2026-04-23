@@ -8,7 +8,7 @@ import scala.util.Try
 import scala.xml.{Elem, Node, NodeSeq}
 
 import repcheck.ingestion.votes.errors.XmlParseFailed
-import repcheck.shared.models.congress.dto.vote.{SenateVoteMemberXmlDTO, SenateVoteXmlDTO}
+import repcheck.shared.models.congress.dto.vote.{SenateVoteDocumentDTO, SenateVoteMemberXmlDTO, SenateVoteXmlDTO}
 
 /**
  * Pure decoder for the senate.gov roll-call-vote XML feeds.
@@ -107,6 +107,7 @@ object SenateVoteXmlDecoder {
         question   <- requireText(elem, "question")
         voteDate   <- requireText(elem, "vote_date").flatMap(validateDate)
         result     <- resolveResult(elem)
+        document   <- decodeDocument(elem)
         members    <- decodeMembers(elem)
       } yield SenateVoteXmlDTO(
         congress = congress,
@@ -115,6 +116,7 @@ object SenateVoteXmlDecoder {
         question = question,
         voteDate = voteDate,
         result = result,
+        document = document,
         members = members,
       )
     }
@@ -198,6 +200,39 @@ object SenateVoteXmlDecoder {
       if (raw.isEmpty) None else Some(raw)
     }
   }
+
+  /**
+   * Decode the `<document>` child into [[SenateVoteDocumentDTO]]. Required per senate.gov's schema — every
+   * `<roll_call_vote>` has exactly one `<document>`. Fails loudly if missing; tolerates an empty
+   * `<document_short_title/>` element (represented as `None`).
+   */
+  private def decodeDocument(elem: Elem): Either[XmlParseFailed, SenateVoteDocumentDTO] =
+    (elem \ "document").headOption match {
+      case None =>
+        Left(
+          XmlParseFailed(
+            "Missing required <document> element",
+            Some(truncate(elem.toString)),
+          )
+        )
+      case Some(docNode) =>
+        for {
+          docCongress <- requireInt(docNode, "document_congress")
+          docType     <- requireText(docNode, "document_type")
+          docNumber   <- requireText(docNode, "document_number")
+          docName     <- requireText(docNode, "document_name")
+          docTitle    <- requireText(docNode, "document_title")
+          // document_short_title is optional — senate.gov often emits it as <document_short_title/> (self-closing empty)
+          docShortTitle = textOpt(docNode, "document_short_title")
+        } yield SenateVoteDocumentDTO(
+          documentCongress = docCongress,
+          documentType = docType,
+          documentNumber = docNumber,
+          documentName = docName,
+          documentTitle = docTitle,
+          documentShortTitle = docShortTitle,
+        )
+    }
 
   private def decodeMembers(elem: Elem): Either[XmlParseFailed, List[SenateVoteMemberXmlDTO]] = {
     val nodes = (elem \ "members" \ "member").toList

@@ -10,29 +10,27 @@ import repcheck.ingestion.votes.repo.{VoteHistoryArchiver, VotePositionRepositor
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 
 /**
- * Orchestrates the archive → upsert → positions-rewrite sequence inside a single `ConnectionIO` transaction per write.
- * The persister is the only place where the parent-child atomicity of a vote and its positions is enforced:
+ * Orchestrates the archive → upsert → positions-replace sequence inside a single `ConnectionIO` transaction per write.
+ * The persister is the only place where the parent-child atomicity of a vote and its positions is enforced — and the
+ * shape of the API reflects the sequencing explicitly:
  *
- *   - **Archive before overwrite.** On the Updated branch of [[VoteChangeReport]], the persister calls
- *     [[VoteHistoryArchiver.archiveVote]] first so the about-to-be-replaced `votes` row and every one of its
- *     `vote_positions` children are snapshotted together under a shared `vote_history.id`. If archival fails, the
- *     transaction rolls back and the live data stays intact.
- *   - **Upsert the vote row.** Returns the persisted `VoteDO` including the DB-assigned `voteId` (BIGSERIAL) that must
- *     be propagated into the positions table on the insert path.
- *   - **Replace position set.** [[VotePositionRepository.replaceAll]] deletes every row with the matching `vote_id` and
- *     batch-inserts the incoming list. An empty list is the supported way to clear positions without deleting the
- *     parent vote. The persister rewrites each [[VotePositionDO]]'s `voteId` from `0L` to the upserted vote's id just
- *     before the insert — positions arriving from converters carry `voteId = 0L` as a placeholder because the converter
- *     has no way to know the DB-assigned value.
+ *   - The caller supplies the parent [[VoteDO]] and a factory `Long => List[VotePositionDO]`.
+ *   - Inside the transaction the persister upserts the vote first, receives the DB-assigned `voteId`, and only THEN
+ *     invokes the factory to build the positions with the real `voteId` (and real `member_id` / `lis_member_id` values
+ *     pre-resolved by the caller).
  *
- * All three operations compose into one `ConnectionIO` and are committed by a single `.transact(xa)` call, so a
- * mid-sequence failure rolls the whole write back.
+ * No [[VotePositionDO]] is ever carried through the pipeline with a fake `voteId = 0L`. The factory constructs
+ * positions with the real `voteId` the moment it becomes available.
  *
- * ==Metadata-only update path==
- * When change detection returns `Updated(positionsChanged = false)`, the persister runs archive + upsert but skips
- * `replaceAll`. The stored positions stay in place — no row churn, no writes to `vote_positions` — because the incoming
- * position set is byte-identical to the stored one. `persistMetadataOnlyUpdate` exposes that explicit branch; callers
- * must NOT pass it an incoming position list that could differ from stored state.
+ * ==Three entry points mirroring the §6.4 decision matrix==
+ *
+ *   - [[persistNew]] — no archival (nothing to snapshot); upsert vote + invoke factory + replaceAll positions.
+ *   - [[persistUpdate]] — archive stored row first; then upsert + invoke factory + replaceAll. Expected input:
+ *     `storedVoteId` is the id of the row being overwritten (known from the processor's stored lookup).
+ *   - [[persistMetadataOnlyUpdate]] — archive + upsert; skip `replaceAll` because the change detector reported
+ *     `positionsChanged = false` (incoming positions are byte-identical to stored; no need to churn `vote_positions`).
+ *
+ * All three run as ONE `ConnectionIO` transaction. A mid-sequence failure rolls the whole write back.
  */
 private[pipeline] class VotePersister[F[_]: Async](
   voteRepo: VoteRepository,
@@ -42,56 +40,49 @@ private[pipeline] class VotePersister[F[_]: Async](
 ) {
 
   /**
-   * Insert a brand-new vote and its position list. No archival because there is no prior version to snapshot. Returns
-   * the persisted vote with `voteId` populated.
+   * Insert a brand-new vote and its position list. No archival because there is no prior version to snapshot.
+   * `buildPositions` is called with the upserted vote's DB-assigned `voteId`, inside the transaction, so the positions
+   * are built exactly once with the real `voteId`.
    */
-  def persistNew(voteDo: VoteDO, positions: List[VotePositionDO]): F[VoteDO] =
-    upsertThenReplacePositions(voteDo, positions).transact(xa)
+  def persistNew(voteDo: VoteDO, buildPositions: Long => List[VotePositionDO]): F[VoteDO] = {
+    val program = for {
+      persisted <- voteRepo.upsert(voteDo)
+      _         <- positionRepo.replaceAll(persisted.voteId, buildPositions(persisted.voteId))
+    } yield persisted
+    program.transact(xa)
+  }
 
   /**
-   * Archive the current live row (parent + children), upsert the new vote metadata, and replace the position set.
-   * Expected input: `voteDo` carries the original `voteId` from the stored lookup so the archiver can read the correct
-   * rows. (The caller is the change-detector path, which has a `Some(storedDo)` with the live id in hand.)
+   * Archive the current live row (parent + children), upsert the new vote metadata, and replace the position set. The
+   * caller supplies `storedVoteId` from its own lookup so the archiver knows which row to snapshot; the archived ids
+   * are separate from the `voteId` returned by the upsert (which reuses the same BIGSERIAL on conflict).
+   * `buildPositions` runs after the upsert with the real `voteId`, same as [[persistNew]].
    */
   def persistUpdate(
     voteDo: VoteDO,
-    positions: List[VotePositionDO],
     storedVoteId: Long,
+    buildPositions: Long => List[VotePositionDO],
   ): F[VoteDO] = {
     val program = for {
       _         <- historyArchiver.archiveVote(storedVoteId)
-      persisted <- upsertThenReplacePositions(voteDo, positions)
+      persisted <- voteRepo.upsert(voteDo)
+      _         <- positionRepo.replaceAll(persisted.voteId, buildPositions(persisted.voteId))
     } yield persisted
     program.transact(xa)
   }
 
   /**
    * Archive + upsert without touching positions. Used when the change report is `Updated(positionsChanged = false)` —
-   * the vote metadata changed (new `updateDate`, maybe a corrected result string) but the positions are identical. We
-   * still archive so the prior metadata is preserved and audit queries can see the shape of every revision, but we skip
-   * the DELETE + INSERT on positions because there is nothing to change.
+   * the vote metadata changed but the positions are identical to stored. We still archive so the prior metadata is
+   * preserved in `vote_history`, but we skip the DELETE + INSERT on `vote_positions` because there is nothing new to
+   * write.
    */
   def persistMetadataOnlyUpdate(voteDo: VoteDO, storedVoteId: Long): F[VoteDO] = {
-    val program = for {
+    val program: ConnectionIO[VoteDO] = for {
       _         <- historyArchiver.archiveVote(storedVoteId)
       persisted <- voteRepo.upsert(voteDo)
     } yield persisted
     program.transact(xa)
   }
-
-  /**
-   * Composed `ConnectionIO` that upserts the vote, rewrites each position's `voteId` to the upserted vote's id, and
-   * replaces the position list. Used by both [[persistNew]] and [[persistUpdate]]; the caller wraps it in its own outer
-   * `ConnectionIO` if an archive step must run first.
-   */
-  private def upsertThenReplacePositions(
-    voteDo: VoteDO,
-    positions: List[VotePositionDO],
-  ): ConnectionIO[VoteDO] =
-    for {
-      persisted <- voteRepo.upsert(voteDo)
-      rewired = positions.map(_.copy(voteId = persisted.voteId))
-      _ <- positionRepo.replaceAll(persisted.voteId, rewired)
-    } yield persisted
 
 }
