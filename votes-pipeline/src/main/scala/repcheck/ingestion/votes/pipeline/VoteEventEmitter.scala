@@ -25,7 +25,7 @@ import repcheck.shared.models.congress.dos.vote.VoteDO
  *      failures are wrapped in [[VoteProcessingFailed]] so per-vote failure isolation (`handleErrorWith` inside
  *      `parEvalMap`) records `ProcessingResult.Failed(voteNaturalKey, ...)` without aborting the chamber stream.
  */
-private[pipeline] class VoteEventEmitter[F[_]: Async](
+class VoteEventEmitter[F[_]: Async](
   stanceRepo: StanceMaterializationStatusRepository,
   eventPublisher: IngestionEventPublisher[F],
   xa: Transactor[F],

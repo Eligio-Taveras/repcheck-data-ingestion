@@ -27,7 +27,7 @@ import repcheck.shared.models.congress.dos.results.UnresolvedVotePosition
  * Senate positions do not come through here — Senate LIS ids are handled by
  * [[repcheck.ingestion.votes.lis.LisResolver]] which is a separate component with its own placeholder-merge semantics.
  */
-private[pipeline] class MemberLookup[F[_]: Async](
+class MemberLookup[F[_]: Async](
   memberRepo: MemberRepository,
   memberEntityRepo: EntityRepository[F, MemberDO],
   placeholderCreator: PlaceholderCreator[F],

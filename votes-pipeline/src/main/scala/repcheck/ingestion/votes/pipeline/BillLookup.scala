@@ -25,7 +25,7 @@ import repcheck.shared.models.congress.dos.bill.BillDO
  * contract, but in practice this implementation either returns `F.pure(Some(id))` or raises — never `F.pure(None)`. The
  * shared-models layer short-circuits `None` bill natural keys before invoking the callback (procedural votes).
  */
-private[pipeline] class BillLookup[F[_]: Async](
+class BillLookup[F[_]: Async](
   billRepo: BillRepository[doobie.ConnectionIO],
   billEntityRepo: EntityRepository[F, BillDO],
   placeholderCreator: PlaceholderCreator[F],

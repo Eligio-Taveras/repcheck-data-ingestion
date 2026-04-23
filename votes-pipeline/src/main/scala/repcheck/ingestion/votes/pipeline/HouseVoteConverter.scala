@@ -34,7 +34,7 @@ import repcheck.shared.models.congress.dto.vote.VoteMembersDTO
  * — those are processor-level concerns that only make sense once the persisted vote's `voteId` is known (the persister
  * calls a factory lambda inside its transaction with the real `voteId`).
  */
-private[pipeline] class HouseVoteConverter[F[_]: Async](logger: PipelineLogger[F]) {
+class HouseVoteConverter[F[_]: Async](logger: PipelineLogger[F]) {
 
   /**
    * Convert a single `VoteMembersDTO` into a [[VoteConversionResult]], performing an inline bill lookup via
