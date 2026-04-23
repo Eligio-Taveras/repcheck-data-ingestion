@@ -5,14 +5,15 @@
       "number": "1",
       "originChamber": "House",
       "originChamberCode": "H",
-      "title": "E2E Test Healthcare Reform Act",
+      "title": "Lower Energy Costs Act",
       "type": "HR",
-      "updateDate": "2024-06-15",
-      "updateDateIncludingText": "2024-06-15T12:00:00Z",
-      "url": "https://api.congress.gov/v3/bill/118/hr/1",
+      "updateDate": "2026-01-09T22:25:21Z",
+      "updateDateIncludingText": "2026-01-09T22:25:21Z",
+      "url": "http://wiremock:8080/v3/bill/118/hr/1?format=json",
       "latestAction": {
-        "actionDate": "2024-06-15",
-        "text": "Referred to the Committee on Energy and Commerce."
+        "actionDate": "2023-03-30",
+        "actionTime": "11:47:06",
+        "text": "The Clerk was authorized to correct section numbers, punctuation, and cross references, and to make other necessary technical and conforming corrections in the engrossment of H.R. 1."
       }
     }
   ],

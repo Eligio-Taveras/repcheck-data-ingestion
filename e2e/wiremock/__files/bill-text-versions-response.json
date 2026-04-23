@@ -1,13 +1,43 @@
 {
+  "pagination": {
+    "count": 2
+  },
   "textVersions": [
     {
-      "date": "2024-01-15T00:00:00Z",
-      "type": "Introduced in House",
+      "date": "2023-03-30T04:00:00Z",
       "formats": [
-        {"type": "Formatted Text", "url": "http://wiremock:8080/v3/bill/118/hr/1/text/ih"},
-        {"type": "PDF", "url": "http://wiremock:8080/v3/bill/118/hr/1/text/ih.pdf"},
-        {"type": "XML", "url": "http://wiremock:8080/v3/bill/118/hr/1/text/ih.xml"}
-      ]
+        {
+          "type": "Formatted Text",
+          "url": "http://wiremock:8080/www/118/bills/hr1/BILLS-118hr1eh.htm"
+        },
+        {
+          "type": "PDF",
+          "url": "http://wiremock:8080/www/118/bills/hr1/BILLS-118hr1eh.pdf"
+        },
+        {
+          "type": "Formatted XML",
+          "url": "http://wiremock:8080/www/118/bills/hr1/BILLS-118hr1eh.xml"
+        }
+      ],
+      "type": "Engrossed in House"
+    },
+    {
+      "date": "2023-03-14T04:00:00Z",
+      "formats": [
+        {
+          "type": "Formatted Text",
+          "url": "http://wiremock:8080/www/118/bills/hr1/BILLS-118hr1ih.htm"
+        },
+        {
+          "type": "PDF",
+          "url": "http://wiremock:8080/www/118/bills/hr1/BILLS-118hr1ih.pdf"
+        },
+        {
+          "type": "Formatted XML",
+          "url": "http://wiremock:8080/www/118/bills/hr1/BILLS-118hr1ih.xml"
+        }
+      ],
+      "type": "Introduced in House"
     }
   ]
 }

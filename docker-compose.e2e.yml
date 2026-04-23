@@ -1,18 +1,34 @@
 # =============================================================================
 # Docker Compose — E2E Integration Test Stack
 # =============================================================================
-# Full end-to-end testing environment: infrastructure + application containers.
+# Full end-to-end testing environment: infrastructure + application containers,
+# with every outbound HTTP call going to WireMock so the stack has no external
+# network dependencies.
 #
 # Infrastructure:
 #   - AlloyDB Omni (PostgreSQL + pgvector)
 #   - Google Pub/Sub Emulator
-#   - WireMock (Congress.gov API stubs)
-#   - Ollama (embedding model)
+#   - db-migrations (Liquibase migration runner — init container, runs once)
+#   - pubsub-init (creates topics/subscriptions in the emulator — init container)
+#   - WireMock (stubs BOTH Congress.gov + Ollama via a single container)
 #
-# Application containers:
+# Application containers (one-shot: each runs to completion then exits):
 #   - bill-metadata-pipeline
 #   - bill-text-availability-checker
 #   - bill-text-pipeline
+#
+# Note on Ollama: instead of running the real Ollama image (heavy, needs model
+# weights), the single WireMock container also serves `POST /api/embed` with a
+# canned 1536-dim embedding response. bill-text-pipeline points at WireMock via
+# OLLAMA_BASE_URL=http://wiremock:8080. Semantic correctness isn't proven by
+# this stack — wiring is. Phase 6 + production dev loops keep using real Ollama.
+#
+# Prerequisites:
+#   1. Build fat JARs:
+#        sbt "billMetadataPipeline/assembly" \
+#            "billTextAvailabilityChecker/assembly" \
+#            "billTextPipeline/assembly"
+#   2. `docker compose -f docker-compose.e2e.yml build`
 #
 # Usage:
 #   docker compose -f docker-compose.e2e.yml up --build
@@ -40,8 +56,23 @@ services:
       retries: 10
       start_period: 15s
 
+  # Run Liquibase migrations before any pipeline starts. Init container — exits
+  # after completion; pipelines gate on service_completed_successfully.
+  db-migrations:
+    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.12
+    entrypoint: ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "/opt/docker/lib/*", "repcheck.db.migrations.MigrationApp"]
+    depends_on:
+      alloydb:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: alloydb
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: repcheck_e2e
+      DATABASE_USER: repcheck
+      DATABASE_PASSWORD: repcheck
+
   pubsub-emulator:
-    image: google/cloud-sdk:slim
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
     command: >
       gcloud beta emulators pubsub start
       --host-port=0.0.0.0:8085
@@ -55,6 +86,23 @@ services:
       retries: 10
       start_period: 10s
 
+  # Init container: creates Pub/Sub topics and subscriptions in the emulator.
+  # Pipelines gate on service_completed_successfully so they never read from a
+  # missing subscription or write to a missing topic.
+  pubsub-init:
+    image: curlimages/curl:latest
+    depends_on:
+      pubsub-emulator:
+        condition: service_healthy
+    volumes:
+      - ./scripts/pubsub-init.sh:/pubsub-init.sh:ro
+    entrypoint: ["sh", "/pubsub-init.sh"]
+    environment:
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-e2e
+
+  # Single WireMock container stubs BOTH Congress.gov paths and Ollama's
+  # /api/embed. Mapping files under e2e/wiremock/mappings/ opt into each.
   wiremock:
     image: wiremock/wiremock:3.13.0
     ports:
@@ -68,21 +116,8 @@ services:
       timeout: 5s
       retries: 5
 
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollamadata:/root/.ollama
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
   # ---------------------------------------------------------------------------
-  # Application Containers
+  # Application Containers (one-shot; each runs to completion then exits)
   # ---------------------------------------------------------------------------
 
   bill-metadata-pipeline:
@@ -92,6 +127,8 @@ services:
     depends_on:
       alloydb:
         condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
       wiremock:
         condition: service_healthy
     environment:
@@ -102,6 +139,8 @@ services:
       DB_PASSWORD: repcheck
       CONGRESS_API_BASE_URL: http://wiremock:8080/v3
       CONGRESS_GOV_API_KEY: e2e-test-key
+      PIPELINE_PARALLELISM: "1"
+      PIPELINE_LOOKBACK_DAYS: "30"
 
   bill-text-availability-checker:
     build:
@@ -110,8 +149,12 @@ services:
     depends_on:
       alloydb:
         condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
       pubsub-emulator:
         condition: service_healthy
+      pubsub-init:
+        condition: service_completed_successfully
       wiremock:
         condition: service_healthy
     environment:
@@ -125,6 +168,7 @@ services:
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       PUBSUB_PROJECT_ID: repcheck-e2e
       PUBSUB_TOPIC_NAME: bill-text-available
+      PIPELINE_PARALLELISM: "1"
 
   bill-text-pipeline:
     build:
@@ -133,11 +177,13 @@ services:
     depends_on:
       alloydb:
         condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
       pubsub-emulator:
         condition: service_healthy
+      pubsub-init:
+        condition: service_completed_successfully
       wiremock:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     environment:
       DB_HOST: alloydb
@@ -145,17 +191,22 @@ services:
       DB_NAME: repcheck_e2e
       DB_USERNAME: repcheck
       DB_PASSWORD: repcheck
+      # Pub/Sub — names match bill-text-pipeline's application.conf (GCP_PROJECT_ID,
+      # EVENT_PUBLISHER_TOPIC, EVENT_SUBSCRIBER_SUBSCRIPTION — not the generic PUBSUB_*
+      # names other pipelines use).
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
-      PUBSUB_PROJECT_ID: repcheck-e2e
-      PUBSUB_TOPIC_NAME: bill-text-ingested
-      PUBSUB_SUBSCRIPTION_ID: bill-text-available-sub
-      EMBEDDING_BASE_URL: http://ollama:11434
-      EMBEDDING_MODEL_NAME: qwen3-embedding
-      EMBEDDING_DIMENSIONS: "1536"
-      EMBEDDING_TIMEOUT_SECONDS: "30"
+      GCP_PROJECT_ID: repcheck-e2e
+      EVENT_PUBLISHER_TOPIC: bill-text-ingested
+      EVENT_SUBSCRIBER_SUBSCRIPTION: bill-text-available-sub
+      # Ollama — points at the single WireMock container. Stub lives at
+      # e2e/wiremock/mappings/ollama-embed.json and returns 1536 zeros so
+      # OllamaEmbeddingService.validateDimension passes against vector(1536) columns.
+      OLLAMA_BASE_URL: http://wiremock:8080
+      OLLAMA_MODEL_NAME: qwen3-embedding
+      OLLAMA_EMBEDDING_DIMENSIONS: "1536"
+      OLLAMA_TIMEOUT_SECONDS: "30"
+      PIPELINE_PARALLELISM: "1"
 
 volumes:
   alloydbdata:
-    driver: local
-  ollamadata:
     driver: local
