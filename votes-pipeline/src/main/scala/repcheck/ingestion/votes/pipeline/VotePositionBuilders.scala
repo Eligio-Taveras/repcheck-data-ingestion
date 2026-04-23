@@ -37,6 +37,7 @@ private[pipeline] object VotePositionBuilders {
               stateAtVote = up.stateAtVote,
               createdAt = None,
               lisMemberId = None,
+              voteCastCandidateName = up.voteCastCandidateName,
             )
           }
         case Right(_) => None
@@ -65,6 +66,7 @@ private[pipeline] object VotePositionBuilders {
               stateAtVote = up.stateAtVote,
               createdAt = None,
               lisMemberId = Some(lisMemberId),
+              voteCastCandidateName = up.voteCastCandidateName,
             )
           }
         case Left(_) => None
