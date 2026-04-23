@@ -319,4 +319,69 @@ class VotePositionDiffPropSpec extends AnyFlatSpec with Matchers with MockitoSug
     ex.getMessage should include("XOR identity invariant")
   }
 
+  // ------------------------------------------------------------------
+  // normalizeForComparison — ensure DB-generated fields are zeroed so equality
+  // comparison reflects vote-content changes only.
+  // ------------------------------------------------------------------
+
+  "VotePositionDiffer.normalizeForComparison" should "zero the DB-assigned id field" in {
+    val withRealId = pos(memberId = Some(7L), lisMemberId = None).copy(id = 4242L)
+    VotePositionDiffer.normalizeForComparison(withRealId).id shouldBe 0L
+  }
+
+  it should "zero the DB-assigned createdAt field" in {
+    val withRealCreatedAt = pos(memberId = Some(7L), lisMemberId = None).copy(createdAt = Some(Instant.EPOCH))
+    VotePositionDiffer.normalizeForComparison(withRealCreatedAt).createdAt shouldBe None
+  }
+
+  it should "preserve all other fields untouched" in {
+    val stored = VotePositionDO(
+      id = 9999L,
+      voteId = 42L,
+      memberId = Some(7L),
+      position = Some(VoteCast.Nay),
+      partyAtVote = Some(Party.Republican),
+      stateAtVote = Some(UsState.Texas),
+      createdAt = Some(Instant.parse("2025-01-01T00:00:00Z")),
+      lisMemberId = None,
+    )
+    val normalized = VotePositionDiffer.normalizeForComparison(stored)
+    val _          = normalized.voteId shouldBe 42L
+    val _          = normalized.memberId shouldBe Some(7L)
+    val _          = normalized.position shouldBe Some(VoteCast.Nay)
+    val _          = normalized.partyAtVote shouldBe Some(Party.Republican)
+    val _          = normalized.stateAtVote shouldBe Some(UsState.Texas)
+    normalized.lisMemberId shouldBe None
+  }
+
+  "Differ[VotePositionDO] after normalizeForComparison" should
+    "report two positions identical in vote-content as diff.isOk=true even when id + createdAt differ" in {
+      val differ: Differ[List[VotePositionDO]] = VotePositionDiffer.votePositionsDiffer
+      val builtFresh   = pos(memberId = Some(7L), lisMemberId = None) // id=0, createdAt=None by default
+      val storedFromDb = builtFresh.copy(id = 9999L, createdAt = Some(Instant.parse("2025-01-01T00:00:00Z")))
+
+      // Without normalisation, the differ reports a spurious difference.
+      val rawDiff = differ.diff(List(builtFresh), List(storedFromDb))
+      val _       = rawDiff.isOk shouldBe false
+
+      // After normalisation on both sides (as VoteChangeDetector does), they diff clean.
+      val normalizedDiff = differ.diff(
+        List(VotePositionDiffer.normalizeForComparison(builtFresh)),
+        List(VotePositionDiffer.normalizeForComparison(storedFromDb)),
+      )
+      normalizedDiff.isOk shouldBe true
+    }
+
+  it should "still report a genuine voteCast change even after normalisation" in {
+    val differ: Differ[List[VotePositionDO]] = VotePositionDiffer.votePositionsDiffer
+    val yea = pos(memberId = Some(7L), lisMemberId = None).copy(position = Some(VoteCast.Yea))
+    val nay = pos(memberId = Some(7L), lisMemberId = None).copy(position = Some(VoteCast.Nay))
+
+    val diff = differ.diff(
+      List(VotePositionDiffer.normalizeForComparison(yea)),
+      List(VotePositionDiffer.normalizeForComparison(nay)),
+    )
+    diff.isOk shouldBe false
+  }
+
 }

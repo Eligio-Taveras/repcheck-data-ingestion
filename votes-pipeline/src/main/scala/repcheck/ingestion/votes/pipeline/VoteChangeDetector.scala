@@ -171,7 +171,13 @@ class VoteChangeDetector[F[_]: Sync](
   ): F[VoteChangeReport] =
     for {
       storedPositions <- findStoredPositions(stored.voteId)
-      diff = positionsDiffer.diff(resolvedPositions, storedPositions)
+      // Normalise both sides so equality comparison ignores DB-generated `id` and `createdAt`. Without this every
+      // `Updated` branch spuriously reports `positionsChanged = true` because freshly-built positions have `id = 0`
+      // and `createdAt = None` while stored positions carry real DB values. See `VotePositionDiffer` for the root-
+      // cause explanation.
+      normalizedIncoming = resolvedPositions.map(VotePositionDiffer.normalizeForComparison)
+      normalizedStored   = storedPositions.map(VotePositionDiffer.normalizeForComparison)
+      diff               = positionsDiffer.diff(normalizedIncoming, normalizedStored)
       _ <- logDiffs(incoming.naturalKey, diff, logCtx)
     } yield VoteChangeReport.Updated(positionsChanged = !diff.isOk, diff = diff)
 
