@@ -1,6 +1,5 @@
 package repcheck.ingestion.votes.pipeline
 
-import java.time.ZoneOffset
 import java.util.UUID
 
 import cats.effect.Async
@@ -8,65 +7,50 @@ import cats.syntax.all._
 
 import fs2.Stream
 
-import doobie.implicits._
-import doobie.util.transactor.Transactor
-
-import repcheck.ingestion.bills.common.persistence.BillRepository
-import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
 import repcheck.ingestion.votes.api.HouseVotesApiClient
 import repcheck.ingestion.votes.config.{HouseVotesConfig, SenateVoteXmlConfig}
-import repcheck.ingestion.votes.errors.{BillResolutionFailed, MemberResolutionFailed, VoteProcessingFailed}
 import repcheck.ingestion.votes.lis.LisResolver
-import repcheck.ingestion.votes.repo.StanceMaterializationStatusRepository
 import repcheck.ingestion.votes.xml.{SenateVoteIndexEntry, SenateVoteXmlClient}
-import repcheck.members.common.persistence.MemberRepository
-import repcheck.pipeline.models.events.VoteRecordedEvent
 import repcheck.pipeline.models.metadata.ProcessingResult
-import repcheck.shared.models.congress.dos.bill.BillDO
-import repcheck.shared.models.congress.dos.member.MemberDO
-import repcheck.shared.models.congress.dos.results.{UnresolvedVotePosition, VoteConversionResult}
+import repcheck.shared.models.congress.dos.results.VoteConversionResult
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
-import repcheck.shared.models.congress.dto.conversions.VoteConversions
-import repcheck.shared.models.congress.dto.vote.{SenateVoteXmlDTO, VoteListItemDTO, VoteMembersDTO}
 
 /**
- * End-to-end vote processor: fetches House + Senate roll-call data, converts it, reconciles members and bills, detects
- * what changed, persists the survivors, and emits `VoteRecordedEvent` for every vote with new scoring signal.
+ * End-to-end vote processor: fetches House + Senate roll-call data, converts it, reconciles members, detects what
+ * changed, persists the survivors, and emits `VoteRecordedEvent` for every vote with new scoring signal. The processor
+ * is a thin orchestrator — every sub-responsibility (bill resolution, member resolution, position materialization,
+ * event emission, natural-key construction) is owned by a dedicated collaborator and injected via the constructor.
  *
  * ==Sequencing: save the vote first, then save its positions==
  *
  * Per the data model and the §6.4 decision matrix, the processor runs the operations in a strict order:
- *   1. Convert DTO → [[VoteConversionResult]] (pure validation + enum parsing + inline bill lookup via [[billLookup]]).
- *      `VoteDO.billId` is populated with the resolved id by the converter itself; the processor does NOT override it
- *      afterwards. 2. Resolve member identity for each incoming position — House bioguides → `members.id`; Senate LIS
- *      ids → `lis_members.id` via [[LisResolver]]. 3. Look up the stored vote by natural key to drive change detection.
- *      4. Run the change detector against stored state. If the detector returns `Unchanged` or metadata-only `Updated`,
- *      stop early. 5. Persist: upsert the vote (archive first on Updated branches), get the DB-assigned `voteId`, and
- *      ONLY THEN build [[VotePositionDO]] rows with the real `voteId` and real `member_id` / `lis_member_id` values.
- *      The persister's factory lambda runs inside the transaction, so position materialization and replacement are
- *      atomic with the vote upsert. 6. If the vote is bill-linked, mark `stance_materialization_status.has_votes =
- *      TRUE` for the bill. 7. Emit `VoteRecordedEvent` (except on the Unchanged and metadata-only-Updated branches).
+ *   1. Convert DTO → [[VoteConversionResult]] with inline bill lookup via [[BillLookup]]. `VoteDO.billId` is populated
+ *      by the converter itself; the processor does NOT override it afterwards. 2. Resolve member identity for each
+ *      incoming position — House bioguides via [[MemberLookup]], Senate LIS ids via [[LisResolver]]. 3. Look up the
+ *      stored vote by natural key to drive change detection. 4. Run [[VoteChangeDetector]]. If `Unchanged` or
+ *      metadata-only `Updated`, stop early. 5. Persist: [[VotePersister]] upserts the vote (archiving first on Updated
+ *      branches), returns the DB-assigned `voteId`, then invokes the position factory lambda — built by
+ *      [[VotePositionBuilders]] with the real `voteId` and real `member_id` / `lis_member_id` values. 6. For bill-
+ *      linked new/updated votes, [[VoteEventEmitter]] marks `stance_materialization_status.has_votes = true` and emits
+ *      `VoteRecordedEvent`.
  *
  * No [[VotePositionDO]] is ever carried through the pipeline with a fake `voteId = 0L`. The comparison view used by the
- * detector is materialized just-in-time (keyed on the stored row's real `voteId` when a stored row exists), and the
- * persisted rows are built by the lambda inside the persister's transaction.
+ * detector is materialized just-in-time keyed on the stored row's real `voteId` when a stored row exists; the persisted
+ * rows are built by the factory lambda inside the persister's transaction.
  *
  * ==Procedural vs. bill-linked votes==
  *
  * A vote's `billId: Option[Long]` is nullable by design. Procedural motions (cloture, motion to recommit, motion to
  * suspend the rules, etc.) are first-class votes with no bill linkage; they still produce `VoteRecordedEvent` with
  * `billNaturalKey = None` and every position persists. The only thing gated on `billId.isDefined` is the
- * `stance_materialization_status.markHasVotes(billId)` call, and that gate is mechanical: the stance table's primary
- * key is `bill_id`, so there is no row shape for a procedural vote. Downstream consumers of `vote-events` decide for
- * themselves whether procedural signal matters for their use case.
+ * `stance_materialization_status.markHasVotes(billId)` call inside [[VoteEventEmitter]].
  *
  * ==Chamber-level failure isolation==
  *
- * `streamAll` merges `processHouseVotes` and `processSenateVotes` via `Stream.merge`. A chamber-level fatal error
- * (persistent 401, index-decode failure, etc.) is caught at the outer boundary and emitted as a single
- * `ProcessingResult.Failed("house-chamber", …)` / `"senate-chamber"`, and the other chamber continues. Per-vote
+ * `streamAll` merges the two chamber streams via `Stream.merge`. A chamber-level fatal error (persistent 401,
+ * index-decode failure, etc.) is caught at the outer boundary and emitted as a single
+ * `ProcessingResult.Failed("house-chamber", …)` or `"senate-chamber"`, and the other chamber continues. Per-vote
  * failures inside `parEvalMap` isolate via an inner `handleErrorWith` — one bad vote doesn't abort the chamber.
  */
 class VoteProcessor[F[_]: Async](
@@ -77,15 +61,10 @@ class VoteProcessor[F[_]: Async](
   senateConverter: SenateVoteConverter[F],
   changeDetector: VoteChangeDetector[F],
   persister: VotePersister[F],
-  stanceRepo: StanceMaterializationStatusRepository,
-  eventPublisher: IngestionEventPublisher[F],
-  memberRepo: MemberRepository,
-  billRepo: BillRepository[doobie.ConnectionIO],
-  memberEntityRepo: EntityRepository[F, MemberDO],
-  billEntityRepo: EntityRepository[F, BillDO],
-  placeholderCreator: PlaceholderCreator[F],
+  billLookup: BillLookup[F],
+  memberLookup: MemberLookup[F],
+  eventEmitter: VoteEventEmitter[F],
   findStoredVote: String => F[Option[VoteDO]],
-  xa: Transactor[F],
   houseConfig: HouseVotesConfig,
   senateConfig: SenateVoteXmlConfig,
   congress: Int,
@@ -117,7 +96,7 @@ class VoteProcessor[F[_]: Async](
     Stream
       .evalSeq(houseClient.fetchRecentVotes)
       .parEvalMap(houseConfig.parallelism) { listItem =>
-        val naturalKey    = buildHouseNaturalKey(listItem)
+        val naturalKey    = VoteNaturalKeys.houseVote(listItem, fallbackSession = session)
         val correlationId = UUID.randomUUID()
         processHouseVote(listItem, correlationId, runId, naturalKey)
           .handleErrorWith { e =>
@@ -138,7 +117,7 @@ class VoteProcessor[F[_]: Async](
     Stream
       .evalSeq(senateClient.fetchVoteIndex(congress, session))
       .parEvalMap(senateConfig.parallelism) { entry =>
-        val naturalKey    = buildSenateNaturalKey(entry)
+        val naturalKey    = VoteNaturalKeys.senateVote(entry, congress, session)
         val correlationId = UUID.randomUUID()
         processSenateVote(entry, correlationId, runId, naturalKey)
           .handleErrorWith { e =>
@@ -157,7 +136,7 @@ class VoteProcessor[F[_]: Async](
   // =========================================================================
 
   private[pipeline] def processHouseVote(
-    listItem: VoteListItemDTO,
+    listItem: repcheck.shared.models.congress.dto.vote.VoteListItemDTO,
     correlationId: UUID,
     runId: String,
     naturalKey: String,
@@ -174,11 +153,11 @@ class VoteProcessor[F[_]: Async](
         session = listItem.sessionNumber.getOrElse(session),
         voteNumber = listItem.rollCallNumber,
       )
-      conversion <- houseConverter.convert(dto, billLookup(logCtx), logCtx)
+      conversion <- houseConverter.convert(dto, billLookup.forContext(logCtx), logCtx)
       // House arm: resolve each bioguide to members.id (placeholder + lookup). Resulting map drives buildHousePositions.
-      memberMap <- resolveHouseMembers(conversion.positions, logCtx)
-      buildPositions = (voteId: Long) => buildHousePositions(voteId, conversion.positions, memberMap)
-      result <- processVote(conversion, buildPositions, buildHouseBillNaturalKey(dto), correlationId, logCtx)
+      memberMap <- memberLookup.resolveAll(conversion.positions, logCtx)
+      buildPositions = (voteId: Long) => VotePositionBuilders.house(voteId, conversion.positions, memberMap)
+      result <- processVote(conversion, buildPositions, VoteNaturalKeys.houseBill(dto), correlationId, logCtx)
     } yield result
   }
 
@@ -197,22 +176,21 @@ class VoteProcessor[F[_]: Async](
     for {
       dto        <- senateClient.fetchVote(congress, session, entry.voteNumber)
       lisMap     <- lisResolver.resolve(dto)
-      conversion <- senateConverter.convert(dto, billLookup(logCtx), logCtx)
-      buildPositions = (voteId: Long) => buildSenatePositions(voteId, conversion.positions, lisMap)
-      result <- processVote(conversion, buildPositions, buildSenateBillNaturalKey(dto), correlationId, logCtx)
+      conversion <- senateConverter.convert(dto, billLookup.forContext(logCtx), logCtx)
+      buildPositions = (voteId: Long) => VotePositionBuilders.senate(voteId, conversion.positions, lisMap)
+      result <- processVote(conversion, buildPositions, VoteNaturalKeys.senateBill(dto), correlationId, logCtx)
     } yield result
   }
 
   // =========================================================================
-  // Common flow: resolve bill, detect change, persist + emit
+  // Common flow: detect change, persist + emit
   // =========================================================================
 
   /**
-   * Common tail that both chamber paths converge on: detect change, persist per the decision matrix, mark stance, emit
-   * event. The converter has already populated `conversion.vote.billId` via the inline `billLookup` callback — the
-   * processor trusts that value and does not re-resolve. The caller supplies a `buildPositions: Long =>
-   * List[VotePositionDO]` factory that materializes position rows given the DB-assigned vote id — so no VotePositionDO
-   * exists until the vote row is actually persisted.
+   * Common tail that both chamber paths converge on: detect change, persist per the decision matrix, mark stance + emit
+   * event. The converter has already populated `conversion.vote.billId` via its `billLookup` callback — the processor
+   * trusts that value and does not re-resolve. The caller supplies a `buildPositions: Long => List[VotePositionDO]`
+   * factory that materializes position rows given the DB-assigned vote id.
    */
   private[pipeline] def processVote(
     conversion: VoteConversionResult,
@@ -226,7 +204,6 @@ class VoteProcessor[F[_]: Async](
     // so `.orElse` just picks whichever side has it for event-emission bookkeeping.
     val billNaturalKey = dtoBillNaturalKey.orElse(conversion.billNaturalKey)
     val voteDo         = conversion.vote
-    val _              = logCtx // retained so the signature is future-proof for contextual logging
     for {
       stored <- findStoredVote(voteDo.naturalKey)
       // Build the comparison-only position list with the stored row's voteId when one exists (real id → clean
@@ -235,15 +212,7 @@ class VoteProcessor[F[_]: Async](
       comparisonVoteId    = stored.map(_.voteId).getOrElse(0L)
       comparisonPositions = buildPositions(comparisonVoteId)
       report <- changeDetector.detect(voteDo, comparisonPositions, correlationId)
-      result <- dispatchOnReport(
-        voteDo,
-        buildPositions,
-        billNaturalKey,
-        stored,
-        report,
-        correlationId,
-        logCtx,
-      )
+      result <- dispatchOnReport(voteDo, buildPositions, billNaturalKey, stored, report, correlationId, logCtx)
     } yield result
   }
 
@@ -260,8 +229,7 @@ class VoteProcessor[F[_]: Async](
       case VoteChangeReport.New =>
         for {
           persisted <- persister.persistNew(voteDo, buildPositions)
-          _         <- maybeMarkStance(persisted.billId, logCtx)
-          _         <- emitEvent(persisted, billNaturalKey, isUpdate = false, correlationId, logCtx)
+          _         <- eventEmitter.emitSuccess(persisted, billNaturalKey, isUpdate = false, correlationId, logCtx)
         } yield ProcessingResult.Succeeded(voteDo.naturalKey, eventEmitted = true)
 
       case VoteChangeReport.Updated(true, _) =>
@@ -269,8 +237,7 @@ class VoteProcessor[F[_]: Async](
         val storedVoteId = stored.map(_.voteId).getOrElse(0L)
         for {
           persisted <- persister.persistUpdate(voteDo, storedVoteId, buildPositions)
-          _         <- maybeMarkStance(persisted.billId, logCtx)
-          _         <- emitEvent(persisted, billNaturalKey, isUpdate = true, correlationId, logCtx)
+          _         <- eventEmitter.emitSuccess(persisted, billNaturalKey, isUpdate = true, correlationId, logCtx)
         } yield ProcessingResult.Succeeded(voteDo.naturalKey, eventEmitted = true)
 
       case VoteChangeReport.Updated(false, _) =>
@@ -284,217 +251,5 @@ class VoteProcessor[F[_]: Async](
       case VoteChangeReport.Unchanged =>
         Async[F].pure(ProcessingResult.Skipped(voteDo.naturalKey, "unchanged"))
     }
-
-  // =========================================================================
-  // Bill + member resolution — two-step (ensureExists + lookup) inlined here
-  // =========================================================================
-
-  /**
-   * Bill-lookup callback threaded into [[HouseVoteConverter.convert]] and [[SenateVoteConverter.convert]]. For a given
-   * bill natural key it ensures a bill row exists (creating a placeholder for the bills-pipeline to enrich later) and
-   * then reads back the surrogate id. Returns `F[Some(id)]` on success; raises [[BillResolutionFailed]] when the
-   * placeholder round-trip misbehaves (row absent immediately after an idempotent insert suggests another actor deleted
-   * it between our two operations).
-   *
-   * The function returns `F[Option[Long]]` for shape compatibility with the shared-models `billLookup` contract — but
-   * this implementation never returns `F.pure(None)`; the shared-models layer itself short-circuits `None` before
-   * invoking the callback for procedural votes.
-   */
-  private[pipeline] def billLookup(logCtx: LogContext): String => F[Option[Long]] =
-    nk =>
-      for {
-        _       <- placeholderCreator.ensureExists[BillDO](nk, billEntityRepo)
-        maybeId <- billRepo.findByBillId(nk).map(_.map(_.billId)).transact(xa)
-        id <- maybeId match {
-          case Some(id) => Async[F].pure(id)
-          case None =>
-            val err = BillResolutionFailed(nk, "findByBillId returned None after ensureExists")
-            logger.error(logCtx, err.getMessage, Some(err)) *> Async[F].raiseError[Long](err)
-        }
-      } yield Some(id)
-
-  /**
-   * Resolve every House bioguide from the conversion result to a `members.id` Long, creating placeholder members when
-   * needed. Returns a `Map[bioguide, memberId]` for the caller to thread into position-building. Senate positions use
-   * [[buildSenatePositions]] instead and do not go through this path.
-   */
-  private[pipeline] def resolveHouseMembers(
-    positions: List[UnresolvedVotePosition],
-    logCtx: LogContext,
-  ): F[Map[String, Long]] = {
-    val distinctBioguides = positions.iterator
-      .flatMap(_.memberSource.left.toOption)
-      .filter(_.nonEmpty)
-      .toList
-      .distinct
-
-    distinctBioguides
-      .traverse(bid => resolveMemberId(bid, logCtx).map(id => bid -> id))
-      .map(_.toMap)
-  }
-
-  private def resolveMemberId(bioguideId: String, logCtx: LogContext): F[Long] =
-    for {
-      _       <- placeholderCreator.ensureExists[MemberDO](bioguideId, memberEntityRepo)
-      maybeId <- memberRepo.findByBioguideId(bioguideId).map(_.map(_.memberId)).transact(xa)
-      id <- maybeId match {
-        case Some(id) => Async[F].pure(id)
-        case None =>
-          val err = MemberResolutionFailed(bioguideId, "findByBioguideId returned None after ensureExists")
-          logger.error(logCtx, err.getMessage, Some(err)) *> Async[F].raiseError[Long](err)
-      }
-    } yield id
-
-  // =========================================================================
-  // Position builders — pure functions invoked with the real voteId at persist time
-  // =========================================================================
-
-  /**
-   * Build the House-arm position list with the real `voteId` and the pre-resolved `members.id` for every bioguide.
-   * Positions whose bioguide failed to resolve (defensive — shouldn't happen since [[resolveHouseMembers]] raises) are
-   * dropped. Positions with `memberSource = Right(_)` are also dropped — the House path never emits Right.
-   */
-  private[pipeline] def buildHousePositions(
-    voteId: Long,
-    positions: List[UnresolvedVotePosition],
-    memberMap: Map[String, Long],
-  ): List[VotePositionDO] =
-    positions.flatMap { up =>
-      up.memberSource match {
-        case Left(bioguide) =>
-          memberMap.get(bioguide).map { memberId =>
-            VotePositionDO(
-              id = 0L,
-              voteId = voteId,
-              memberId = Some(memberId),
-              position = up.voteCast,
-              partyAtVote = up.partyAtVote,
-              stateAtVote = up.stateAtVote,
-              createdAt = None,
-              lisMemberId = None,
-            )
-          }
-        case Right(_) => None
-      }
-    }
-
-  /**
-   * Build the Senate-arm position list with the real `voteId` and the pre-resolved `lis_members.id` for every LIS
-   * natural key. Positions whose LIS id is missing from `lisMap` are dropped defensively (the LIS resolver should have
-   * populated it for every senator seen on the DTO).
-   */
-  private[pipeline] def buildSenatePositions(
-    voteId: Long,
-    positions: List[UnresolvedVotePosition],
-    lisMap: Map[String, Long],
-  ): List[VotePositionDO] =
-    positions.flatMap { up =>
-      up.memberSource match {
-        case Right(lisNaturalKey) =>
-          lisMap.get(lisNaturalKey).map { lisMemberId =>
-            VotePositionDO(
-              id = 0L,
-              voteId = voteId,
-              memberId = None,
-              position = up.voteCast,
-              partyAtVote = up.partyAtVote,
-              stateAtVote = up.stateAtVote,
-              createdAt = None,
-              lisMemberId = Some(lisMemberId),
-            )
-          }
-        case Left(_) => None
-      }
-    }
-
-  // =========================================================================
-  // Side effects on success: stance mark + event emit
-  // =========================================================================
-
-  private def maybeMarkStance(billId: Option[Long], logCtx: LogContext): F[Unit] =
-    billId match {
-      case None => Async[F].unit
-      case Some(b) =>
-        stanceRepo.markHasVotes(b).transact(xa).void *>
-          logger.info(logCtx, s"Marked stance_materialization_status.has_votes=true for bill_id=${b.toString}")
-    }
-
-  private def emitEvent(
-    persisted: VoteDO,
-    billNaturalKey: Option[String],
-    isUpdate: Boolean,
-    correlationId: UUID,
-    logCtx: LogContext,
-  ): F[Unit] = {
-    val dateInstant = persisted.updateDate
-      .orElse(persisted.voteDate.map(_.atStartOfDay().toInstant(ZoneOffset.UTC)))
-      .getOrElse(java.time.Instant.EPOCH)
-    val event = VoteRecordedEvent(
-      voteNaturalKey = persisted.naturalKey,
-      billNaturalKey = billNaturalKey,
-      chamber = persisted.chamber.apiValue,
-      date = dateInstant,
-      congress = persisted.congress,
-      isUpdate = isUpdate,
-    )
-    eventPublisher
-      .voteRecorded(event, correlationId)
-      .flatMap(msgId =>
-        logger.info(
-          logCtx,
-          s"Published VoteRecordedEvent for ${persisted.naturalKey} (isUpdate=${isUpdate.toString}) as $msgId",
-        )
-      )
-      .handleErrorWith { e =>
-        logger.error(
-          logCtx,
-          s"Failed to publish VoteRecordedEvent for ${persisted.naturalKey}: ${e.getMessage}",
-          Some(e),
-        ) *>
-          Async[F].raiseError[Unit](
-            VoteProcessingFailed(persisted.naturalKey, s"event publish failed: ${e.getMessage}", Some(e))
-          )
-      }
-  }
-
-  // =========================================================================
-  // Natural key + bill-key helpers
-  // =========================================================================
-
-  private[pipeline] def buildHouseNaturalKey(listItem: VoteListItemDTO): String =
-    VoteConversions.buildVoteNaturalKey(
-      congress = listItem.congress,
-      chamber = "House",
-      session = listItem.sessionNumber.getOrElse(session),
-      rollCallNumber = listItem.rollCallNumber,
-    )
-
-  private[pipeline] def buildSenateNaturalKey(entry: SenateVoteIndexEntry): String =
-    VoteConversions.buildVoteNaturalKey(
-      congress = congress,
-      chamber = "Senate",
-      session = session,
-      rollCallNumber = entry.voteNumber,
-    )
-
-  /**
-   * Derive a House vote's bill natural key from the DTO's legislation fields when they are populated. For procedural
-   * votes (no legislation metadata), returns `None`.
-   */
-  private[pipeline] def buildHouseBillNaturalKey(dto: VoteMembersDTO): Option[String] =
-    for {
-      t <- dto.legislationType
-      n <- dto.legislationNumber
-    } yield s"${dto.congress.toString}-${t.toUpperCase}-$n"
-
-  /**
-   * For Senate votes, the bill natural key is produced by `SenateVoteConverter.classifyDocument` during conversion and
-   * attached to the [[VoteConversionResult]]. This method is the no-op hook that keeps the `processVote` signature
-   * symmetric with the House path — Senate never overrides the converter's choice.
-   */
-  private[pipeline] def buildSenateBillNaturalKey(dto: SenateVoteXmlDTO): Option[String] = {
-    val _ = dto
-    None
-  }
 
 }
