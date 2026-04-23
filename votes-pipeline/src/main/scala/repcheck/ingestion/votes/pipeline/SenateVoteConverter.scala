@@ -10,6 +10,7 @@ import cats.effect.Async
 import cats.syntax.all._
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.ingestion.votes.xml.SenateVoteUrls
 import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
 import repcheck.shared.models.congress.dos.results.{UnresolvedVotePosition, VoteConversionResult}
 import repcheck.shared.models.congress.dos.vote.VoteDO
@@ -19,42 +20,65 @@ import repcheck.shared.models.congress.vote.{VoteCast, VoteType}
 
 /**
  * Converts a senate.gov `<roll_call_vote>` XML document (as a decoded [[SenateVoteXmlDTO]]) into a
- * [[VoteConversionResult]] — `VoteDO` + `billNaturalKey` + `List[UnresolvedVotePosition]`. Like [[HouseVoteConverter]],
- * this class does NOT resolve any ids to database rows; the processor handles member and bill resolution after the
- * converter produces its pure structural output.
+ * [[VoteConversionResult]] — `VoteDO` + `billNaturalKey` + `List[UnresolvedVotePosition]`.
  *
- * ==Document classification==
+ * ==Document classification + bill resolution==
  *
  * Every senate.gov vote XML carries a `<document>` element (required per senate.gov's schema) identifying the
  * underlying bill, resolution, nomination, or treaty. The converter classifies `document.documentType`:
  *
  *   - Bill-like (`"S."`, `"H.R."`, `"S.J.Res."`, `"H.J.Res."`, `"S.Res."`, `"H.Res."`, `"S.Con.Res."`, `"H.Con.Res."`):
- *     normalizes the type to a [[BillType]] enum value (apiValue), constructs a bill natural key via
- *     [[BillConversions.buildBillNaturalKey]], and populates `VoteDO.legislationType` / `legislationNumber` /
- *     `legislationUrl`. The processor resolves this natural key to a `bills.id` via the same placeholder+lookup flow
- *     used for House votes.
- *   - `"PN"` (Presidential Nomination), `"Treaty Doc."`, or any other unknown documentType: `billNaturalKey = None`,
- *     `VoteDO.billId = None`, `legislationType = None`, etc. Logged at info (for PN / Treaty) or warn (for unknown).
- *     Nominations and treaties are legitimate votes; they just don't link to our `bills` table.
+ *     normalizes the type to a [[BillType]] enum value, constructs a bill natural key via
+ *     [[BillConversions.buildBillNaturalKey]], calls `billLookup` to resolve the bill's surrogate id (the same
+ *     placeholder+lookup flow used by the House converter), and populates `VoteDO.billId = Some(resolvedId)`,
+ *     `legislationType = Some(billType)`, `legislationNumber = Some(documentNumber)`, and `legislationUrl` via
+ *     [[SenateVoteConverter.buildCongressGovBillUrl]].
+ *   - `"PN"` (Presidential Nomination) or `"Treaty Doc."`: `billId = None`, `legislationType = None`, `legislationUrl
+ *     \= None`. Logged at info; nominations and treaties are legitimate votes that don't link to our `bills` table.
+ *   - Any other documentType: `billId = None` and friends, logged at warn so operators can grow the type map if a new
+ *     senate.gov value appears.
+ *
+ * ==URL derivation==
+ *
+ * Senate XML does not carry `legislationUrl` or `sourceDataUrl` fields, but both are derivable from known inputs:
+ *   - `sourceDataUrl` — the senate.gov URL the vote XML was fetched from. Derived via [[SenateVoteUrls.voteXmlUrl]] so
+ *     the client and the DO always agree. Always populated.
+ *   - `legislationUrl` — the congress.gov bill page URL, e.g. `https://www.congress.gov/bill/119/senate-bill/1071`.
+ *     Derived via [[SenateVoteConverter.buildCongressGovBillUrl]] for bill-like classifications only; `None` otherwise.
+ *     Pattern verified against real Congress.gov API responses (`api.congress.gov/v3/house-vote/119/1/17` returns
+ *     exactly this shape).
  *
  * ==Output shape==
  *   - `VoteDO.chamber = Chamber.Senate`.
- *   - `VoteDO.billId = None` (processor overwrites after resolving `billNaturalKey`).
+ *   - `VoteDO.billId` — real resolved id (bill-like) or `None` (non-bill).
  *   - `VoteDO.voteType` classified from the `<question>` via [[VoteType.fromQuestion]] — same rule House uses.
  *   - `VoteDO.voteDate` parsed from the XML's `<vote_date>` text into a `LocalDate`.
  *   - `VoteDO.updateDate` set to the parsed `voteDate` at 00:00 UTC (senate.gov XML has no separate updateDate).
  *   - Positions: one [[UnresolvedVotePosition]] per senator, with `memberSource = Right(lisMemberId)`. The processor
  *     resolves each LIS id to a `lis_members.id` via [[repcheck.ingestion.votes.lis.LisResolver]] and materializes the
  *     Senate-arm `VotePositionDO` rows inside the persister's transaction.
+ *
+ * @param senateBaseUrl
+ *   senate.gov base URL (e.g. `https://www.senate.gov/legislative/LIS`) — used to derive `sourceDataUrl`. In tests we
+ *   pass a WireMock URL; in production we pass the config default. Must agree with the URL the
+ *   [[repcheck.ingestion.votes.xml.SenateVoteXmlClient]] fetched from.
  */
-private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[F]) {
+private[pipeline] class SenateVoteConverter[F[_]: Async](
+  logger: PipelineLogger[F],
+  senateBaseUrl: String,
+) {
 
   import SenateVoteConverter._
 
   /**
-   * Convert one senate vote DTO into a [[VoteConversionResult]].
+   * Convert one senate vote DTO into a [[VoteConversionResult]]. `billLookup` is invoked once when the document
+   * classifies as bill-like; non-bill documents (PN, Treaty, unknown) leave `billId = None`.
    */
-  def convert(dto: SenateVoteXmlDTO, logCtx: LogContext): F[VoteConversionResult] = {
+  def convert(
+    dto: SenateVoteXmlDTO,
+    billLookup: String => F[Option[Long]],
+    logCtx: LogContext,
+  ): F[VoteConversionResult] = {
     val naturalKey = VoteConversions.buildVoteNaturalKey(
       congress = dto.congress,
       chamber = "Senate",
@@ -63,21 +87,23 @@ private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[
     )
 
     for {
-      docClassification <- classifyDocument(dto.document, naturalKey, logCtx)
-      voteDo    = buildVoteDO(dto, naturalKey, docClassification)
+      classification <- classifyDocument(dto.document, naturalKey, logCtx)
+      resolvedBillId <- classification.billNaturalKey match {
+        case Some(nk) => billLookup(nk)
+        case None     => Async[F].pure(Option.empty[Long])
+      }
+      voteDo    = buildVoteDO(dto, naturalKey, classification, resolvedBillId)
       positions = buildUnresolvedPositions(dto)
     } yield VoteConversionResult(
       vote = voteDo,
-      billNaturalKey = docClassification.billNaturalKey,
+      billNaturalKey = classification.billNaturalKey,
       positions = positions,
     )
   }
 
   /**
-   * Classify the `<document>` element, log at the appropriate level, and return:
-   *   - `billNaturalKey: Option[String]` — populated for bill-like types (drives `VoteDO.billId` resolution upstream).
-   *   - `legislationType: Option[BillType]` — populated for bill-like types.
-   *   - `legislationNumber: Option[String]` — populated for bill-like types (raw number from senate.gov).
+   * Classify the `<document>` element, log at the appropriate level, and return a [[DocumentClassification]] with the
+   * derived bill natural key (for bill-like types) and the normalized [[BillType]] / `legislationNumber`.
    */
   private[pipeline] def classifyDocument(
     document: SenateVoteDocumentDTO,
@@ -96,6 +122,7 @@ private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[
             billNaturalKey = Some(billNK),
             legislationType = Some(billType),
             legislationNumber = Some(document.documentNumber),
+            legislationUrl = buildCongressGovBillUrl(document.documentCongress, billType, document.documentNumber),
           )
         )
       case Left(NonBillDocument(docType)) =>
@@ -120,8 +147,10 @@ private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[
     dto: SenateVoteXmlDTO,
     naturalKey: String,
     classification: DocumentClassification,
+    resolvedBillId: Option[Long],
   ): VoteDO = {
-    val parsedDate = parseVoteDate(dto.voteDate)
+    val parsedDate    = parseVoteDate(dto.voteDate)
+    val sourceDataUrl = SenateVoteUrls.voteXmlUrl(senateBaseUrl, dto.congress, dto.session, dto.voteNumber)
     VoteDO(
       voteId = 0L,
       naturalKey = naturalKey,
@@ -129,7 +158,7 @@ private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[
       chamber = Chamber.Senate,
       rollNumber = dto.voteNumber,
       sessionNumber = Some(dto.session),
-      billId = None,
+      billId = resolvedBillId,
       question = Some(dto.question),
       voteType = Some(VoteType.fromQuestion(dto.question)),
       voteMethod = None,
@@ -137,8 +166,8 @@ private[pipeline] class SenateVoteConverter[F[_]: Async](logger: PipelineLogger[
       voteDate = parsedDate,
       legislationNumber = classification.legislationNumber,
       legislationType = classification.legislationType,
-      legislationUrl = None,
-      sourceDataUrl = None,
+      legislationUrl = classification.legislationUrl,
+      sourceDataUrl = Some(sourceDataUrl),
       updateDate = parsedDate.map(_.atStartOfDay().toInstant(ZoneOffset.UTC)),
       createdAt = None,
       updatedAt = None,
@@ -166,17 +195,18 @@ private[pipeline] object SenateVoteConverter {
 
   /**
    * Outcome of [[SenateVoteConverter.classifyDocument]]. When the document represents a bill or resolution the
-   * `billNaturalKey` is populated and the processor resolves it downstream; non-bill documents (PN, Treaty Doc.,
-   * unknown) produce the empty classification.
+   * `billNaturalKey` + `legislationType` + `legislationNumber` + `legislationUrl` are all populated. Non-bill documents
+   * (PN, Treaty Doc., unknown) produce the empty classification.
    */
   final case class DocumentClassification(
     billNaturalKey: Option[String],
     legislationType: Option[BillType],
     legislationNumber: Option[String],
+    legislationUrl: Option[String],
   )
 
   object DocumentClassification {
-    val empty: DocumentClassification = DocumentClassification(None, None, None)
+    val empty: DocumentClassification = DocumentClassification(None, None, None, None)
   }
 
   /**
@@ -207,6 +237,36 @@ private[pipeline] object SenateVoteConverter {
 
   final case class NonBillDocument(rawType: String) extends NonBillOrUnknown
   final case class UnknownDocument(rawType: String) extends NonBillOrUnknown
+
+  /**
+   * Build the canonical congress.gov bill page URL for a bill-like classification. Returns `Some(url)` only for
+   * BillType variants that correspond to routable congress.gov `/bill/{congress}/{slug}/{number}` pages — the eight
+   * "bill-like" variants that [[normalizeDocumentType]] can actually produce. Returns `None` for the other BillType
+   * variants (PL, STAT, USC, SRPT, HRPT) which are legislative artifacts without a bill-page URL; in practice
+   * `classifyDocument` never feeds these through because `normalizeDocumentType` restricts the input set.
+   *
+   * Pattern verified against the live Congress.gov API (`api.congress.gov/v3/house-vote/119/1/17` returned
+   * `"legislationUrl":"https://www.congress.gov/bill/119/house-bill/30"` — bare `congress`, no `th-congress` suffix).
+   */
+  private[pipeline] def buildCongressGovBillUrl(congress: Int, billType: BillType, number: String): Option[String] =
+    billTypeUrlSlug(billType).map(slug => s"https://www.congress.gov/bill/${congress.toString}/$slug/$number")
+
+  /**
+   * Slug table for congress.gov bill URLs. Verified via live Congress.gov responses for HR → `house-bill` (vote
+   * 119/1/17) and HCONRES → `house-concurrent-resolution` (vote 119/1/100). Non-bill BillType variants (PL, STAT, USC,
+   * SRPT, HRPT) fall through to `None` — they aren't bills and have no such URL.
+   */
+  private[pipeline] def billTypeUrlSlug(billType: BillType): Option[String] = billType match {
+    case BillType.S       => Some("senate-bill")
+    case BillType.HR      => Some("house-bill")
+    case BillType.SJRES   => Some("senate-joint-resolution")
+    case BillType.HJRES   => Some("house-joint-resolution")
+    case BillType.SRES    => Some("senate-resolution")
+    case BillType.HRES    => Some("house-resolution")
+    case BillType.SCONRES => Some("senate-concurrent-resolution")
+    case BillType.HCONRES => Some("house-concurrent-resolution")
+    case BillType.PL | BillType.STAT | BillType.USC | BillType.SRPT | BillType.HRPT => None
+  }
 
   private val LongWithDayOfWeek: DateTimeFormatter =
     DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy, hh:mm a", Locale.US)

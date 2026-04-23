@@ -38,8 +38,14 @@ import repcheck.shared.models.placeholder.HasPlaceholder
 
 /**
  * Unit spec for [[VoteProcessor]]. All collaborators are mocked via MockitoScala; the spec exercises the processor's
- * orchestration without touching real HTTP or DB infrastructure. Primary focus: `processVote` (the common tail — bill
- * resolution → change detection → persist → event emission) and `streamAll` chamber-level failure isolation.
+ * orchestration without touching real HTTP or DB infrastructure. Primary focus: `processVote` (the common tail — change
+ * detection → persist → event emission, trusting the converter's `billId` output) and `streamAll` chamber-level failure
+ * isolation.
+ *
+ * Bill resolution is no longer done in `processVote` — the converters invoke the `billLookup` callback (supplied by
+ * [[VoteProcessor.billLookup]]) inline during `dto.toDO(billLookup)`, so every `VoteConversionResult.vote.billId` is
+ * already populated by the time `processVote` runs. The two `*Resolution` tests below pin the `billLookup` function
+ * directly rather than by exercising `processVote`.
  */
 class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -183,12 +189,12 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
   }
 
   // ------------------------------------------------------------------
-  // processVote — decision matrix
+  // processVote — decision matrix (billId already populated by converter)
   // ------------------------------------------------------------------
 
   "processVote" should "persist New + emit event(isUpdate=false) for procedural votes and return Succeeded" in {
     val mocks = mkMocks()
-    // Procedural: billNaturalKey = None, so bill resolution short-circuits
+    // Procedural: converter produced billId=None (no legislation reference).
     val vote       = voteDO(billId = None)
     val conversion = VoteConversionResult(vote, billNaturalKey = None, positions = List.empty)
     val buildPositions: Long => List[VotePositionDO] = _ => List.empty
@@ -214,50 +220,12 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
   }
 
   it should "persist Updated(positionsChanged=true) + emit event(isUpdate=true) + mark stance when bill-linked" in {
-    val mocks      = mkMocks()
-    val vote       = voteDO(billId = None) // converter output: billId unset; processor resolves via billNK
-    val stored     = vote.copy(voteId = 77L, billId = Some(200L))
+    val mocks = mkMocks()
+    // Converter output already carries the resolved billId; no processor-level override.
+    val vote       = voteDO(billId = Some(200L))
+    val stored     = vote.copy(voteId = 77L)
     val conversion = VoteConversionResult(vote, billNaturalKey = Some("119-HR-9999"), positions = List.empty)
     val buildPositions: Long => List[VotePositionDO] = _ => List(pos(1L))
-
-    // Bill resolution: placeholder + findByBillId returns Some(BillDO(billId=200))
-    when(mocks.billRepo.findByBillId(eqTo("119-HR-9999"))).thenReturn(
-      connection.pure(
-        Some(
-          BillDO(
-            billId = 200L,
-            naturalKey = "119-HR-9999",
-            congress = 119,
-            billType = BillType.HR,
-            number = "9999",
-            title = "A bill",
-            originChamber = None,
-            originChamberCode = None,
-            introducedDate = None,
-            policyArea = None,
-            latestActionDate = None,
-            latestActionText = None,
-            constitutionalAuthorityText = None,
-            sponsorMemberId = None,
-            textUrl = None,
-            textFormat = None,
-            textVersionType = None,
-            textDate = None,
-            textContent = None,
-            summaryText = None,
-            summaryActionDesc = None,
-            summaryActionDate = None,
-            updateDate = None,
-            updateDateIncludingText = None,
-            legislationUrl = None,
-            apiUrl = None,
-            createdAt = None,
-            updatedAt = None,
-            latestTextVersionId = None,
-          )
-        )
-      )
-    )
 
     when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Some(stored)))
     val diff = DiffResult.ValueResult.Both("a", "b", isSame = false, isIgnored = false)
@@ -290,8 +258,8 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
   it should "persist Updated(positionsChanged=false) via persistMetadataOnlyUpdate and SKIP stance+event" in {
     val mocks      = mkMocks()
-    val vote       = voteDO(billId = None)
-    val stored     = vote.copy(voteId = 88L, billId = Some(300L))
+    val vote       = voteDO(billId = Some(300L))
+    val stored     = vote.copy(voteId = 88L)
     val conversion = VoteConversionResult(vote, billNaturalKey = None, positions = List.empty)
     val buildPositions: Long => List[VotePositionDO] = _ => List.empty
 
@@ -442,7 +410,9 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       voteQuestion = Some("On Passage"),
       results = Some(List.empty),
     )
-    val vote = voteDO(naturalKey = "119-House-1-42", billId = None)
+    // Converter (mocked) is expected to populate billId via its injected billLookup. We stub its output
+    // directly with the resolved id; no processor-level override is exercised.
+    val vote = voteDO(naturalKey = "119-House-1-42", billId = Some(900L))
     val unresolved = repcheck.shared.models.congress.dos.results.UnresolvedVotePosition(
       memberSource = Left("A000055"),
       voteCast = Some(VoteCast.Yea),
@@ -453,21 +423,21 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List(listItem)))
     when(mocks.houseClient.fetchMembersVotePositions(eqTo(119), eqTo(1), eqTo(42)))
       .thenReturn(IO.pure(membersDto))
-    when(mocks.houseConverter.convert(any[repcheck.shared.models.congress.dto.vote.VoteMembersDTO], any[LogContext]))
-      .thenReturn(IO.pure(VoteConversionResult(vote, billNaturalKey = None, positions = List(unresolved))))
+    when(
+      mocks.houseConverter.convert(
+        any[repcheck.shared.models.congress.dto.vote.VoteMembersDTO],
+        any(),
+        any[LogContext],
+      )
+    ).thenReturn(
+      IO.pure(VoteConversionResult(vote, billNaturalKey = Some("119-HR-1234"), positions = List(unresolved)))
+    )
 
     // Member resolution: placeholder creator is a no-op stub; memberRepo returns Some(MemberDO) with memberId=7
-    import doobie.free.connection
     val resolvedMember = mock[repcheck.shared.models.congress.dos.member.MemberDO]
     when(resolvedMember.memberId).thenReturn(7L)
     when(mocks.memberRepo.findByBioguideId(eqTo("A000055")))
       .thenReturn(connection.pure(Some(resolvedMember)))
-
-    // Bill resolution: buildHouseBillNaturalKey produces "119-HR-1234" from the DTO fields, so the processor
-    // calls billRepo.findByBillId with that key.
-    val resolvedBill = mock[repcheck.shared.models.congress.dos.bill.BillDO]
-    when(resolvedBill.billId).thenReturn(900L)
-    when(mocks.billRepo.findByBillId(eqTo("119-HR-1234"))).thenReturn(connection.pure(Some(resolvedBill)))
 
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1)))
       .thenReturn(IO.pure(List.empty[SenateVoteIndexEntry]))
@@ -481,6 +451,7 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
 
     val _ = results.length shouldBe 1
+    val _ = verify(mocks.stanceRepo, times(1)).markHasVotes(900L)
     results.headOption.getOrElse(fail("expected one result")) match {
       case ProcessingResult.Succeeded(id, emitted) =>
         val _ = id shouldBe "119-House-1-42"
@@ -511,7 +482,8 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       document = senDoc,
       members = List.empty,
     )
-    val vote = voteDO(naturalKey = "119-Senate-1-17", chamber = Chamber.Senate, billId = None)
+    // Converter (mocked) populates billId=Some(500) directly — mimicking its real billLookup-driven behavior.
+    val vote = voteDO(naturalKey = "119-Senate-1-17", chamber = Chamber.Senate, billId = Some(500L))
     val unresolved = repcheck.shared.models.congress.dos.results.UnresolvedVotePosition(
       memberSource = Right("S428"),
       voteCast = Some(VoteCast.Yea),
@@ -523,22 +495,21 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(entry)))
     when(mocks.senateClient.fetchVote(eqTo(119), eqTo(1), eqTo(17))).thenReturn(IO.pure(senDto))
     when(mocks.lisResolver.resolve(eqTo(senDto))).thenReturn(IO.pure(Map("S428" -> 99L)))
-    when(mocks.senateConverter.convert(eqTo(senDto), any[LogContext]))
-      .thenReturn(
-        IO.pure(VoteConversionResult(vote, billNaturalKey = Some("119-S-1071"), positions = List(unresolved)))
+    when(
+      mocks.senateConverter.convert(
+        eqTo(senDto),
+        any(),
+        any[LogContext],
       )
-
-    // Bill resolution path: billRepo returns Some(BillDO) with billId=500
-    import doobie.free.connection
-    val resolvedBill = mock[repcheck.shared.models.congress.dos.bill.BillDO]
-    when(resolvedBill.billId).thenReturn(500L)
-    when(mocks.billRepo.findByBillId(eqTo("119-S-1071"))).thenReturn(connection.pure(Some(resolvedBill)))
+    ).thenReturn(
+      IO.pure(VoteConversionResult(vote, billNaturalKey = Some("119-S-1071"), positions = List(unresolved)))
+    )
 
     when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Option.empty[VoteDO]))
     when(mocks.changeDetector.detect(any[VoteDO], any[List[VotePositionDO]], any[UUID]))
       .thenReturn(IO.pure(VoteChangeReport.New))
     when(mocks.persister.persistNew(any[VoteDO], any()))
-      .thenReturn(IO.pure(vote.copy(voteId = 77L, billId = Some(500L))))
+      .thenReturn(IO.pure(vote.copy(voteId = 77L)))
 
     val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
 
@@ -549,29 +520,31 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
   }
 
   // ------------------------------------------------------------------
-  // Bill / member resolution failure paths
+  // billLookup callback — Mirror of the prior resolveOptionalBillId tests, now pinning the callback directly
   // ------------------------------------------------------------------
 
-  "resolveOptionalBillId" should "raise BillResolutionFailed when findByBillId returns None after ensureExists" in {
+  "billLookup" should "resolve to Some(billId) after placeholder + findByBillId succeed" in {
+    val mocks        = mkMocks()
+    val resolvedBill = mock[repcheck.shared.models.congress.dos.bill.BillDO]
+    when(resolvedBill.billId).thenReturn(404L)
+    when(mocks.billRepo.findByBillId(eqTo("119-HR-1234"))).thenReturn(connection.pure(Some(resolvedBill)))
+
+    val lookup = mocks.build.billLookup(LogContext("r", "s"))
+    lookup("119-HR-1234").unsafeRunSync() shouldBe Some(404L)
+  }
+
+  it should "raise BillResolutionFailed when findByBillId returns None after ensureExists" in {
     val mocks = mkMocks()
-    import doobie.free.connection
     when(mocks.billRepo.findByBillId(eqTo("119-HR-1234"))).thenReturn(connection.pure(Option.empty))
 
-    val outcome = mocks.build
-      .resolveOptionalBillId(Some("119-HR-1234"), LogContext("r", "s"))
-      .attempt
-      .unsafeRunSync()
+    val lookup  = mocks.build.billLookup(LogContext("r", "s"))
+    val outcome = lookup("119-HR-1234").attempt.unsafeRunSync()
 
     outcome match {
       case Left(e: repcheck.ingestion.votes.errors.BillResolutionFailed) =>
         e.billNaturalKey shouldBe "119-HR-1234"
       case other => fail(s"expected Left(BillResolutionFailed), got $other")
     }
-  }
-
-  it should "short-circuit to None for None input (no DB calls at all)" in {
-    val mocks = mkMocks()
-    mocks.build.resolveOptionalBillId(None, LogContext("r", "s")).unsafeRunSync() shouldBe None
   }
 
   "resolveHouseMembers" should "short-circuit on empty position list" in {
@@ -581,7 +554,6 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
   it should "raise MemberResolutionFailed when a bioguide lookup returns None after ensureExists" in {
     val mocks = mkMocks()
-    import doobie.free.connection
     when(mocks.memberRepo.findByBioguideId(eqTo("B000999"))).thenReturn(connection.pure(Option.empty))
 
     val unresolved = repcheck.shared.models.congress.dos.results.UnresolvedVotePosition(

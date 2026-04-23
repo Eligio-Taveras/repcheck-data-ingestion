@@ -60,7 +60,7 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
       RetryConfig(maxRetries = 1, initialBackoffMs = 10L, maxBackoffMs = 50L, backoffMultiplier = 2.0),
   ): SenateVoteXmlClient[IO] = {
     val config = SenateVoteXmlConfig(
-      baseUrl = s"http://127.0.0.1:${wireMock.port().toString}/roll_call_lists",
+      baseUrl = s"http://127.0.0.1:${wireMock.port().toString}",
       parallelism = 1,
       requestDelay = requestDelay,
       retry = retry,
@@ -106,7 +106,7 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
   "fetchVote" should "parse a valid Senate vote XML body from senate.gov" in {
     val fixture = loadFixture("vote_119_1_00017.xml")
-    stubXml("/roll_call_lists/vote_menu_119_1/vote_119_1_00017.xml", fixture)
+    stubXml("/roll_call_votes/vote1191/vote_119_1_00017.xml", fixture)
 
     val dto = makeClient().fetchVote(119, 1, 17).unsafeRunSync()
 
@@ -138,13 +138,13 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         |  </document>
         |  <members/>
         |</roll_call_vote>""".stripMargin
-    stubXml("/roll_call_lists/vote_menu_119_1/vote_119_1_00007.xml", minimal)
+    stubXml("/roll_call_votes/vote1191/vote_119_1_00007.xml", minimal)
 
     val _ = makeClient().fetchVote(119, 1, 7).unsafeRunSync()
 
     wireMock.verify(
       1,
-      getRequestedFor(urlEqualTo("/roll_call_lists/vote_menu_119_1/vote_119_1_00007.xml")),
+      getRequestedFor(urlEqualTo("/roll_call_votes/vote1191/vote_119_1_00007.xml")),
     )
   }
 
@@ -160,7 +160,7 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
   it should "wrap HTTP 404 in SenateVoteFetchFailed with congress/session/voteNumber context" in {
     stubXml(
-      "/roll_call_lists/vote_menu_119_1/vote_119_1_00099.xml",
+      "/roll_call_votes/vote1191/vote_119_1_00099.xml",
       "<error/>",
       status = 404,
     )
@@ -177,7 +177,7 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   }
 
   it should "retry a transient HTTP 503 and then succeed (AC 6)" in {
-    val url = "/roll_call_lists/vote_menu_119_1/vote_119_1_00042.xml"
+    val url = "/roll_call_votes/vote1191/vote_119_1_00042.xml"
     val fixture =
       """<?xml version="1.0" encoding="UTF-8"?>
         |<roll_call_vote>
@@ -220,7 +220,7 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   }
 
   it should "not retry a systemic HTTP 400 and fail fast" in {
-    val url = "/roll_call_lists/vote_menu_119_1/vote_119_1_00100.xml"
+    val url = "/roll_call_votes/vote1191/vote_119_1_00100.xml"
     stubXml(url, "<bad/>", status = 400)
 
     val thrown = intercept[SenateVoteFetchFailed] {
@@ -254,13 +254,13 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         |  </document>
         |  <members/>
         |</roll_call_vote>""".stripMargin
-    stubXml("/roll_call_lists/vote_menu_119_1/vote_119_1_00001.xml", fixture)
+    stubXml("/roll_call_votes/vote1191/vote_119_1_00001.xml", fixture)
     stubXml(
-      "/roll_call_lists/vote_menu_119_1/vote_119_1_00002.xml",
+      "/roll_call_votes/vote1191/vote_119_1_00002.xml",
       fixture.replace("<vote_number>1</vote_number>", "<vote_number>2</vote_number>"),
     )
     stubXml(
-      "/roll_call_lists/vote_menu_119_1/vote_119_1_00003.xml",
+      "/roll_call_votes/vote1191/vote_119_1_00003.xml",
       fixture.replace("<vote_number>1</vote_number>", "<vote_number>3</vote_number>"),
     )
 
@@ -279,7 +279,7 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
       }
     }
     val config = SenateVoteXmlConfig(
-      baseUrl = s"http://127.0.0.1:${wireMock.port().toString}/roll_call_lists",
+      baseUrl = s"http://127.0.0.1:${wireMock.port().toString}",
       parallelism = 1,
       requestDelay = delay,
       retry = RetryConfig(maxRetries = 1, initialBackoffMs = 10L, maxBackoffMs = 50L, backoffMultiplier = 2.0),
@@ -297,7 +297,7 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   }
 
   it should "wrap decoder failures in SenateVoteFetchFailed with the decoder error as cause" in {
-    val url = "/roll_call_lists/vote_menu_119_1/vote_119_1_00055.xml"
+    val url = "/roll_call_votes/vote1191/vote_119_1_00055.xml"
     stubXml(url, "<not_a_vote/>")
 
     val thrown = intercept[SenateVoteFetchFailed] {
@@ -322,7 +322,7 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   }
 
   it should "pass through a non-HTTP XmlParseFailed (malformed XML body) without coercing to an HttpStatusError" in {
-    val url = "/roll_call_lists/vote_menu_119_1/vote_119_1_00077.xml"
+    val url = "/roll_call_votes/vote1191/vote_119_1_00077.xml"
     // Serve a 200 with truly-unparseable XML. The shared XmlFeedClient's `expect[Elem]` call fails with a
     // MalformedMessageBodyFailure (NOT an UnexpectedStatus), so `unwrapHttpStatus` returns None and the sharedPF is
     // preserved; the client then wraps that into SenateVoteFetchFailed with statusCode 0 (no HTTP status available).

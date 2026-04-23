@@ -8,19 +8,18 @@ import repcheck.pipeline.models.errors.RetryConfig
 
 /**
  * Configuration for the senate.gov Senate-vote XML client. Per the votes-pipeline execution plan (P2.2 decision 13):
- *   - `baseUrl` defaults to the senate.gov roll-call-list root so per-vote and index-feed URLs can be assembled by
- *     [[repcheck.ingestion.votes.xml.SenateVoteXmlClient]] without any additional prefix.
+ *   - `baseUrl` defaults to senate.gov's `.../legislative/LIS` root. [[repcheck.ingestion.votes.xml.SenateVoteUrls]]
+ *     assembles the two distinct sub-paths on top: `{baseUrl}/roll_call_lists/vote_menu_{congress}_{session}.xml` for
+ *     the per-session index, and
+ *     `{baseUrl}/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{voteNumber:05d}.xml` for individual
+ *     votes. Senate.gov uses different sub-paths for the two — do not conflate them.
  *   - `parallelism = 1` (lower than the House API client; senate.gov is less tolerant of high request rates).
  *   - `requestDelay = 3.seconds` between requests — also more conservative than the House API side.
  *   - `retry` mirrors the conservative default retry policy used across ingestion-common XML feeds; overridable
  *     per-environment via `application.conf`.
- *
- * URL templates assembled by the client:
- *   - Vote: `{baseUrl}/vote_menu_{congress}_{session}/vote_{congress}_{session}_{voteNumber:05d}.xml`
- *   - Index: `{baseUrl}/vote_menu_{congress}_{session}.xml`
  */
 final case class SenateVoteXmlConfig(
-  baseUrl: String = "https://www.senate.gov/legislative/LIS/roll_call_lists",
+  baseUrl: String = "https://www.senate.gov/legislative/LIS",
   parallelism: Int = 1,
   requestDelay: FiniteDuration = 3.seconds,
   retry: RetryConfig = RetryConfig(

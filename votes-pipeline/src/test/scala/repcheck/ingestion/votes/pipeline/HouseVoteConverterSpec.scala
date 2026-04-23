@@ -13,14 +13,27 @@ import repcheck.ingestion.votes.errors.VoteConversionFailed
 import repcheck.shared.models.congress.dto.vote.{VoteMembersDTO, VoteResultDTO}
 
 /**
- * Unit spec for [[HouseVoteConverter]]. The converter is pure (aside from logging on the error path) — it wraps
- * [[repcheck.shared.models.congress.dto.conversions.VoteConversions.VoteMembersDTOOps.toDO]] with a no-op bill lookup
- * and returns the resulting [[repcheck.shared.models.congress.dos.results.VoteConversionResult]] directly. Member and
- * bill resolution, plus `VotePositionDO` materialization, happen in the processor.
+ * Unit spec for [[HouseVoteConverter]]. The converter is pure (aside from logging on the error path and the injected
+ * `billLookup` function) — it wraps `VoteConversions.VoteMembersDTOOps.toDO` and returns the resulting
+ * [[repcheck.shared.models.congress.dos.results.VoteConversionResult]] directly. Member resolution and `VotePositionDO`
+ * materialization happen in the processor.
  */
 class HouseVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
   private val logCtx = LogContext(runId = "r", stepName = "test")
+
+  /** Stub that returns `Some(42L)` for every key — good enough for assertions about bill-id propagation. */
+  private val stubBillLookup: String => IO[Option[Long]] = _ => IO.pure(Some(42L))
+
+  /** Stub that always raises — proves the converter does NOT swallow bill-lookup errors. */
+  private val failingBillLookup: String => IO[Option[Long]] = _ =>
+    IO.raiseError(new IllegalStateException("simulated placeholder round-trip failure"))
+
+  /** Stub that tracks every invocation so the test can assert when/how often `billLookup` is called. */
+  private def recordingBillLookup(
+    target: java.util.concurrent.atomic.AtomicReference[List[String]]
+  ): String => IO[Option[Long]] =
+    nk => IO.delay(target.updateAndGet(_ :+ nk)).as(Some(1L))
 
   private def mkLogger: PipelineLogger[IO] = {
     val m = mock[PipelineLogger[IO]]
@@ -70,19 +83,19 @@ class HouseVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSugar
     )
 
   // ------------------------------------------------------------------
-  // Happy paths
+  // Happy paths — billLookup is invoked; VoteDO.billId carries the resolved id
   // ------------------------------------------------------------------
 
-  "convert" should "produce VoteConversionResult with billId=None (processor resolves) and positions with Left(bioguide)" in {
+  "convert" should "thread billLookup into the shared-models conversion so VoteDO.billId is resolved at the converter" in {
     val converter = new HouseVoteConverter[IO](mkLogger)
     val dto       = houseDto(positions = List(posDto("A000055", "Yea")))
 
-    val result = converter.convert(dto, logCtx).unsafeRunSync()
+    val result = converter.convert(dto, stubBillLookup, logCtx).unsafeRunSync()
 
     val _ = result.vote.naturalKey shouldBe "119-House-1-42"
-    // Converter does NOT resolve bills — that's the processor's job. billId comes back None from the no-op lookup.
-    val _ = result.vote.billId shouldBe None
-    // Conversion DID extract the bill natural key for downstream use.
+    // billId comes from our stubBillLookup; no more processor-level override.
+    val _ = result.vote.billId shouldBe Some(42L)
+    // billNaturalKey carries the shared-models-derived key so downstream (stance-mark, event) still has the string.
     val _ = result.billNaturalKey shouldBe Some("119-HR-1234")
     // Positions are unresolved (memberSource = Left(bioguide))
     val _     = result.positions.length shouldBe 1
@@ -90,14 +103,29 @@ class HouseVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSugar
     first.memberSource shouldBe Left("A000055")
   }
 
-  it should "leave billNaturalKey = None for a procedural vote (no legislationType/number)" in {
+  it should "leave billId=None AND skip billLookup entirely for procedural votes (no legislation metadata)" in {
     val converter = new HouseVoteConverter[IO](mkLogger)
     val dto       = houseDto(legislationType = None, legislationNumber = None, positions = List(posDto("A000055")))
 
-    val result = converter.convert(dto, logCtx).unsafeRunSync()
+    val calls = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
+    val result = converter
+      .convert(dto, recordingBillLookup(calls), logCtx)
+      .unsafeRunSync()
 
     val _ = result.vote.billId shouldBe None
-    result.billNaturalKey shouldBe None
+    val _ = result.billNaturalKey shouldBe None
+    // billLookup was never called because the DTO carries no legislation metadata.
+    calls.get() shouldBe List.empty
+  }
+
+  it should "call billLookup exactly once per converted vote (not per position)" in {
+    val converter = new HouseVoteConverter[IO](mkLogger)
+    val dto = houseDto(positions = List(posDto("A000055"), posDto("B000999", "Nay"), posDto("C001111", "Present")))
+
+    val calls = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
+    val _     = converter.convert(dto, recordingBillLookup(calls), logCtx).unsafeRunSync()
+
+    calls.get() shouldBe List("119-HR-1234")
   }
 
   // ------------------------------------------------------------------
@@ -108,7 +136,7 @@ class HouseVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSugar
     val converter = new HouseVoteConverter[IO](mkLogger)
     val dto       = houseDto(congress = 0)
 
-    val outcome = converter.convert(dto, logCtx).attempt.unsafeRunSync()
+    val outcome = converter.convert(dto, stubBillLookup, logCtx).attempt.unsafeRunSync()
 
     outcome match {
       case Left(e: VoteConversionFailed) =>
@@ -117,16 +145,28 @@ class HouseVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSugar
     }
   }
 
-  // Theme 6: directed test for the previously-uncovered error-logging branch on Left
   it should "log the error at error level when raising VoteConversionFailed" in {
     val loggerMock = mkLogger
     val converter  = new HouseVoteConverter[IO](loggerMock)
     val dto        = houseDto(congress = -1)
 
-    val _ = converter.convert(dto, logCtx).attempt.unsafeRunSync()
+    val _ = converter.convert(dto, stubBillLookup, logCtx).attempt.unsafeRunSync()
 
     import org.mockito.Mockito.{times, verify}
     verify(loggerMock, times(1)).error(any[LogContext], anyString(), any[Option[Throwable]])
+  }
+
+  it should "propagate errors raised by billLookup without wrapping" in {
+    val converter = new HouseVoteConverter[IO](mkLogger)
+    val dto       = houseDto(positions = List(posDto("A000055")))
+
+    val outcome = converter.convert(dto, failingBillLookup, logCtx).attempt.unsafeRunSync()
+
+    outcome match {
+      case Left(e: IllegalStateException) =>
+        e.getMessage should include("simulated placeholder round-trip failure")
+      case other => fail(s"expected Left(IllegalStateException), got $other")
+    }
   }
 
   // ------------------------------------------------------------------
