@@ -63,7 +63,7 @@ import repcheck.shared.models.congress.vote.{VoteCast, VoteType}
  *   pass a WireMock URL; in production we pass the config default. Must agree with the URL the
  *   [[repcheck.ingestion.votes.xml.SenateVoteXmlClient]] fetched from.
  */
-private[pipeline] class SenateVoteConverter[F[_]: Async](
+class SenateVoteConverter[F[_]: Async](
   logger: PipelineLogger[F],
   senateBaseUrl: String,
 ) {

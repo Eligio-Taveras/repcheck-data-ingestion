@@ -32,7 +32,7 @@ import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
  *
  * All three run as ONE `ConnectionIO` transaction. A mid-sequence failure rolls the whole write back.
  */
-private[pipeline] class VotePersister[F[_]: Async](
+class VotePersister[F[_]: Async](
   voteRepo: VoteRepository,
   positionRepo: VotePositionRepository,
   historyArchiver: VoteHistoryArchiver,

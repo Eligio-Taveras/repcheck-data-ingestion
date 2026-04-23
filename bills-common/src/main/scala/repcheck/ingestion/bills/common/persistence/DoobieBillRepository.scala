@@ -6,7 +6,9 @@ import doobie._
 import doobie.implicits._
 import doobie.postgres.implicits._
 
+import repcheck.ingestion.bills.common.errors.InvalidBillNaturalKey
 import repcheck.pipeline.models.constants.Tables
+import repcheck.shared.models.congress.common.BillType
 import repcheck.shared.models.congress.common.DoobieEnumInstances._
 import repcheck.shared.models.congress.dos.bill.BillDO
 
@@ -156,5 +158,45 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     val parts = naturalKey.split("-", 3)
     (parts(0).toInt, parts(1).toLowerCase, parts(2))
   }
+
+  /**
+   * Safe variant of [[parseNaturalKey]] returning an [[InvalidBillNaturalKey]] on any parse failure instead of throwing
+   * a `NumberFormatException` / `ArrayIndexOutOfBoundsException`. Used by [[upsertPlaceholder]] below. Does NOT
+   * lowercase the bill-type segment — instead it resolves it through [[BillType.fromString]] (which is
+   * case-insensitive) so the caller can bind a typed `BillType` via Doobie's `Put[BillType]`.
+   */
+  private[persistence] def parsePlaceholderNaturalKey(
+    naturalKey: String
+  ): Either[InvalidBillNaturalKey, (Int, BillType, Int)] = {
+    val parts = naturalKey.split("-", 3)
+    if (parts.length != 3) {
+      Left(
+        InvalidBillNaturalKey(naturalKey, s"natural key must have 3 '-' segments; got ${parts.length.toString}")
+      )
+    } else {
+      for {
+        congress <- parts(0).toIntOption.toRight(
+          InvalidBillNaturalKey(naturalKey, s"congress segment '${parts(0)}' is not an int")
+        )
+        billType <- BillType.fromString(parts(1)).left.map(e => InvalidBillNaturalKey(naturalKey, e.getMessage))
+        number <- parts(2).toIntOption.toRight(
+          InvalidBillNaturalKey(naturalKey, s"number segment '${parts(2)}' is not an int")
+        )
+      } yield (congress, billType, number)
+    }
+  }
+
+  override def upsertPlaceholder(naturalKey: String): ConnectionIO[Unit] =
+    parsePlaceholderNaturalKey(naturalKey) match {
+      case Right((congress, billType, number)) =>
+        // `title` NOT NULL on bills → empty string stub; bills-pipeline overwrites it on enrichment.
+        // `update_date` NOT NULL → NOW() stub; also overwritten on enrichment.
+        sql"""INSERT INTO $table (congress, bill_type, number, title, update_date)
+              VALUES ($congress, $billType, $number, '', NOW())
+              ON CONFLICT (congress, bill_type, number) DO NOTHING""".update.run.void
+
+      case Left(err) =>
+        doobie.free.connection.raiseError[Unit](err)
+    }
 
 }

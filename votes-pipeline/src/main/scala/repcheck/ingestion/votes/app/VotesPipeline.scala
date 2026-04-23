@@ -1,40 +1,37 @@
 package repcheck.ingestion.votes.app
 
-import cats.effect.std.Semaphore
-import cats.effect.{Async, ExitCode, Resource, Sync, Temporal}
+import cats.effect.{Async, ExitCode, Resource, Sync}
 import cats.syntax.all._
 
-import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
 
 import fs2.Stream
 import fs2.io.net.Network
 
-import doobie.util.transactor.Transactor
-
 import pureconfig.ConfigSource
 
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
+import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubPublisherResource}
 import repcheck.ingestion.common.execution.PipelineBootstrap
-import repcheck.ingestion.common.logging.PipelineLoggerFactory
+import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
 import repcheck.ingestion.votes.config.VotesPipelineConfig
 import repcheck.ingestion.votes.errors.StepRunIdInvalid
+import repcheck.ingestion.votes.pipeline.VoteProcessor
+import repcheck.pipeline.models.metadata.ProcessingResult
 
 /**
- * Testable wiring for the votes pipeline. Config loading, resource acquisition, and high-level orchestration live here
- * — the actual processing collaborators (House API client, Senate XML client, LIS resolver, repositories, processor)
- * land in Phase 2 PRs per the votes-pipeline execution plan.
+ * Top-level orchestration for the votes pipeline: loads config, extracts the launcher's runId / stepRunId, acquires the
+ * logger + managed [[VotesPipelineResources.Resources]] bundle, and hands everything to [[VotesProcessorFactory.build]]
+ * to assemble the full [[VoteProcessor]] graph.
  *
- * Scaffold state: `run` produces an empty `Stream[F, ProcessingResult]` and defers to [[PipelineExecutor.execute]] for
- * the summary-log / exit-code plumbing. This lets the pipeline compile and ship a smoke test before any Phase 2
- * collaborators exist. Once `VotesProcessor` lands (P3.1), the empty stream is replaced with `processor.streamAll`, and
- * the processor generates a fresh per-vote correlation ID inside its parallel-eval loop so individual votes can be
- * traced through the logs independently of the run-level `runId`.
+ * The file is intentionally small and focused on composition — resource acquisition lives in [[VotesPipelineResources]]
+ * and the processor dep-graph wiring lives in [[VotesProcessorFactory]]. Keeping the three concerns in separate files
+ * lets each be reviewed and tested as its own logical unit.
  *
  * ==Launcher contract==
- *   - `args(0)` — config JSON (consumed via [[PipelineBootstrap.loadConfig]] or, currently, via the embedded
- *     `application.conf` reference config).
+ *
+ *   - `args(0)` — config JSON placeholder (currently unused; the pipeline loads `application.conf` directly).
  *   - `args(1)` — run-level identifier (`workflow_runs.id` string).
  *   - `args(2)` — step-level identifier (`workflow_run_steps.id` Long assigned by the launcher before invocation).
  */
@@ -42,25 +39,61 @@ private[app] object VotesPipeline {
 
   private val PipelineName = "votes-pipeline"
 
+  /**
+   * Top-level application config, derived from `application.conf` via PureConfig auto-derivation. Nests the database /
+   * Congress.gov / votes-pipeline / event-publisher sub-configs; individual subprojects own their own case classes and
+   * the `derives` machinery composes them.
+   */
   final case class AppConfig(
     database: DatabaseConfig,
     congressApi: CongressGovClientConfig,
     pipeline: VotesPipelineConfig,
+    eventPublisher: EventPublisherConfig,
   ) derives pureconfig.ConfigReader
 
+  /**
+   * Production entry point. Wires real factories and delegates to [[runWithFactories]]. Keep this method as the ONLY
+   * place in the codebase that constructs the live GCP / Congress.gov / AlloyDB SDK resources — everything downstream
+   * is testable by swapping factories.
+   */
   def run[F[_]: Async: Network](args: List[String]): F[ExitCode] =
+    runWithFactories[F](
+      args = args,
+      configLoader = Sync[F].delay(ConfigSource.default.loadOrThrow[AppConfig]),
+      loggerFactory = PipelineLoggerFactory.make[F](PipelineName),
+      resourceBuilder = (cfg: AppConfig) =>
+        VotesPipelineResources.build[F](
+          config = cfg,
+          transactorFactory = TransactorResource.make[F](_),
+          httpClientFactory = EmberClientBuilder.default[F].build,
+          pubSubPublisherFactory = PubSubPublisherResource.make[F](_),
+        ),
+      processorFactory = VotesProcessorFactory.build[F],
+      streamFactory = (processor: VoteProcessor[F], runId: String) => processor.streamAll(runId),
+    )
+
+  /**
+   * Testable runtime. Every collaborator that performs a side effect at app startup is supplied via a factory function.
+   * The unit spec uses this to verify ordering (`configLoader` runs once, then `loggerFactory`, then `resourceBuilder`,
+   * then `processorFactory`, then `streamFactory`) without constructing any real dependency.
+   */
+  private[app] def runWithFactories[F[_]: Async](
+    args: List[String],
+    configLoader: F[AppConfig],
+    loggerFactory: F[PipelineLogger[F]],
+    resourceBuilder: AppConfig => Resource[F, VotesPipelineResources.Resources[F]],
+    processorFactory: (AppConfig, VotesPipelineResources.Resources[F], PipelineLogger[F]) => VoteProcessor[F],
+    streamFactory: (VoteProcessor[F], String) => Stream[F, ProcessingResult],
+  ): F[ExitCode] =
     for {
-      config    <- Sync[F].delay(ConfigSource.default.loadOrThrow[AppConfig])
+      config    <- configLoader
       runId     <- PipelineBootstrap.extractRunId[F](args)
       stepRunId <- extractStepRunId[F](args)
-      logger    <- PipelineLoggerFactory.make[F](PipelineName)
-      exitCode <- buildResources[F](config).use {
-        case (_, _) =>
-          // Scaffold placeholder — Phase 2 replaces `Stream.empty` with `processor.streamAll(runId)` once the votes
-          // processor is wired in P3.1. Emitting an empty stream here lets the pipeline run end-to-end (config →
-          // resources → executor → summary log → exit code) without any real work, so the scaffold can ship
-          // independently.
-          PipelineExecutor.execute[F](Stream.empty, logger, PipelineName, runId, stepRunId)
+      logger    <- loggerFactory
+      exitCode <- resourceBuilder(config).use { resources =>
+        val processor = processorFactory(config, resources, logger)
+        val stream    = streamFactory(processor, runId)
+        PipelineExecutor.execute[F](stream, logger, PipelineName, runId, stepRunId)
       }
     } yield exitCode
 
@@ -69,7 +102,7 @@ private[app] object VotesPipeline {
    * the `workflow_run_steps` row and passing its BIGSERIAL PK before invoking the pipeline — a missing or non-numeric
    * value indicates a broken launcher contract and fails the run fast via [[StepRunIdInvalid]].
    */
-  private def extractStepRunId[F[_]: Sync](args: List[String]): F[Long] =
+  private[app] def extractStepRunId[F[_]: Sync](args: List[String]): F[Long] =
     args.lift(2) match {
       case Some(raw) if raw.trim.nonEmpty =>
         raw.trim.toLongOption match {
@@ -79,30 +112,5 @@ private[app] object VotesPipeline {
       case Some(raw) => Sync[F].raiseError[Long](StepRunIdInvalid(raw))
       case None      => Sync[F].raiseError[Long](StepRunIdInvalid("<missing>"))
     }
-
-  /**
-   * Wraps an HTTP client with per-client rate limiting: a semaphore ensures only one request is in-flight at a time,
-   * with `pageDelay` inserted after each request completes. Canonical pattern across RepCheck pipelines — each HTTP
-   * client gets its own wrapper with its own configured `pageDelay`.
-   */
-  private def rateLimitedClient[F[_]: Async](
-    underlying: Client[F],
-    config: CongressGovClientConfig,
-  ): Resource[F, Client[F]] =
-    Resource.eval(Semaphore[F](1)).map { sem =>
-      Client[F] { request =>
-        Resource.make(sem.acquire)(_ => Temporal[F].sleep(config.pageDelay) >> sem.release) >>
-          underlying.run(request)
-      }
-    }
-
-  private def buildResources[F[_]: Async: Network](
-    config: AppConfig
-  ): Resource[F, (Transactor[F], Client[F])] =
-    for {
-      xa              <- TransactorResource.make[F](config.database)
-      rawClient       <- EmberClientBuilder.default[F].build
-      throttledClient <- rateLimitedClient(rawClient, config.congressApi)
-    } yield (xa, throttledClient)
 
 }
