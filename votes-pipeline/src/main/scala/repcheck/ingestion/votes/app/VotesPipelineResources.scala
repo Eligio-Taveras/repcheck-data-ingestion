@@ -32,7 +32,7 @@ import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
  * `parEvalMap(parallelism > 1)` submits calls concurrently. Sharing the underlying client keeps the connection pool
  * small; the wrappers enforce politeness per-feed.
  */
-private[app] object VotesPipelineResources {
+private[votes] object VotesPipelineResources {
 
   /**
    * The resource bundle handed to [[VotesProcessorFactory.build]]. Tests can construct this directly with mocks to

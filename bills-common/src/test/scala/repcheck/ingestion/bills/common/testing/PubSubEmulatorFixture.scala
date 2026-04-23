@@ -108,9 +108,9 @@ trait PubSubEmulatorFixture extends BeforeAndAfterAll { self: Suite =>
   }
 
   /**
-   * Pulls messages from the test subscription. Uses a short RPC deadline (1 second) so negative- path assertions
-   * (`pullMessages() shouldBe empty`) don't long-poll against gRPC's default 60- second pull deadline — that single
-   * default was costing ~5 minutes of aggregate CI time across 5 integration tests.
+   * Pulls messages from the test subscription. Uses a short RPC deadline (1 second by default) so negative-path
+   * assertions (`pullMessages() shouldBe empty`) don't long-poll against gRPC's default 60-second pull deadline — that
+   * single default was costing ~5 minutes of aggregate CI time across 5 integration tests.
    *
    * Positive-path assertions are unaffected: `publishMessage` blocks on `publisher.publish(...).get(10, SECONDS)` so by
    * the time `pullMessages()` runs the message is already in the subscription and returns immediately.
@@ -118,17 +118,25 @@ trait PubSubEmulatorFixture extends BeforeAndAfterAll { self: Suite =>
    * The non-deprecated alternative to `PullRequest.setReturnImmediately(true)` (GCP now recommends StreamingPull for
    * production code) is a per-call deadline via `GrpcCallContext`; we catch `DeadlineExceededException` and return an
    * empty list since that's the "no messages arrived" signal we want anyway.
+   *
+   * ==`fastSkip` flag==
+   *
+   * When `fastSkip = true`, the deadline drops from 1 second to 100 milliseconds. This is the right setting for callers
+   * that expect empty queues on the hot path (e.g., an E2E suite that pulls twice after every scenario to absorb
+   * async-publisher timing variance — most of those second pulls land on an empty queue). The default stays at 1s so
+   * existing integration-test callers keep their current behaviour; E2E-style suites opt in explicitly.
    */
-  protected def pullMessages(maxMessages: Int = 10): List[PubsubMessage] = {
+  protected def pullMessages(maxMessages: Int = 10, fastSkip: Boolean = false): List[PubsubMessage] = {
     val pullRequest = PullRequest
       .newBuilder()
       .setSubscription(subscriptionName.toString)
       .setMaxMessages(maxMessages)
       .build()
 
+    val timeoutMillis: Long = if (fastSkip) 100L else 1000L
     val callContext = com.google.api.gax.grpc.GrpcCallContext
       .createDefault()
-      .withTimeout(org.threeten.bp.Duration.ofSeconds(1))
+      .withTimeout(org.threeten.bp.Duration.ofMillis(timeoutMillis))
 
     val messages: List[com.google.pubsub.v1.ReceivedMessage] =
       try {
