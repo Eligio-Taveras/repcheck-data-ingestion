@@ -35,7 +35,7 @@ import repcheck.pipeline.models.metadata.ProcessingResult
  *   - `args(1)` — run-level identifier (`workflow_runs.id` string).
  *   - `args(2)` — step-level identifier (`workflow_run_steps.id` Long assigned by the launcher before invocation).
  */
-private[app] object VotesPipeline {
+private[votes] object VotesPipeline {
 
   private val PipelineName = "votes-pipeline"
 
@@ -77,7 +77,7 @@ private[app] object VotesPipeline {
    * The unit spec uses this to verify ordering (`configLoader` runs once, then `loggerFactory`, then `resourceBuilder`,
    * then `processorFactory`, then `streamFactory`) without constructing any real dependency.
    */
-  private[app] def runWithFactories[F[_]: Async](
+  private[votes] def runWithFactories[F[_]: Async](
     args: List[String],
     configLoader: F[AppConfig],
     loggerFactory: F[PipelineLogger[F]],

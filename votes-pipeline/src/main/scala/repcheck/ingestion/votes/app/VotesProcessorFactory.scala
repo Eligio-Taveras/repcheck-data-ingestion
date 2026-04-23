@@ -56,7 +56,7 @@ import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
  *      [[VoteEventEmitter]]. 7. Stored-state callbacks that wrap Doobie reads into `F[...]` so [[VoteChangeDetector]]
  *      stays unit-testable. 8. The [[VoteProcessor]] itself — consumes all of the above.
  */
-private[app] object VotesProcessorFactory {
+private[votes] object VotesProcessorFactory {
 
   def build[F[_]: Async](
     config: VotesPipeline.AppConfig,
