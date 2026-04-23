@@ -46,18 +46,18 @@ Total acceptance criteria: **99 rows** across 5 areas.
 **Phase 2: COMPLETE** — all 5 PRs merged.
 **Phase 3: COMPLETE** — VoteProcessor (P3.1, PR #47), App wiring (P3.2, PR #49), E2E spec (P3.3, PR #50) all merged.
 
-### Next focus: Phase 4 + Phase 5 (can open in parallel)
+**Phase 4 P4.1:** complete — audit found every required wiring in place and validated by PR #50's green `codecov/patch` check. No code change needed. See tracker row.
+
+### Next focus: Phase 4.2 (split into a + b) + Phase 5 (can open in parallel)
 
 | PR | Scope | Branch | Dependencies |
 |---|---|---|---|
-| P4.1 | CI coverage path + E2E hook | ci/votes-pipeline-coverage | P3.3 (done) |
-| P4.2 | Docker Compose entries (local + e2e) | feat/votes-pipeline-docker-compose | P3.2 (done) |
+| P4.2a | Fix pre-existing `docker-compose.e2e.yml` gaps: add `db-migrations` + `pubsub-init` init containers; replace real Ollama with WireMock-based mock of `/api/embeddings` for CI usage; wire `depends_on` chains on all existing pipeline services. Fixes a latent gap benefiting every pipeline (nobody has ever successfully run `docker compose -f docker-compose.e2e.yml up`). | feat/docker-compose-e2e-gap-fix | P3.2 (done) |
+| P4.2b | Add votes-pipeline service to both compose files; extend `scripts/pubsub-init.sh` for `vote-events` topic + `vote-recorded-sub` + dead-letter; Ofelia cron entry with 5h offset per decision 21t; copy votes WireMock fixtures into `e2e/wiremock/`; build `scripts/docker-compose-e2e.sh` orchestrator + `scripts/docker-compose-e2e-assert.sh` with richer SQL+topic assertions (Q1–Q9-style); add new step to `e2e-gcp` CI job running the full-stack test after the real-GCP tests. Leaves job name as `e2e-gcp` per user direction. | feat/votes-pipeline-docker-compose | P4.2a |
 | P5.1 | tf: Pub/Sub vote-events topic + subscription (zero-cost) | infra/votes-pubsub | — |
 | P5.4 | tf: IAM bindings + service account (zero-cost) | infra/votes-iam | P5.1 (for topic-scoped IAM) |
 
-P4.1 may already be a no-op — the votes-pipeline scoverage path is already in the Codecov upload list (ci.yml:129) and the votesPipeline Docker tests step (ci.yml:105–110) is wired. Audit before opening.
-
-After Phase 4 + 5 ship → Phase 6 iterative docker-compose validation loop.
+After Phase 4 + 5 ship → Phase 6 iterative docker-compose validation loop with real-fixture variance.
 
 ### Already exists (verified via audit)
 
@@ -1176,7 +1176,7 @@ Nothing in the current plan should add Cloud Run Job or Cloud Scheduler terrafor
 | P3.1 | VoteProcessor + component/functional tests | feat/votes-processor | **Merged** (PR #47, commit fd150be) | P2.1–P2.5 | Three review-feedback waves addressed: (1) HouseVoteConverter threads real billLookup into `dto.toDO(billLookup)`; SenateVoteConverter branches on document type to populate `billId` + derives `legislationUrl`/`sourceDataUrl`. (2) Pre-existing SenateVoteXmlClient URL bug folded in — extracted `SenateVoteUrls` helper using `.../roll_call_votes/vote{c}{s}/vote_...xml` pattern. (3) 500-line VoteProcessor decomposed into 6 files: main orchestrator (256 lines) + `BillLookup` + `MemberLookup` + `VoteEventEmitter` + `VotePositionBuilders` + `VoteNaturalKeys`. Constructor 20 deps → 15. Coverage 98.95%/98.31%; 359 tests. |
 | P3.2 | VotesPipelineApp + integration | feat/votes-pipeline-app | **Merged** (PR #49, commit 0970a1d) | P3.1 | Applied testability refactor: all logic moved into `VotesPipeline.runWithFactories[F]` companion method accepting factory functions (config loader, logger factory, resource builder, processor factory, stream factory). IOApp `run` reduced to pure wiring, excluded from coverage. Resources bundle decomposed into 3 files (`VotesPipeline` + `VotesPipelineResources` + `VotesProcessorFactory`) for coverage + review clarity. Access widened from `private[app]` to `private[votes]` so E2E tests can call factory helpers directly. Introduced `BillRepository.upsertPlaceholder(naturalKey)` in bills-common so votes-pipeline reuses the bill placeholder path rather than duplicating it. Three review-feedback rounds: (1) BillRepository reuse, (2) lisResolver docstring + InvalidBillNaturalKey error class, (3) file decomposition for coverage (both new files ≥95%). |
 | P3.3 | E2E test | feat/votes-pipeline-e2e | **Merged** (PR #50, commit 61ffc10) | P3.2 | Real-fixture E2E spec with 10 scenarios covering: happy path, idempotent re-run, position change, metadata-only update, procedural PN vote, member placeholder creation, bill placeholder creation, lis_members upsert, chamber-level failure isolation, per-vote failure isolation. Fixtures pulled live from Congress.gov + senate.gov (8 files, ~820KB). Surfaced 3 production bugs fixed in PR #32 (DateParsing offset-format) + PR #51 (VotePositionDiffer DB-field normalization). Added opt-in `fastSkip` flag to shared PubSubEmulatorFixture.pullMessages — E2E spec passes `true` so empty-pull latency drops from 1s to 100ms (per-scenario saving ~2s). Runs in `build` job's "Run votesPipeline Docker tests" step (ci.yml lines 105–110). Local run: 10/10 pass in ~4m50s. |
-| P4.1 | CI coverage path | ci/votes-pipeline-coverage | Not Started | P3.3 | |
+| P4.1 | CI coverage path | ci/votes-pipeline-coverage | **Merged — no-op (verified 2026-04-23)** | P3.3 | Audit found every required wiring already in place: votes scoverage XML in Codecov upload (ci.yml:129), `votesPipeline/test` step with `-n DockerRequired` override (ci.yml:105–110), subproject `coverageExcludedFiles := ".*VotesPipeline;.*VotesPipelineApp"` (build.sbt:247–263), aggregated at build.sbt:130, included in `dockerTest` (build.sbt:288–290) and `dockerTestParallel` (build.sbt:306–314) aliases. codecov.yml needs no per-subproject override (defaults: project ±5%, patch 90%). Exercised + validated by PR #50's green `codecov/patch` check. Wired originally in PR #39 (P1.1 scaffold) and PR #44 (P2.4 repositories). No PR needed. |
 | P4.2 | Docker Compose entries | feat/votes-pipeline-docker-compose | Not Started | P3.2 | |
 | P5.1 | tf: Pub/Sub vote-events (zero-cost to hold) | infra/votes-pubsub | Not Started | — | Can start during Phase 2 |
 | P5.2 | ~~tf: Cloud Run Job~~ | — | **DEFERRED (Phase 7)** | — | Costs money; deferred until local validation proves ready |
