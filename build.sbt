@@ -128,6 +128,7 @@ lazy val root = (project in file("."))
     memberProfilePipeline,
     lisMappingRefresher,
     votesPipeline,
+    dockerComposeE2e,
     docGenerator,
   )
   .settings(
@@ -260,6 +261,36 @@ lazy val votesPipeline = (project in file("votes-pipeline"))
     Test / parallelExecution := false,
     assembly / mainClass := Some("repcheck.ingestion.votes.app.VotesPipelineApp"),
     assembly / assemblyJarName := "votes-pipeline.jar",
+  )
+
+// Test-only subproject. Houses the full-stack docker-compose E2E wiring test:
+// brings up docker-compose.e2e.yml via scala.sys.process, runs every pipeline
+// against canned fixtures, then asserts on AlloyDB + Pub/Sub emulator state
+// through real client libraries (Doobie + http4s). Replaces the bash
+// orchestrator + assertion scripts from an earlier round per PR #54 feedback.
+//
+// The test depends on every pipeline's fat JAR being built first so the compose
+// stack's Dockerfiles can COPY them in — wired via `.dependsOn(...asm...)`
+// below so `sbt dockerComposeE2e/test` is one invocation.
+lazy val dockerComposeE2e = (project in file("docker-compose-e2e"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(billsCommon % "test->test") // imports DockerRequired tag
+  .settings(commonSettings)
+  .settings(
+    name := "docker-compose-e2e",
+    libraryDependencies ++= http4sEmber ++ circe ++ catsEffect ++ doobie ++ logging ++ testDeps,
+    Test / parallelExecution := false,
+    // Build every pipeline's fat JAR before running our test — the compose
+    // stack's Dockerfiles COPY them in, they must exist on disk first.
+    Test / test := (Test / test)
+      .dependsOn(
+        billMetadataPipeline / assembly,
+        billTextAvailabilityChecker / assembly,
+        billTextPipeline / assembly,
+        votesPipeline / assembly,
+      )
+      .value,
+    publish / skip := true,
   )
 
 // `dockerTest` runs only the DB-backed integration tests against a local AlloyDB Omni

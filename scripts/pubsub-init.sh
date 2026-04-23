@@ -56,4 +56,18 @@ create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions
   -H "Content-Type: application/json" \
   -d "{\"topic\":\"projects/${PROJECT_ID}/topics/member-updated\",\"ackDeadlineSeconds\":60}"
 
+# Topic: vote-events (votes-pipeline publishes VoteRecordedEvent on new/updated votes)
+echo "Creating topic: vote-events"
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/vote-events"
+
+# Topic: vote-events-dead-letter (for failed VoteRecordedEvent deliveries)
+echo "Creating topic: vote-events-dead-letter"
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/vote-events-dead-letter"
+
+# Subscription: vote-recorded-sub (downstream consumers of VoteRecordedEvent — e.g. scoring engine)
+echo "Creating subscription: vote-recorded-sub"
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions/vote-recorded-sub" \
+  -H "Content-Type: application/json" \
+  -d "{\"topic\":\"projects/${PROJECT_ID}/topics/vote-events\",\"ackDeadlineSeconds\":60,\"deadLetterPolicy\":{\"deadLetterTopic\":\"projects/${PROJECT_ID}/topics/vote-events-dead-letter\",\"maxDeliveryAttempts\":5}}"
+
 echo "Pub/Sub topics and subscriptions created successfully."

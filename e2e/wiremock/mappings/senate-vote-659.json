@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/senate/roll_call_votes/vote1191/vote_119_1_00659\\.xml"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/xml" },
+    "bodyFileName": "senate/vote-119-1-00659-pn373-cloture.xml"
+  }
+}

@@ -186,6 +186,34 @@ jobs:
         run: |
           sbt 'set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "com.repcheck.tags.E2ETest"))' 'billTextPipeline / test'
 
+      # -------------------------------------------------------------------------
+      # Full-stack docker-compose E2E test (Tier 3 — wiring validation).
+      #
+      # Executes `DockerComposeE2EStackSpec` in the `docker-compose-e2e`
+      # subproject. The spec:
+      #   1. Brings up docker-compose.e2e.yml (AlloyDB Omni + Pub/Sub emulator
+      #      + WireMock serving Congress.gov + Ollama stubs) via sys.process.
+      #   2. Runs every pipeline container against the canned fixtures.
+      #   3. Asserts on the resulting AlloyDB + Pub/Sub state through real
+      #      client libraries (Doobie + http4s).
+      #
+      # The sbt test task is wired to depend on every pipeline's assembly so
+      # the compose Dockerfiles find the fat JARs they COPY in. Single sbt
+      # invocation drives the whole build + run.
+      #
+      # Catches bugs unit + per-pipeline E2E specs can't: wrong env var names,
+      # wrong depends_on ordering, missing pubsub topic init, WireMock URL
+      # mismatches, schema-vs-migrator version drift. Uses emulators only,
+      # so no GCP cost. Runs after the real-GCP step so any cross-cloud flake
+      # is attributable; not coupled to the GCP credentials above.
+      # -------------------------------------------------------------------------
+      - name: Run full-stack docker-compose E2E test
+        timeout-minutes: 20
+        run: |
+          sbt \
+            'set dockerComposeE2e / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
+            'dockerComposeE2e/test'
+
   doc-generator:
     runs-on: ubuntu-latest
 
