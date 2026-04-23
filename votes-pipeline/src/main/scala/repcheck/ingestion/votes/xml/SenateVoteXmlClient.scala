@@ -32,9 +32,11 @@ import repcheck.shared.models.congress.dto.vote.SenateVoteXmlDTO
  *   - `fetchVoteIndex(congress, session)` — retrieves the session's `vote_menu_{congress}_{session}.xml` index and
  *     decodes it into a list of [[SenateVoteIndexEntry]]s so the processor can iterate votes in order.
  *
- * The URL layout follows the votes-pipeline execution plan (P2.2):
- *   - Vote: `{baseUrl}/vote_menu_{congress}_{session}/vote_{congress}_{session}_{voteNumber:05d}.xml`
- *   - Index: `{baseUrl}/vote_menu_{congress}_{session}.xml`
+ * URL construction is delegated to [[SenateVoteUrls]] so both this client and
+ * [[repcheck.ingestion.votes.pipeline.SenateVoteConverter]] (when deriving `sourceDataUrl`) share a single source of
+ * truth. Senate.gov uses TWO sub-paths under `{baseUrl}`:
+ *   - Index: `{baseUrl}/roll_call_lists/vote_menu_{congress}_{session}.xml`
+ *   - Vote: `{baseUrl}/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{voteNumber:05d}.xml`
  *
  * Vote numbers are zero-padded to 5 digits via `f"%05d"` (plan decision 13). Numbers ≥ 100,000 overflow the 5-digit
  * field and cannot be fetched from senate.gov; the client rejects them up-front with [[SenateVoteFetchFailed]] rather
@@ -219,14 +221,11 @@ class SenateVoteXmlClient[F[_]: Async](
         }
     }
 
-  private def buildVoteUrl(congress: Int, session: Int, voteNumber: Int): String = {
-    val padded = f"$voteNumber%05d"
-    s"${config.baseUrl}/vote_menu_${congress.toString}_${session.toString}/" +
-      s"vote_${congress.toString}_${session.toString}_$padded.xml"
-  }
+  private def buildVoteUrl(congress: Int, session: Int, voteNumber: Int): String =
+    SenateVoteUrls.voteXmlUrl(config.baseUrl, congress, session, voteNumber)
 
   private def buildIndexUrl(congress: Int, session: Int): String =
-    s"${config.baseUrl}/vote_menu_${congress.toString}_${session.toString}.xml"
+    SenateVoteUrls.voteIndexUrl(config.baseUrl, congress, session)
 
 }
 

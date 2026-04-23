@@ -57,6 +57,14 @@ class LisResolverIntegrationSpec extends AnyFlatSpec with Matchers with Transact
       question = "On Passage",
       voteDate = "2024-06-15",
       result = "Passed",
+      document = repcheck.shared.models.congress.dto.vote.SenateVoteDocumentDTO(
+        documentCongress = 118,
+        documentType = "S.",
+        documentNumber = "100",
+        documentName = "S. 100",
+        documentTitle = "Integration fixture bill title",
+        documentShortTitle = None,
+      ),
       members = members,
     )
 

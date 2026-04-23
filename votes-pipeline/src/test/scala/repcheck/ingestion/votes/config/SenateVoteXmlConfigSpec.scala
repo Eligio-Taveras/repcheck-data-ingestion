@@ -7,9 +7,9 @@ import org.scalatest.matchers.should.Matchers
 
 class SenateVoteXmlConfigSpec extends AnyFlatSpec with Matchers {
 
-  "SenateVoteXmlConfig" should "default to the senate.gov roll-call-list base URL" in {
+  "SenateVoteXmlConfig" should "default baseUrl to senate.gov's LIS root (SenateVoteUrls adds roll_call_* sub-paths)" in {
     val config = SenateVoteXmlConfig()
-    config.baseUrl shouldBe "https://www.senate.gov/legislative/LIS/roll_call_lists"
+    config.baseUrl shouldBe "https://www.senate.gov/legislative/LIS"
   }
 
   it should "default parallelism to 1 (per-plan decision: senate.gov is rate-sensitive)" in {

@@ -53,10 +53,10 @@ lazy val commonSettings = Seq(
   ),
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
-    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.17",
+    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.20",
     "com.repcheck" %% "repcheck-ingestion-common" % "0.1.20",
     "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.22" % Test,
-    "com.repcheck" %% "repchecksharedmodels"       % "0.1.29",
+    "com.repcheck" %% "repchecksharedmodels"       % "0.1.30",
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
@@ -247,7 +247,7 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
 lazy val votesPipeline = (project in file("votes-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
   .dependsOn(membersCommon % "compile->compile;test->test")
-  .dependsOn(billsCommon % "test->test")
+  .dependsOn(billsCommon % "compile->compile;test->test")
   .settings(pipelineSettings)
   .settings(
     name := "votes-pipeline",
