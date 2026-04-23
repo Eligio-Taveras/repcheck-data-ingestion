@@ -16,6 +16,8 @@
 #   - bill-metadata-pipeline
 #   - bill-text-availability-checker
 #   - bill-text-pipeline
+#   - votes-pipeline (House JSON + Senate XML → votes + vote_positions,
+#                     publishes VoteRecordedEvent on vote-events topic)
 #
 # Note on Ollama: instead of running the real Ollama image (heavy, needs model
 # weights), the single WireMock container also serves `POST /api/embed` with a
@@ -27,10 +29,15 @@
 #   1. Build fat JARs:
 #        sbt "billMetadataPipeline/assembly" \
 #            "billTextAvailabilityChecker/assembly" \
-#            "billTextPipeline/assembly"
+#            "billTextPipeline/assembly" \
+#            "votesPipeline/assembly"
 #   2. `docker compose -f docker-compose.e2e.yml build`
 #
 # Usage:
+#   # End-to-end orchestrator (intended for CI + dev smoke):
+#   ./scripts/docker-compose-e2e.sh
+#
+#   # Or bring it up manually:
 #   docker compose -f docker-compose.e2e.yml up --build
 # =============================================================================
 
@@ -59,7 +66,7 @@ services:
   # Run Liquibase migrations before any pipeline starts. Init container — exits
   # after completion; pipelines gate on service_completed_successfully.
   db-migrations:
-    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.12
+    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.22
     entrypoint: ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "/opt/docker/lib/*", "repcheck.db.migrations.MigrationApp"]
     depends_on:
       alloydb:
@@ -206,6 +213,51 @@ services:
       OLLAMA_EMBEDDING_DIMENSIONS: "1536"
       OLLAMA_TIMEOUT_SECONDS: "30"
       PIPELINE_PARALLELISM: "1"
+
+  votes-pipeline:
+    build:
+      context: .
+      dockerfile: votes-pipeline/Dockerfile
+    # Launcher contract: args(0) = config (unused — PureConfig reads env),
+    # args(1) = runId (surfaces in logs + events), args(2) = stepRunId.
+    # PipelineBootstrap raises RunIdMissing if args(1) is absent.
+    command: ["cfg-unused", "e2e-votes-run", "1"]
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-emulator:
+        condition: service_healthy
+      pubsub-init:
+        condition: service_completed_successfully
+      wiremock:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      # Congress.gov — House votes served under /v3/house-vote/* from WireMock.
+      CONGRESS_API_BASE_URL: http://wiremock:8080/v3
+      CONGRESS_GOV_API_KEY: e2e-test-key
+      # Senate — served under /senate/* from the same WireMock container.
+      SENATE_BASE_URL: http://wiremock:8080/senate
+      # House config: 119th Congress, session 1. lookback-days=0 accepts every
+      # recorded fixture regardless of timestamp (the fixtures were captured
+      # months ago; real lookback would filter them out).
+      HOUSE_CONGRESS: "119"
+      HOUSE_SESSION: "1"
+      HOUSE_LOOKBACK_DAYS: "0"
+      HOUSE_PARALLELISM: "1"
+      HOUSE_PAGE_DELAY: 10ms
+      SENATE_PARALLELISM: "1"
+      SENATE_REQUEST_DELAY: 10ms
+      # Pub/Sub (GCP_PROJECT_ID + VOTE_EVENTS_TOPIC — matches application.conf).
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      GCP_PROJECT_ID: repcheck-e2e
+      VOTE_EVENTS_TOPIC: vote-events
 
 volumes:
   alloydbdata:
