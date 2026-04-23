@@ -92,7 +92,10 @@ class VotesPipelineE2ESpec
 
   override def beforeEach(): Unit = {
     super.beforeEach()
-    drainMessages()
+    // Inline fast-skip drain — the subscription is almost always empty at this point because the previous scenario
+    // consumed its own events via `pullAllEvents`. `fastSkip = true` keeps the negative-path latency at 100ms rather
+    // than the fixture's default 1-second deadline.
+    val _ = scala.util.Try(pullMessages(maxMessages = 100, fastSkip = true))
     wireMock.resetAll()
   }
 
@@ -362,18 +365,13 @@ class VotesPipelineE2ESpec
        |</vote_summary>""".stripMargin
   }
 
-  /** Mutate a recorded House-members fixture by replacing the `updateDate` field (for scenarios 3 and 4). */
+  /**
+   * Mutate a recorded House-members fixture by replacing the `updateDate` field value. Used by scenarios 3 and 4 to
+   * construct a "newer" fixture for the second run so the change detector classifies the vote as `Updated` rather than
+   * `Unchanged` (incoming `updateDate` must be strictly after stored).
+   */
   private def mutateHouseUpdateDate(body: String, newUpdateDate: String): String =
     body.replaceFirst("""("updateDate"\s*:\s*")[^"]+(")""", s"$$1$newUpdateDate$$2")
-
-  /**
-   * Replace the fixture's `startDate` with a date-only string that `DateParsing.toLocalDate` can parse. The recorded
-   * Congress.gov fixture uses a full OffsetDateTime (`2025-09-08T18:56:00-04:00`) that `LocalDate.parse` rejects, so
-   * the conversion yields `voteDate = None` → `votes.vote_date = NULL`. Archival to `vote_history` (NOT NULL) then
-   * fails. Fixtures that archive (scenarios 3 + 4) must normalise this field first.
-   */
-  private def mutateHouseStartDate(body: String, newStartDate: String): String =
-    body.replaceFirst("""("startDate"\s*:\s*")[^"]+(")""", s"$$1$newStartDate$$2")
 
   /**
    * Mutate a recorded House-members fixture by flipping one senator's vote cast — for scenario 3 (position change).
@@ -387,13 +385,15 @@ class VotesPipelineE2ESpec
   // -----------------------------------------------------------------------------------
 
   /**
-   * Pull all pending events from the subscription and decode them as `VoteRecordedEvent`s. Short RPC deadline on the
-   * fixture means this returns fast even when the queue is empty; we pull twice to absorb any timing variance from the
-   * publisher's async acknowledgement path.
+   * Pull all pending events from the subscription and decode them as `VoteRecordedEvent`s. Pulls twice to absorb any
+   * timing variance from the publisher's async acknowledgement path (first pull may miss a message that hasn't landed
+   * yet). Both pulls use `fastSkip = true` so when there genuinely is nothing in the queue — the common case for the
+   * second pull, and for scenarios 2/4 where we assert zero events — we return within 100ms instead of paying the
+   * fixture's default 1-second RPC deadline.
    */
   private def pullAllEvents(): List[VoteRecordedEvent] = {
-    val first  = pullMessages(100)
-    val second = if (first.size < 100) pullMessages(100 - first.size) else List.empty
+    val first  = pullMessages(maxMessages = 100, fastSkip = true)
+    val second = if (first.size < 100) pullMessages(maxMessages = 100 - first.size, fastSkip = true) else List.empty
     (first ++ second).flatMap { msg =>
       val bytes = msg.getData.toStringUtf8
       // DefaultIngestionEventPublisher wraps payloads in a `PipelineEvent` envelope: { eventType, payload, correlationId, ... }.
@@ -542,34 +542,25 @@ class VotesPipelineE2ESpec
 
   it should "scenario 3 — updated vote with position change archives + emits isUpdate=true event" taggedAs DockerRequired in {
     val originalBody = loadFixture("house/house-vote-119-1-240-members-hr3424.json")
-    // Two fixture hygiene workarounds needed for archive scenarios:
-    //   1. `DateParsing.toInstant` doesn't handle `-04:00` offsets — coerce updateDate to UTC-Z form.
-    //   2. `DateParsing.toLocalDate` doesn't handle datetime strings — coerce startDate to date-only so
-    //      `votes.vote_date` is populated and `vote_history.vote_date` (NOT NULL) can archive.
-    // Both are tracked as production bugs in shared-models DateParsing.
-    val firstRunBody = mutateHouseStartDate(
-      mutateHouseUpdateDate(originalBody, "2025-09-09T22:53:19Z"),
-      "2025-09-08",
-    )
+    // Second run: advance `updateDate` by a day and flip one senator's vote cast (Yea → Nay). Both are applied to
+    // the recorded fixture body — no format coercion needed, `DateParsing.toInstant` + `toLocalDate` (shared-models
+    // 0.1.31+) parse Congress.gov's native `-04:00` offset format.
     val secondRunBody = mutateHousePositionFlip(
-      mutateHouseStartDate(
-        mutateHouseUpdateDate(originalBody, "2025-09-10T22:53:19Z"),
-        "2025-09-08",
-      )
+      mutateHouseUpdateDate(originalBody, "2025-09-10T18:53:19-04:00")
     )
 
-    // First run — one House vote
-    stubHouseList(miniHouseListJson(List((240, "HR", "3424", "2025-09-09T22:53:19Z"))))
-    stubHouseMembers(240, firstRunBody)
+    // First run — recorded fixture as-is
+    stubHouseList(miniHouseListJson(List((240, "HR", "3424", "2025-09-09T18:53:19-04:00"))))
+    stubHouseMembers(240, originalBody)
     stubSenateIndex(miniSenateIndexXml(Nil))
     val (exit1, _) = runPipeline(runId = "e2e-s3-first")
     val _          = exit1.code shouldBe 0
     val _          = countVotes() shouldBe 1L
     val _          = pullAllEvents().size shouldBe 1
 
-    // Second run — newer updateDate + one senator's vote flipped (Yea → Nay)
+    // Second run — newer updateDate + one senator's vote flipped
     wireMock.resetAll()
-    stubHouseList(miniHouseListJson(List((240, "HR", "3424", "2025-09-10T22:53:19Z"))))
+    stubHouseList(miniHouseListJson(List((240, "HR", "3424", "2025-09-10T18:53:19-04:00"))))
     stubHouseMembers(240, secondRunBody)
     stubSenateIndex(miniSenateIndexXml(Nil))
 
@@ -587,29 +578,14 @@ class VotesPipelineE2ESpec
   // Scenario 4 — Metadata-only update: updateDate advances but positions unchanged → archive + upsert, no event.
   // =====================================================================================
 
-  // Scenario 4 is currently `pending` because it surfaces a production bug in `VotePositionDiffer`:
-  // `Differ.useEquals` compares the full `VotePositionDO` case class — including DB-generated `id` and
-  // `createdAt` — so every second-run comparison reports `positionsChanged = true` even when the actual
-  // voteCast/party/state values are byte-identical. `VoteEventEmitter.emitSuccess` therefore fires a
-  // `VoteRecordedEvent` with `isUpdate = true` for every metadata-only update, violating the §6.5 AC
-  // "Updated vote metadata-only → archived + upserted, no event" expectation.
-  //
-  // A separate task tracks the fix (ignore `id` + `createdAt` in the differ). Once that ships, remove the
-  // `ignore` marker below and the assertion `pullAllEvents().size shouldBe 0` will pass.
-  it should "scenario 4 — metadata-only update archives + upserts but emits no event" taggedAs DockerRequired ignore {
+  it should "scenario 4 — metadata-only update archives + upserts but emits no event" taggedAs DockerRequired in {
     val originalBody = loadFixture("house/house-vote-119-1-240-members-hr3424.json")
-    // Same pair of fixture hygiene workarounds as scenario 3 — updateDate in UTC-Z, startDate date-only.
-    val firstRunBody = mutateHouseStartDate(
-      mutateHouseUpdateDate(originalBody, "2025-09-09T22:53:19Z"),
-      "2025-09-08",
-    )
-    val secondRunBody = mutateHouseStartDate(
-      mutateHouseUpdateDate(originalBody, "2025-09-10T22:53:19Z"),
-      "2025-09-08",
-    )
+    // Second run: advance `updateDate` only — positions are byte-identical. With the Differ fix (#51) the detector
+    // correctly classifies this as `Updated(positionsChanged = false)` → archive + upsert, NO event.
+    val secondRunBody = mutateHouseUpdateDate(originalBody, "2025-09-10T18:53:19-04:00")
 
-    stubHouseList(miniHouseListJson(List((240, "HR", "3424", "2025-09-09T22:53:19Z"))))
-    stubHouseMembers(240, firstRunBody)
+    stubHouseList(miniHouseListJson(List((240, "HR", "3424", "2025-09-09T18:53:19-04:00"))))
+    stubHouseMembers(240, originalBody)
     stubSenateIndex(miniSenateIndexXml(Nil))
     val (exit1, _) = runPipeline(runId = "e2e-s4-first")
     val _          = exit1.code shouldBe 0
@@ -617,7 +593,7 @@ class VotesPipelineE2ESpec
 
     // Second run — newer updateDate, SAME positions (no flip)
     wireMock.resetAll()
-    stubHouseList(miniHouseListJson(List((240, "HR", "3424", "2025-09-10T22:53:19Z"))))
+    stubHouseList(miniHouseListJson(List((240, "HR", "3424", "2025-09-10T18:53:19-04:00"))))
     stubHouseMembers(240, secondRunBody)
     stubSenateIndex(miniSenateIndexXml(Nil))
 
