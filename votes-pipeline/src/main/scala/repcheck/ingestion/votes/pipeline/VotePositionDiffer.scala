@@ -46,12 +46,35 @@ import repcheck.shared.models.congress.dos.vote.VotePositionDO
 object VotePositionDiffer {
 
   /**
-   * Element-level differ built on value equality. `VotePositionDO` already has a full case-class `equals` (data class)
-   * so this compares every field — including `position`, `partyAtVote`, `stateAtVote`, and both identity columns.
-   * `.toString` is used only as the printable rendering inside `ValueResult`.
+   * Element-level differ built on value equality. `VotePositionDO` has a case-class `.equals`, so this compares every
+   * field. Callers are expected to [[normalizeForComparison]] both sides before invoking the outer
+   * `Differ[List[VotePositionDO]]` — see below for why.
+   *
+   * ==Why normalisation is required==
+   *
+   * Two `VotePositionDO` fields are populated from the database rather than from the DTO/builder pipeline: `id`
+   * (BIGSERIAL, 0 on freshly-built positions vs the real row id on stored positions) and `createdAt` (None on
+   * freshly-built vs `Some(DB NOW())` on stored). These will ALWAYS differ between the incoming and stored sides of a
+   * detect() call, so an unadjusted `.equals` reports every `Updated` branch as `positionsChanged = true` — even when
+   * the actual voteCast / party / state are byte-identical. Downstream consequence: every metadata-only update
+   * spuriously emits a `VoteRecordedEvent` with `isUpdate = true`, violating §6.5 AC "Updated vote metadata-only →
+   * archived + upserted, no event" and forcing the scoring engine to re-process unchanged votes.
+   *
+   * The detector (`VoteChangeDetector.diffPositions`) normalises both sides via [[normalizeForComparison]] before
+   * handing them to the list Differ. The `.equals` then compares only the vote-content fields (`position`,
+   * `partyAtVote`, `stateAtVote`, plus the identity columns that the outer `.pairBy(identityKey)` already partitions
+   * on). `.toString` is used only for the printable rendering inside `ValueResult`.
    */
   given votePositionDiffer: Differ[VotePositionDO] =
     Differ.useEquals[VotePositionDO](_.toString)
+
+  /**
+   * Zero out DB-generated fields (`id` and `createdAt`) so equality comparison reflects vote-content changes only.
+   * Applied to both the incoming and the stored position lists inside [[VoteChangeDetector.diffPositions]] before the
+   * outer list Differ is invoked.
+   */
+  def normalizeForComparison(p: VotePositionDO): VotePositionDO =
+    p.copy(id = 0L, createdAt = None)
 
   /**
    * Builds the identity pair-key for a single position row. House rows project to `(Chamber.House, memberId)`, Senate
