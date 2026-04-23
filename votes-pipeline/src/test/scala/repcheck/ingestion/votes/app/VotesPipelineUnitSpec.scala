@@ -76,6 +76,7 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
       houseClient = mock[Client[IO]],
       senateClient = mock[Client[IO]],
       eventPublisher = mock[IngestionEventPublisher[IO]],
+      retryWrapper = VotesPipelineResources.noOpRetryWrapper[IO],
     )
 
   private def makeLogger(): PipelineLogger[IO] = {
@@ -300,6 +301,31 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     org.mockito.Mockito.verifyNoInteractions(underlying)
   }
 
+  it should "forward a request to the underlying client and apply the delay between releases" in {
+    import java.util.concurrent.atomic.AtomicInteger
+    import org.http4s.{Request, Response, Status, Uri}
+
+    val underlyingHits = new AtomicInteger(0)
+    // A synchronous stub Client that records every request on the underlyingHits counter and returns 200 OK.
+    val underlying = Client[IO] { _ =>
+      Resource.eval(IO {
+        val _ = underlyingHits.incrementAndGet()
+        Response[IO](status = Status.Ok)
+      })
+    }
+
+    val wrapped = VotesPipelineResources.rateLimitedClient[IO](underlying, 1.millis)
+    val request = Request[IO](uri = Uri.unsafeFromString("http://test/route"))
+
+    // Send the request through the wrapped client. This drives the inner `Client[F] { request => ... }` lambda body
+    // (the one that acquires the semaphore, forwards to the underlying client, and releases after the configured
+    // delay). The outcome is the underlying's response status.
+    val status = wrapped.use(c => c.run(request).use(resp => IO.pure(resp.status))).unsafeRunSync()
+
+    val _ = status shouldBe Status.Ok
+    underlyingHits.get() shouldBe 1
+  }
+
   // =====================================================================================
   // VotesProcessorFactory.build — wiring smoke test
   // =====================================================================================
@@ -314,6 +340,97 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val logger    = makeLogger()
     val processor = VotesProcessorFactory.build[IO](config, resources, logger)
     processor shouldBe a[VoteProcessor[?]]
+  }
+
+  // =====================================================================================
+  // VotesProcessorFactory.buildFindStoredVote / buildFindStoredPositions — the extracted
+  // callbacks that feed VoteChangeDetector and VoteProcessor. Covered directly so their
+  // `repo → transact(xa)` wrapping runs under unit tests.
+  // =====================================================================================
+
+  "buildFindStoredVote" should "delegate to VoteRepository.findByNaturalKey and transact against the supplied xa" in {
+    import doobie.free.connection
+    import repcheck.ingestion.votes.repo.VoteRepository
+    import repcheck.shared.models.congress.dos.vote.VoteDO
+
+    val voteRepo = mock[VoteRepository]
+    val voteDo   = mock[VoteDO]
+    when(voteRepo.findByNaturalKey(org.mockito.ArgumentMatchers.eq("house:119:1:42")))
+      .thenReturn(connection.pure(Some(voteDo)))
+
+    val xa = Transactor.fromDriverManager[IO](
+      driver = "org.h2.Driver",
+      url = "jdbc:h2:mem:buildfindstoredvote;DB_CLOSE_DELAY=-1",
+      user = "",
+      password = "",
+      logHandler = None,
+    )
+
+    val callback = VotesProcessorFactory.buildFindStoredVote[IO](voteRepo, xa)
+    val result   = callback("house:119:1:42").unsafeRunSync()
+    result shouldBe Some(voteDo)
+  }
+
+  it should "return None when the repository returns None" in {
+    import doobie.free.connection
+    import repcheck.ingestion.votes.repo.VoteRepository
+    import repcheck.shared.models.congress.dos.vote.VoteDO
+
+    val voteRepo = mock[VoteRepository]
+    when(voteRepo.findByNaturalKey(org.mockito.ArgumentMatchers.eq("senate:119:1:7")))
+      .thenReturn(connection.pure(Option.empty[VoteDO]))
+
+    val xa = Transactor.fromDriverManager[IO](
+      driver = "org.h2.Driver",
+      url = "jdbc:h2:mem:buildfindstoredvote-none;DB_CLOSE_DELAY=-1",
+      user = "",
+      password = "",
+      logHandler = None,
+    )
+
+    VotesProcessorFactory.buildFindStoredVote[IO](voteRepo, xa).apply("senate:119:1:7").unsafeRunSync() shouldBe None
+  }
+
+  "buildFindStoredPositions" should "delegate to VotePositionRepository.findByVoteId and transact against the supplied xa" in {
+    import doobie.free.connection
+    import repcheck.ingestion.votes.repo.VotePositionRepository
+    import repcheck.shared.models.congress.dos.vote.VotePositionDO
+
+    val positionRepo = mock[VotePositionRepository]
+    val pos          = mock[VotePositionDO]
+    when(positionRepo.findByVoteId(org.mockito.ArgumentMatchers.eq(42L)))
+      .thenReturn(connection.pure(List(pos)))
+
+    val xa = Transactor.fromDriverManager[IO](
+      driver = "org.h2.Driver",
+      url = "jdbc:h2:mem:buildfindstoredpositions;DB_CLOSE_DELAY=-1",
+      user = "",
+      password = "",
+      logHandler = None,
+    )
+
+    val callback = VotesProcessorFactory.buildFindStoredPositions[IO](positionRepo, xa)
+    callback(42L).unsafeRunSync() shouldBe List(pos)
+  }
+
+  it should "return an empty list when the repository returns none" in {
+    import doobie.free.connection
+    import repcheck.ingestion.votes.repo.VotePositionRepository
+    import repcheck.shared.models.congress.dos.vote.VotePositionDO
+
+    val positionRepo = mock[VotePositionRepository]
+    when(positionRepo.findByVoteId(org.mockito.ArgumentMatchers.eq(0L)))
+      .thenReturn(connection.pure(List.empty[VotePositionDO]))
+
+    val xa = Transactor.fromDriverManager[IO](
+      driver = "org.h2.Driver",
+      url = "jdbc:h2:mem:buildfindstoredpositions-empty;DB_CLOSE_DELAY=-1",
+      user = "",
+      password = "",
+      logHandler = None,
+    )
+
+    VotesProcessorFactory.buildFindStoredPositions[IO](positionRepo, xa).apply(0L).unsafeRunSync() shouldBe List.empty
   }
 
 }

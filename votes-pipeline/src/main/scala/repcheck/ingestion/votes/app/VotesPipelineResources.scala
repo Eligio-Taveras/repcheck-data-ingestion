@@ -37,12 +37,18 @@ private[app] object VotesPipelineResources {
   /**
    * The resource bundle handed to [[VotesProcessorFactory.build]]. Tests can construct this directly with mocks to
    * exercise the downstream wiring without acquiring real connections.
+   *
+   * `retryWrapper` is shared across every subsystem that needs retry semantics — the Pub/Sub publisher constructed
+   * below, plus the Congress.gov API + senate.gov XML clients in [[VotesProcessorFactory]]. The wrapper's logging
+   * callback is a no-op (per-retry logs come from each client's structured [[PipelineLogger]] instead); exposing it
+   * here keeps the construction site single and testable.
    */
   final case class Resources[F[_]](
     xa: Transactor[F],
     houseClient: Client[F],
     senateClient: Client[F],
     eventPublisher: IngestionEventPublisher[F],
+    retryWrapper: RetryWrapper[F],
   )
 
   /**
@@ -67,7 +73,7 @@ private[app] object VotesPipelineResources {
       houseClient     <- rateLimitedClient(rawClient, config.pipeline.house.pageDelay)
       senateClient    <- rateLimitedClient(rawClient, config.pipeline.senate.requestDelay)
       pubSubPublisher <- pubSubPublisherFactory(config.eventPublisher)
-      retryWrapper = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
+      retryWrapper = noOpRetryWrapper[F]
       publisher = new DefaultIngestionEventPublisher[F](
         publisher = pubSubPublisher,
         topicName = config.eventPublisher.topicName,
@@ -75,7 +81,16 @@ private[app] object VotesPipelineResources {
         retryWrapper = retryWrapper,
         retryConfig = RetryConfig(),
       )
-    } yield Resources(xa, houseClient, senateClient, publisher)
+    } yield Resources(xa, houseClient, senateClient, publisher, retryWrapper)
+
+  /**
+   * Construct a [[RetryWrapper]] whose retry-logging callback is a no-op. Per-retry logs come from each subsystem's own
+   * structured [[repcheck.ingestion.common.logging.PipelineLogger]] at the retry boundary — the wrapper's log hook is
+   * only useful when no other logging is already in place. Extracted as a named helper so the lambda body can be
+   * exercised by a direct unit test instead of requiring a real retry invocation in every consumer's suite.
+   */
+  private[app] def noOpRetryWrapper[F[_]: Async]: RetryWrapper[F] =
+    new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
 
   /**
    * Wraps an HTTP client with per-client rate limiting: a semaphore ensures only one request is in-flight at a time,
