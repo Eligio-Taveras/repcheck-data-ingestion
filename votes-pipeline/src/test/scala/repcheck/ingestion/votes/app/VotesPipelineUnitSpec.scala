@@ -29,15 +29,15 @@ import repcheck.pipeline.models.errors.RetryConfig
 import repcheck.pipeline.models.metadata.ProcessingResult
 
 /**
- * Unit spec for [[VotesPipeline]]'s testable runtime. Verifies the factory-function wiring contract:
+ * Unit spec for [[VotesPipeline]]'s testable runtime + the companion factories
+ * ([[VotesPipelineResources.rateLimitedClient]] + [[VotesProcessorFactory.build]]). Verifies the factory-function
+ * wiring contract:
  *   1. `runWithFactories` invokes each factory exactly once, in the documented order (config → logger → resources →
- *      processor → stream). 2. Config values are threaded end-to-end (the AppConfig supplied by `configLoader` is the
- *      one handed to `resourceBuilder` and `processorFactory`). 3. Arg parsing surfaces [[StepRunIdInvalid]] for
- *      missing / non-numeric `args(2)`. 4. Exit code reflects the collected [[ProcessingResult]] stream (all succeeded
- *      → `ExitCode.Success`, any failed → `ExitCode.Error`).
+ *      processor → stream). 2. Config values are threaded end-to-end. 3. Arg parsing surfaces [[StepRunIdInvalid]] for
+ *      missing / non-numeric `args(2)`. 4. Exit code reflects the collected [[ProcessingResult]] stream.
  *
  * No real transactor, HTTP client, or Pub/Sub publisher is constructed — factories return Mockito stubs wrapped in
- * `Resource.pure`, so the spec exercises only the orchestration logic in `runWithFactories`.
+ * `Resource.pure`, so the spec exercises only orchestration.
  */
 class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -70,8 +70,8 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         EventPublisherConfig(projectId = "repcheck-test", topicName = "vote-events", source = "votes-pipeline"),
     )
 
-  private def makeResources(): VotesPipeline.Resources[IO] =
-    VotesPipeline.Resources(
+  private def makeResources(): VotesPipelineResources.Resources[IO] =
+    VotesPipelineResources.Resources(
       xa = mock[Transactor[IO]],
       houseClient = mock[Client[IO]],
       senateClient = mock[Client[IO]],
@@ -167,7 +167,7 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         configLoader = IO.pure(makeAppConfig()),
         loggerFactory = IO.pure(makeLogger()),
         resourceBuilder =
-          (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipeline.Resources[IO]](makeResources()),
+          (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipelineResources.Resources[IO]](makeResources()),
         processorFactory = (_, _, _) => mock[VoteProcessor[IO]],
         streamFactory = (_, rid) => {
           val _ = runIdSeen.set(Some(rid))
@@ -182,7 +182,7 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   it should "hand the Resources bundle and the logger produced by the factories into processorFactory" in {
     val resources     = makeResources()
     val logger        = makeLogger()
-    val resourcesSeen = new AtomicReference[Option[VotesPipeline.Resources[IO]]](None)
+    val resourcesSeen = new AtomicReference[Option[VotesPipelineResources.Resources[IO]]](None)
     val loggerSeen    = new AtomicReference[Option[PipelineLogger[IO]]](None)
 
     val _ = VotesPipeline
@@ -190,7 +190,8 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         args = validArgs,
         configLoader = IO.pure(makeAppConfig()),
         loggerFactory = IO.pure(logger),
-        resourceBuilder = (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipeline.Resources[IO]](resources),
+        resourceBuilder =
+          (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipelineResources.Resources[IO]](resources),
         processorFactory = (_, r, l) => {
           val _ = resourcesSeen.set(Some(r))
           val _ = loggerSeen.set(Some(l))
@@ -219,7 +220,7 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         configLoader = IO.pure(makeAppConfig()),
         loggerFactory = IO.pure(makeLogger()),
         resourceBuilder =
-          (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipeline.Resources[IO]](makeResources()),
+          (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipelineResources.Resources[IO]](makeResources()),
         processorFactory = (_, _, _) => mock[VoteProcessor[IO]],
         streamFactory = (_, _) => successStream,
       )
@@ -239,7 +240,7 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         configLoader = IO.pure(makeAppConfig()),
         loggerFactory = IO.pure(makeLogger()),
         resourceBuilder =
-          (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipeline.Resources[IO]](makeResources()),
+          (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipelineResources.Resources[IO]](makeResources()),
         processorFactory = (_, _, _) => mock[VoteProcessor[IO]],
         streamFactory = (_, _) => mixedStream,
       )
@@ -287,32 +288,31 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   }
 
   // =====================================================================================
-  // rateLimitedClient — mechanical behaviour
+  // VotesPipelineResources.rateLimitedClient — mechanical behaviour
   // =====================================================================================
 
   "rateLimitedClient" should "produce a Client[F] backed by the supplied underlying and not run it eagerly" in {
     val underlying = mock[Client[IO]]
-    // Just acquire the Resource and release it — we want to prove that constructing the wrapper has no immediate
-    // side effects on the underlying client. If the wrapper were pre-running a request, Mockito would record it.
-    val wrapperResource = VotesPipeline.rateLimitedClient[IO](underlying, 1.millis)
+    // Acquire the Resource and release it. If the wrapper were pre-running a request on construction, Mockito would
+    // record the interaction; verifyNoInteractions below asserts we stayed hands-off.
+    val wrapperResource = VotesPipelineResources.rateLimitedClient[IO](underlying, 1.millis)
     val _               = wrapperResource.use(_ => IO.pure(true)).unsafeRunSync() shouldBe true
-    // Mockito's default behavior on an unverified mock: no interactions — confirmed by the absence of any stubbing.
     org.mockito.Mockito.verifyNoInteractions(underlying)
   }
 
   // =====================================================================================
-  // buildProcessor — wiring smoke test
+  // VotesProcessorFactory.build — wiring smoke test
   // =====================================================================================
 
-  "buildProcessor" should "construct a fully-wired VoteProcessor from a Resources bundle without throwing" in {
+  "VotesProcessorFactory.build" should "construct a fully-wired VoteProcessor from a Resources bundle without throwing" in {
     // Smoke test guards against latent wiring regressions (null-defaulted dep, wrong constructor arity, etc.) that the
-    // compiler could miss. Invokes the real `buildProcessor` against mocked Resources — no DB, no HTTP, no Pub/Sub —
-    // and asserts the returned VoteProcessor is a valid instance. Every downstream collaborator (clients, repos,
-    // converters, persister, emitter, detector) is constructed inline and must resolve its constructor args correctly.
+    // compiler could miss. Invokes the real `build` against mocked Resources — no DB, no HTTP, no Pub/Sub — and
+    // asserts the returned VoteProcessor is a valid instance. Every downstream collaborator (clients, repos,
+    // converters, persister, emitter, detector, lisResolver) is constructed inline and must resolve correctly.
     val config    = makeAppConfig()
     val resources = makeResources()
     val logger    = makeLogger()
-    val processor = VotesPipeline.buildProcessor[IO](config, resources, logger)
+    val processor = VotesProcessorFactory.build[IO](config, resources, logger)
     processor shouldBe a[VoteProcessor[?]]
   }
 

@@ -28,6 +28,8 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
       textDate: String,
       latestTextVersionId: Long,
     ): IO[Unit] = IO.unit
+
+    override def upsertPlaceholder(naturalKey: String): IO[Unit] = IO.unit
   }
 
   "BillRepository" should "compile with a stub implementation" in {
@@ -85,6 +87,10 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
     stubRepo
       .updateTextFields("118-HR-1", "https://example.com", "xml", "Introduced", "2024-01-01", 1L)
       .unsafeRunSync() shouldBe (())
+  }
+
+  it should "return Unit from upsertPlaceholder for a stub" in {
+    stubRepo.upsertPlaceholder("119-HR-30").unsafeRunSync() shouldBe (())
   }
 
 }

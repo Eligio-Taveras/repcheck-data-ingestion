@@ -11,6 +11,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.bills.common.testing.{DockerRequired, TransactorFixture}
 import repcheck.shared.models.congress.bill.TextVersionCode
+import repcheck.shared.models.congress.common.DoobieEnumInstances._
 import repcheck.shared.models.congress.common.{BillType, Chamber, FormatType}
 import repcheck.shared.models.congress.dos.bill.{BillDO, BillTextVersionDO}
 
@@ -215,6 +216,83 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
         bill.latestTextVersionId shouldBe Some(versionId)
       case None => fail("Expected bill to be present")
     }
+  }
+
+  // ==========================================================================================
+  // upsertPlaceholder — used by the votes pipeline to reserve a FK target before bills-pipeline
+  // enriches the real row. Verifies the SQL shape + composite-key idempotency against a real
+  // Postgres instance.
+  // ==========================================================================================
+
+  private def countBillsByNaturalKey(congress: Int, billType: BillType, number: Int): Int =
+    sql"""SELECT COUNT(*) FROM bills
+          WHERE congress = $congress AND bill_type = $billType AND number = $number"""
+      .query[Int]
+      .unique
+      .transact(xa)
+      .unsafeRunSync()
+
+  "upsertPlaceholder" should "insert a new bills row with the parsed composite key" taggedAs DockerRequired in {
+    val _ = repo.upsertPlaceholder("119-HR-30").transact(xa).unsafeRunSync()
+    val _ = countBillsByNaturalKey(119, BillType.HR, 30) shouldBe 1
+
+    val stored = repo.findByBillId("119-HR-30").transact(xa).unsafeRunSync()
+    stored match {
+      case Some(bill) =>
+        val _ = bill.congress shouldBe 119
+        val _ = bill.billType shouldBe BillType.HR
+        val _ = bill.number shouldBe "30"
+        // Placeholder title is intentionally an empty string — bills-pipeline overwrites it on enrichment.
+        bill.title shouldBe ""
+      case None => fail("Expected placeholder bill to be findable via findByBillId")
+    }
+  }
+
+  it should "be idempotent when the same natural key is inserted twice (ON CONFLICT DO NOTHING)" taggedAs DockerRequired in {
+    val _ = repo.upsertPlaceholder("119-S-42").transact(xa).unsafeRunSync()
+    val _ = repo.upsertPlaceholder("119-S-42").transact(xa).unsafeRunSync()
+    countBillsByNaturalKey(119, BillType.S, 42) shouldBe 1
+  }
+
+  it should "insert distinct rows for distinct natural keys" taggedAs DockerRequired in {
+    val _ = repo.upsertPlaceholder("119-HR-30").transact(xa).unsafeRunSync()
+    val _ = repo.upsertPlaceholder("119-S-42").transact(xa).unsafeRunSync()
+    val _ = repo.upsertPlaceholder("119-HR-31").transact(xa).unsafeRunSync()
+
+    val _ = countBillsByNaturalKey(119, BillType.HR, 30) shouldBe 1
+    val _ = countBillsByNaturalKey(119, BillType.S, 42) shouldBe 1
+    countBillsByNaturalKey(119, BillType.HR, 31) shouldBe 1
+  }
+
+  it should "NOT overwrite a real (non-placeholder) bill if one already exists at the same composite key" taggedAs DockerRequired in {
+    // First persist a real bill via upsert.
+    val realBill =
+      makeBill(congress = 119, billType = BillType.HJRES, number = "7", title = "Real HJRES 7")
+    val _ = repo.upsert(realBill).transact(xa).unsafeRunSync()
+
+    // Then call upsertPlaceholder on the same natural key — should be a no-op.
+    val _ = repo.upsertPlaceholder("119-HJRES-7").transact(xa).unsafeRunSync()
+
+    val stored = repo.findByBillId("119-HJRES-7").transact(xa).unsafeRunSync()
+    stored match {
+      case Some(bill) => bill.title shouldBe "Real HJRES 7"
+      case None       => fail("Expected the real bill to remain after placeholder no-op")
+    }
+  }
+
+  it should "write the bill_type enum in lowercase (matches findByBillId's comparison)" taggedAs DockerRequired in {
+    val _ = repo.upsertPlaceholder("119-HJRES-5").transact(xa).unsafeRunSync()
+
+    // The Doobie Put[BillType] serializes BillType.HJRES to its apiValue "hjres" (lowercase) — that's
+    // what the bill_type_enum PG type expects. findByBillId lowercases its parsed bill_type before
+    // comparing, so writer + reader agree here.
+    val rawBillType = sql"""SELECT bill_type::text FROM bills
+                            WHERE congress = 119 AND number = 5"""
+      .query[String]
+      .unique
+      .transact(xa)
+      .unsafeRunSync()
+    rawBillType shouldBe "hjres"
   }
 
 }
