@@ -226,9 +226,9 @@ object SenateVoteXmlDecoder {
           // SenateVoteConverter.normalizeDocumentType classifies them and persists the
           // vote. Still-empty values flow through as "" and surface in converter warn
           // logs rather than crashing the whole pipeline.
-          docNumber   = textOpt(docNode, "document_number").getOrElse("")
-          docName     = textOpt(docNode, "document_name").getOrElse("")
-          docTitle    = textOpt(docNode, "document_title").getOrElse("")
+          docNumber = textOpt(docNode, "document_number").getOrElse("")
+          docName   = textOpt(docNode, "document_name").getOrElse("")
+          docTitle  = textOpt(docNode, "document_title").getOrElse("")
           // document_short_title is optional — senate.gov often emits it as <document_short_title/> (self-closing empty)
           docShortTitle = textOpt(docNode, "document_short_title")
         } yield SenateVoteDocumentDTO(
