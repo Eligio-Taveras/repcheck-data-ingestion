@@ -19,10 +19,9 @@ Three endpoints covered here (compare bills-abridge.py for the bill-side):
 NOTE on senator-lookup.xml vs senators_cfm.xml:
   lis-mapping-refresher's SenatorXmlParser expects the senator-lookup.xml
   schema (<senators><senator><full_name><first_name/>...). The production
-  application.conf default URL is `senators_cfm.xml` which has a completely
-  different schema (<contact_information><member>...) — latent bug surfaced
-  by this Tier 3 run. Compose overrides via PIPELINE_SENATOR_XML_URL so we
-  point at the right URL shape. Prod-config fix tracked separately.
+  application.conf default URL now points at `/about/senator-lookup.xml`,
+  which matches this schema. Compose overrides via PIPELINE_SENATOR_XML_URL
+  so WireMock serves the stubbed response at the equivalent path.
 
 Input:  e2e/wiremock/__files/.raw/{members-list,member-detail}.json + senator-lookup.xml
 Output: e2e/wiremock/__files/members/*.json + senate/senator-lookup.xml
