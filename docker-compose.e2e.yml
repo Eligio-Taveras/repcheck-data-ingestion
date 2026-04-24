@@ -325,10 +325,9 @@ services:
       DB_PASSWORD: repcheck
       # senate.gov senator XML — served under /senate/* from WireMock. The
       # pipeline's SenatorXmlParser expects senate.gov's /about/senator-lookup.xml
-      # schema (<senators><senator><full_name>...) — NOT the senators_cfm.xml
-      # default in application.conf, which has a different shape. Override via
-      # env var. Prod-config drift tracked separately; this keeps Tier 3 green
-      # against the actual parser expectations.
+      # schema (<senators><senator><full_name>...). Override the production
+      # host with the WireMock host so E2E tests hit the stub instead of the
+      # real senate.gov endpoint.
       PIPELINE_SENATOR_XML_URL: http://wiremock:8080/senate/about/senator-lookup.xml
       PIPELINE_CURRENT_CONGRESS: "119"
       PIPELINE_PARALLELISM: "1"

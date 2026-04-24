@@ -12,7 +12,7 @@ class LisMappingConfigSpec extends AnyFlatSpec with Matchers {
     requestTimeout: FiniteDuration = 30.seconds,
     currentCongress: Int = 118,
     congressLookbackWindow: Int = 5,
-    senatorXmlUrl: String = "https://www.senate.gov/general/contact_information/senators_cfm.xml",
+    senatorXmlUrl: String = "https://www.senate.gov/about/senator-lookup.xml",
   ): LisMappingConfig =
     LisMappingConfig(
       parallelism = parallelism,

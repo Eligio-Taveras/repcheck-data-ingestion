@@ -11,7 +11,7 @@ import repcheck.members.common.testing.E2ETest
  * [[repcheck.members.lismapping.app.LisMappingRefresherApp]] (Phase 5) is complete.
  *
  * When implemented, each test will wire:
- *   - WireMock for the senate.gov senator XML feed (`senators_cfm.xml`)
+ *   - WireMock for the senate.gov senator XML feed (`senator-lookup.xml`)
  *   - AlloyDB Omni (Docker) for `lis_members` and `member_lis_mapping` verification
  *   - Pub/Sub emulator for `member-updated` event verification (emitted on new mappings)
  *
