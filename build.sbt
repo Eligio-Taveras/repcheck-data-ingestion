@@ -56,7 +56,7 @@ lazy val commonSettings = Seq(
     "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.20",
     "com.repcheck" %% "repcheck-ingestion-common" % "0.1.20",
     "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.23" % Test,
-    "com.repcheck" %% "repchecksharedmodels"       % "0.1.32",
+    "com.repcheck" %% "repchecksharedmodels"       % "0.1.33",
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
@@ -288,6 +288,8 @@ lazy val dockerComposeE2e = (project in file("docker-compose-e2e"))
         billTextAvailabilityChecker / assembly,
         billTextPipeline / assembly,
         votesPipeline / assembly,
+        memberProfilePipeline / assembly,
+        lisMappingRefresher / assembly,
       )
       .value,
     publish / skip := true,

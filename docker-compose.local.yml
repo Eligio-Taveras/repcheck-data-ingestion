@@ -38,6 +38,8 @@
 #   3. bill-text-pipeline             — subscribes to Pub/Sub → downloads text → DB
 #   4. member-profile-pipeline        — fetches member profiles from Congress.gov → DB → member-updated events
 #   5. lis-mapping-refresher          — fetches senate.gov XML → maps LIS IDs → DB → member-updated events
+#   6. votes-pipeline                 — fetches House + Senate votes → DB → vote-events events
+#                                       (runs AFTER lis-mapping-refresher so LIS→bioguide map is fresh)
 #
 # Schedule defaults (override via .env):
 #   BILL_METADATA_SCHEDULE          = 0 */6 * * *         (every 6 hours)
@@ -45,6 +47,7 @@
 #   BILL_TEXT_PIPELINE_SCHEDULE     = 0 2,8,14,20 * * *   (every 6 hours, offset +2h)
 #   MEMBER_PROFILE_SCHEDULE         = 0 3,9,15,21 * * *   (every 6 hours, offset +3h)
 #   LIS_MAPPING_SCHEDULE            = 0 4,10,16,22 * * *  (every 6 hours, offset +4h)
+#   VOTES_SCHEDULE                  = 0 5,11,17,23 * * *  (every 6 hours, offset +5h)
 # =============================================================================
 
 services:
@@ -275,6 +278,42 @@ services:
       PUBSUB_PROJECT_ID: repcheck-local
       MEMBER_UPDATED_TOPIC: member-updated
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
+    restart: "no"
+
+  votes-pipeline:
+    container_name: votes-pipeline
+    build:
+      context: .
+      dockerfile: votes-pipeline/Dockerfile
+    # Launcher contract: args(0) = config (unused — PureConfig reads env),
+    # args(1) = runId, args(2) = stepRunId. PipelineBootstrap raises
+    # RunIdMissing without args(1).
+    command: ["cfg-unused", "local-votes-run", "1"]
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      # Congress.gov House votes (real API — no WireMock in local dev).
+      CONGRESS_API_BASE_URL: https://api.congress.gov/v3
+      CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
+      # Senate — real senate.gov URL.
+      SENATE_BASE_URL: https://www.senate.gov/legislative/LIS
+      HOUSE_CONGRESS: ${HOUSE_CONGRESS:-119}
+      HOUSE_SESSION: ${HOUSE_SESSION:-1}
+      HOUSE_LOOKBACK_DAYS: ${HOUSE_LOOKBACK_DAYS:-7}
+      HOUSE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
+      SENATE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
+      # Pub/Sub — GCP_PROJECT_ID + VOTE_EVENTS_TOPIC match the application.conf keys.
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      GCP_PROJECT_ID: repcheck-local
+      VOTE_EVENTS_TOPIC: vote-events
     restart: "no"
 
 volumes:
