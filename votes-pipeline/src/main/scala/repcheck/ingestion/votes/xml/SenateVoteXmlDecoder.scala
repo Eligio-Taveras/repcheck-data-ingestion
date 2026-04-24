@@ -219,9 +219,16 @@ object SenateVoteXmlDecoder {
         for {
           docCongress <- requireInt(docNode, "document_congress")
           docType     <- requireText(docNode, "document_type")
-          docNumber   <- requireText(docNode, "document_number")
-          docName     <- requireText(docNode, "document_name")
-          docTitle    <- requireText(docNode, "document_title")
+          // Amendment votes (docType "S.Amdt." / "H.Amdt.") emit self-closing empty
+          // <document_number/>, <document_name/>, <document_title/> on senate.gov — the
+          // real identifying metadata lives in the sibling <amendment> element. Tolerate
+          // empty values here so amendment votes parse and reach the converter, where
+          // SenateVoteConverter.normalizeDocumentType classifies them and persists the
+          // vote. Still-empty values flow through as "" and surface in converter warn
+          // logs rather than crashing the whole pipeline.
+          docNumber   = textOpt(docNode, "document_number").getOrElse("")
+          docName     = textOpt(docNode, "document_name").getOrElse("")
+          docTitle    = textOpt(docNode, "document_title").getOrElse("")
           // document_short_title is optional — senate.gov often emits it as <document_short_title/> (self-closing empty)
           docShortTitle = textOpt(docNode, "document_short_title")
         } yield SenateVoteDocumentDTO(
