@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/senate/about/senator-lookup\\.xml"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/xml" },
+    "bodyFileName": "senate/senator-lookup.xml"
+  }
+}

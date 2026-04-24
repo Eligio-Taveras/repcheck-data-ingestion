@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<senators><senator current="yes">
+        <full_name>
+            <first_name>Angela</first_name>
+            <middle_name>Deneece</middle_name>
+            <last_name>Alsobrooks</last_name>
+        </full_name>
+        <publication_name>
+            <first_name>Angela</first_name>
+            <middle_name>D.</middle_name>
+            <last_name>Alsobrooks</last_name>
+        </publication_name>
+        <party>D</party>
+        <state>MD</state>
+        <bioguide>A000382</bioguide>
+        <website>https://alsobrooks.senate.gov/</website>
+        <lisid>S428</lisid>
+        <congresses>
+            <congress>119</congress>
+            </congresses>
+           <service_dates>
+                  <service_date class="1">
+                      <begin_date congress="119" day="03" month="01" year="2025" />
+                      <end_date day="" month="" year="" />
+
+                      </service_date>
+
+                  </service_dates>
+                   <birth_date day="23" month="02" year="1971" />
+    </senator>
+    <senator current="yes">
+        <full_name>
+            <first_name>Alan</first_name>
+            <middle_name>S.</middle_name>
+            <last_name>Armstrong</last_name>
+        </full_name>
+        <publication_name>
+            <first_name>Alan</first_name>
+            <middle_name />
+            <last_name>Armstrong</last_name>
+        </publication_name>
+        <party>R</party>
+        <state>OK</state>
+        <bioguide>A000383</bioguide>
+        <lisid>S440</lisid>
+          <service_dates>
+            <service_date class="2">
+                <begin_date congress="119" day="24" month="03" year="2026" />
+                <end_date congress="" day="" month="" year="" />
+                </service_date>
+            </service_dates>
+              <birth_date day="" month="" year="" />
+          
+    </senator>
+    <senator current="yes">
+        <full_name>
+            <first_name>Tammy</first_name>
+            <middle_name />
+            <last_name>Baldwin</last_name>
+        </full_name>
+        <publication_name>
+            <first_name />
+            <middle_name />
+            <last_name />
+        </publication_name>
+        <party>D</party>
+        <state>WI</state>
+        <bioguide>B001230</bioguide>
+        <website>https://www.baldwin.senate.gov/</website>
+        <lisid>S354</lisid>
+        <congresses>
+            <congress>112</congress>
+            <congress>113</congress>
+            <congress>114</congress>
+            <congress>115</congress>
+            <congress>116</congress>
+            <congress>117</congress>
+            <congress>118</congress>
+            <congress>119</congress>
+            </congresses>
+          <service_dates>
+            <service_date class="1">
+                <begin_date congress="112" day="03" month="01" year="2013" />
+                <end_date day="" month="" year="" />
+                </service_date>
+            </service_dates>
+               <birth_date day="11" month="02" year="1962" />
+
+    </senator>
+    <senator current="yes">
+        <full_name>
+            <first_name>Jim</first_name>
+            <middle_name>E.</middle_name>
+            <last_name>Banks</last_name>
+            <suffix />
+        </full_name>
+        <publication_name>
+            <first_name />
+            <middle_name />
+            <last_name />
+            <suffix />
+        </publication_name>
+        <party>R</party>
+        <state>IN</state>
+        <bioguide>B001299</bioguide>
+        <website>https://www.banks.senate.gov/</website>
+        <lisid>S429</lisid>
+        <congresses>
+            <congress>119</congress>
+            </congresses>
+      <service_dates>
+            <service_date class="1">
+                <begin_date congress="119" day="03" month="01" year="2025" />
+                <end_date day="" month="" year="" />
+
+                </service_date>
+                 
+            </service_dates>
+             <birth_date day="16" month="07" year="1979" />
+            
+    </senator>
+    <senator current="yes">
+        <full_name>
+            <first_name>John</first_name>
+            <middle_name>A.</middle_name>
+            <last_name>Barrasso</last_name>
+        </full_name>
+        <publication_name>
+            <first_name>John</first_name>
+            <middle_name />
+            <last_name>Barrasso</last_name>
+        </publication_name>
+        <party>R</party>
+        <state>WY</state>
+        <bioguide>B001261</bioguide>
+        <website>https://www.barrasso.senate.gov/</website>
+        <lisid>S317</lisid>
+        <congresses>
+            <congress>110</congress>
+            <congress>111</congress>
+            <congress>112</congress>
+            <congress>113</congress>
+            <congress>114</congress>
+            <congress>115</congress>
+            <congress>116</congress>
+            <congress>117</congress>
+            <congress>118</congress>
+            <congress>119</congress>
+            </congresses>
+          <service_dates>
+                 <service_date class="1">
+                     <begin_date congress="110" day="22" month="06" year="2007" />
+                     <oath_date day="25" month="06" year="2007" />
+                     <end_date day="" month="" year="" />
+                     <note>Barrasso was appointed on June 22, 2007, and was sworn into office on June 25, 2007. </note>
+                     </service_date>
+                 </service_dates>
+                    <birth_date day="21" month="07" year="1952" />
+    </senator>
+    </senators>

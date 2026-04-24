@@ -1,0 +1,28 @@
+{
+  "pagination": {
+    "count": 1,
+    "next": null
+  },
+  "members": [
+    {
+      "bioguideId": "A000382",
+      "depiction": {
+        "imageUrl": "http://wiremock:8080/www/img/member/67acdbbf044eb506e25958f2_200.jpg"
+      },
+      "district": null,
+      "name": "Alsobrooks, Angela D.",
+      "partyName": "Democratic",
+      "state": "Maryland",
+      "terms": {
+        "item": [
+          {
+            "chamber": "Senate",
+            "startYear": 2025
+          }
+        ]
+      },
+      "updateDate": "2026-03-08T10:30:24Z",
+      "url": "http://wiremock:8080/v3/member/A000382?format=json"
+    }
+  ]
+}

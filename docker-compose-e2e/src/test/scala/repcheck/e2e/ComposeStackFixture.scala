@@ -46,6 +46,14 @@ final class ComposeStackFixture(
     waitForHealth("wiremock")
     runOneShot("db-migrations")
     runOneShot("pubsub-init")
+    // member-profile-pipeline FIRST — it populates the `members` table that
+    // votes-pipeline's House positions FK into (via bioguide-resolved
+    // `vote_positions.member_id`). lis-mapping-refresher runs next so
+    // `member_lis_mapping` exists before any Senate vote's position is
+    // attributed. Bills still run ahead of votes because votes-pipeline
+    // links votes to their bills via natural key.
+    runOneShot("member-profile-pipeline")
+    runOneShot("lis-mapping-refresher")
     runOneShot("bill-metadata-pipeline")
     runOneShot("bill-text-availability-checker")
     runOneShot("bill-text-pipeline")

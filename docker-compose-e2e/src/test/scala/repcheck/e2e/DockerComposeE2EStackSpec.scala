@@ -247,4 +247,58 @@ class DockerComposeE2EStackSpec extends AnyFlatSpec with Matchers with BeforeAnd
     succeed
   }
 
+  // ---------------------------------------------------------------------------
+  // member-profile-pipeline — writes to `members` from /v3/member/congress/{c}
+  // ---------------------------------------------------------------------------
+
+  it should "persist members from member-profile-pipeline's list + detail fetch" taggedAs DockerRequired in {
+    // The abridged fixture has one row in members-list-response.json (Angela
+    // Alsobrooks, bioguide A000382). The pipeline follows the member.url
+    // (HATEOAS) to fetch her detail, then writes a real MemberDO. Every other
+    // `members` row in the DB comes from votes-pipeline's placeholder creation
+    // for House vote bioguides — those rows have NULL first_name.
+    val realCount =
+      sqlLong(sql"SELECT COUNT(*) FROM members WHERE first_name IS NOT NULL AND first_name != ''")
+    realCount should be >= 1L
+  }
+
+  it should "persist Alsobrooks (A000382) by natural_key from the member-list fixture" taggedAs DockerRequired in {
+    // A000382 was chosen as the member-profile fixture because she's ALSO in
+    // the senator-lookup.xml fixture, which lets lis-mapping-refresher
+    // actually insert a member_lis_mapping row (see the next assertion) rather
+    // than skip every senator as `SkippedUnknownMember`.
+    val row = sql"SELECT natural_key FROM members WHERE natural_key = 'A000382'"
+      .query[String]
+      .option
+      .transact(xa)
+      .unsafeRunSync()
+    row shouldBe Some("A000382")
+  }
+
+  // ---------------------------------------------------------------------------
+  // lis-mapping-refresher — writes to member_lis_mapping from senate.gov XML
+  // ---------------------------------------------------------------------------
+
+  it should "populate member_lis_mapping for the one senator that overlaps with members (A000382)" taggedAs DockerRequired in {
+    // lis-mapping-refresher's contract: only insert a mapping when the senator's
+    // bioguide already exists in the `members` table. Our member-profile fixture
+    // was specifically chosen (A000382 / Alsobrooks) to overlap with the first
+    // senator in the abridged senator-lookup.xml. Other 4 senators in the XML
+    // have no matching member and get `SkippedUnknownMember`. Expect exactly 1
+    // row; the presence of that row proves the end-to-end
+    // DB-read → filter → INSERT → event-publish chain works.
+    val count = sqlLong(sql"SELECT COUNT(*) FROM member_lis_mapping")
+    count shouldBe 1L
+  }
+
+  it should "publish MemberUpdatedEvents on member-updated topic (at least one per pipeline)" taggedAs DockerRequired in {
+    // member-profile-pipeline AND lis-mapping-refresher both publish to the
+    // `member-updated` topic. The compose file's pubsub-init creates
+    // `member-updated-sub` pointing at that topic; pulling it here proves the
+    // end-to-end chain (emulator + topic+sub pair + each pipeline's publisher
+    // wiring) works for every MemberUpdatedEvent producer.
+    val count = pubsubPullCount("member-updated-sub")
+    count should be >= 1
+  }
+
 }

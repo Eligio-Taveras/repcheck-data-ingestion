@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/v3/member/congress/[0-9]+",
+    "queryParameters": {
+      "api_key": { "equalTo": "e2e-test-key" }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "bodyFileName": "members/members-list-response.json"
+  }
+}

@@ -16,8 +16,12 @@
 #   - bill-metadata-pipeline
 #   - bill-text-availability-checker
 #   - bill-text-pipeline
-#   - votes-pipeline (House JSON + Senate XML → votes + vote_positions,
-#                     publishes VoteRecordedEvent on vote-events topic)
+#   - votes-pipeline          (House JSON + Senate XML → votes + vote_positions,
+#                              publishes VoteRecordedEvent on vote-events topic)
+#   - member-profile-pipeline (Congress.gov /v3/member/congress/{c} → members,
+#                              publishes MemberUpdatedEvent on member-updated)
+#   - lis-mapping-refresher   (senate.gov senators_cfm.xml → member_lis_mapping,
+#                              publishes MemberUpdatedEvent on member-updated)
 #
 # Note on Ollama: instead of running the real Ollama image (heavy, needs model
 # weights), the single WireMock container also serves `POST /api/embed` with a
@@ -30,7 +34,9 @@
 #        sbt "billMetadataPipeline/assembly" \
 #            "billTextAvailabilityChecker/assembly" \
 #            "billTextPipeline/assembly" \
-#            "votesPipeline/assembly"
+#            "votesPipeline/assembly" \
+#            "memberProfilePipeline/assembly" \
+#            "lisMappingRefresher/assembly"
 #   2. `docker compose -f docker-compose.e2e.yml build`
 #
 # Usage:
@@ -258,6 +264,81 @@ services:
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: repcheck-e2e
       VOTE_EVENTS_TOPIC: vote-events
+
+  member-profile-pipeline:
+    build:
+      context: .
+      dockerfile: member-profile-pipeline/Dockerfile
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-emulator:
+        condition: service_healthy
+      pubsub-init:
+        condition: service_completed_successfully
+      wiremock:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      # Congress.gov — baseUrl resolves `/v3/member/congress/{c}` via WireMock.
+      # The pipeline follows `member.url` from the list response (HATEOAS) to
+      # fetch detail, so `members-list-response.json`'s URLs are rewritten via
+      # `members-abridge.py` to point at `http://wiremock:8080/v3/member/{bioguide}`.
+      CONGRESS_API_BASE_URL: http://wiremock:8080/v3
+      CONGRESS_GOV_API_KEY: e2e-test-key
+      PIPELINE_CONGRESS: "119"
+      PIPELINE_PARALLELISM: "1"
+      PIPELINE_PAGE_DELAY: 10ms
+      # Pub/Sub — publishes MemberUpdatedEvent on `member-updated` topic for
+      # downstream consumers. `PUBSUB_PROJECT_ID` + `MEMBER_UPDATED_TOPIC`
+      # match the keys in application.conf.
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-e2e
+      MEMBER_UPDATED_TOPIC: member-updated
+
+  lis-mapping-refresher:
+    build:
+      context: .
+      dockerfile: lis-mapping-refresher/Dockerfile
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-emulator:
+        condition: service_healthy
+      pubsub-init:
+        condition: service_completed_successfully
+      wiremock:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      # senate.gov senator XML — served under /senate/* from WireMock. The
+      # pipeline's SenatorXmlParser expects senate.gov's /about/senator-lookup.xml
+      # schema (<senators><senator><full_name>...) — NOT the senators_cfm.xml
+      # default in application.conf, which has a different shape. Override via
+      # env var. Prod-config drift tracked separately; this keeps Tier 3 green
+      # against the actual parser expectations.
+      PIPELINE_SENATOR_XML_URL: http://wiremock:8080/senate/about/senator-lookup.xml
+      PIPELINE_CURRENT_CONGRESS: "119"
+      PIPELINE_PARALLELISM: "1"
+      # Pub/Sub — publishes `member-updated` events when lis ↔ bioguide mapping
+      # rows change. `PUBSUB_TOPIC_NAME` is the key the refresher reads
+      # (different name from member-profile-pipeline's `MEMBER_UPDATED_TOPIC`
+      # despite both landing on the same topic).
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-e2e
+      PUBSUB_TOPIC_NAME: member-updated
 
 volumes:
   alloydbdata:
