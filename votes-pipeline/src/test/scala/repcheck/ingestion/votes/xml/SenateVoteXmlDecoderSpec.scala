@@ -95,6 +95,31 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
     first.voteCast shouldBe "Nay"
   }
 
+  it should "tolerate empty <document_number>, <document_name>, and <document_title> on amendment votes (the real metadata lives in the sibling <amendment> element)" in {
+    // Mirrors the actual shape senate.gov emits for amendment votes: docType is "S.Amdt."
+    // and the identifying fields are self-closing empty.
+    val amendmentDocument =
+      """<document>
+        |  <document_congress>119</document_congress>
+        |  <document_type>S.Amdt.</document_type>
+        |  <document_number/>
+        |  <document_name/>
+        |  <document_title/>
+        |  <document_short_title/>
+        |</document>""".stripMargin
+
+    val elem = voteElem("2025-08-01T17:10:00", document = amendmentDocument)
+
+    val result = SenateVoteXmlDecoder.decodeVote(elem)
+
+    val _   = result.isRight shouldBe true
+    val dto = result.toOption.getOrElse(fail("expected Right"))
+    val _   = dto.document.documentType shouldBe "S.Amdt."
+    val _   = dto.document.documentNumber shouldBe ""
+    val _   = dto.document.documentName shouldBe ""
+    dto.document.documentTitle shouldBe ""
+  }
+
   it should "accept an ISO-8601 voteDate" in {
     val elem = voteElem("2025-04-03T14:42:00")
 
