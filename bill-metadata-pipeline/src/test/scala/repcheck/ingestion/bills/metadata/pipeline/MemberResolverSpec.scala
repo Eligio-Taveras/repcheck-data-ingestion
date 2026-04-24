@@ -220,6 +220,45 @@ class MemberResolverSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     verify(logger, times(1)).warn(any[LogContext], org.mockito.ArgumentMatchers.contains("MISSING"))
   }
 
+  it should "treat an empty sponsorshipDate as None rather than attempting to parse empty string (P6.H3)" in {
+    // Real Congress.gov data: 94-HR-13955 cosponsors have sponsorshipDate = "" (older bills lack this field).
+    // Pre-fix, .map(LocalDate.parse) blew up with "Text '' could not be parsed at index 0".
+    val repo = mock[MemberRepository]
+    when(repo.findByBioguideId("OLD01"))
+      .thenReturn(doobie.free.connection.pure(Some(makeMemberDO(10L, "OLD01"))))
+    val logger   = makeLogger()
+    val resolver = makeResolver(repo, logger)
+    val dtos = List(
+      CoSponsorDTO("OLD01", None, None, None, Some(false), None, None, Some(""), None, None)
+    )
+
+    val result = resolver.buildCosponsorDOs(dtos, logCtx).unsafeRunSync()
+    val _      = result.size shouldBe 1
+    result.headOption.flatMap(_.sponsorshipDate) shouldBe None
+  }
+
+  it should "dedupe cosponsors by bioguideId when Congress.gov returns the same bioguide twice (P6.H3)" in {
+    // Real Congress.gov data: 119-S-1383 returned 8 cosponsor entries where W000790 appeared twice.
+    // Pre-fix, the batch insert hit uq_bill_cosponsors on (bill_id, member_id).
+    val repo = mock[MemberRepository]
+    when(repo.findByBioguideId("DUP01"))
+      .thenReturn(doobie.free.connection.pure(Some(makeMemberDO(10L, "DUP01"))))
+    when(repo.findByBioguideId("OTHER"))
+      .thenReturn(doobie.free.connection.pure(Some(makeMemberDO(20L, "OTHER"))))
+    val logger   = makeLogger()
+    val resolver = makeResolver(repo, logger)
+    val dtos = List(
+      CoSponsorDTO("DUP01", None, None, None, Some(true), None, None, Some("2024-01-01"), None, None),
+      CoSponsorDTO("OTHER", None, None, None, Some(false), None, None, Some("2024-02-02"), None, None),
+      CoSponsorDTO("DUP01", None, None, None, Some(false), None, None, Some("2024-03-03"), None, None),
+    )
+
+    val result = resolver.buildCosponsorDOs(dtos, logCtx).unsafeRunSync()
+    val _      = result.size shouldBe 2
+    val _      = result.map(_.memberId).toSet shouldBe Set(10L, 20L)
+    verify(logger, times(1)).warn(any[LogContext], org.mockito.ArgumentMatchers.contains("DUP01"))
+  }
+
   it should "return empty list when all cosponsors fail lookup" in {
     val repo = mock[MemberRepository]
     when(repo.findByBioguideId(anyString()))
