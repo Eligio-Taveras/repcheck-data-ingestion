@@ -66,7 +66,7 @@ services:
   # Run Liquibase migrations before any pipeline starts. Init container — exits
   # after completion; pipelines gate on service_completed_successfully.
   db-migrations:
-    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.22
+    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.23
     entrypoint: ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "/opt/docker/lib/*", "repcheck.db.migrations.MigrationApp"]
     depends_on:
       alloydb:

@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/v3/house-vote/119/1/2/members",
+    "queryParameters": {
+      "api_key": { "equalTo": "e2e-test-key" }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "bodyFileName": "house/house-vote-119-1-2-members-speaker-election.json"
+  }
+}

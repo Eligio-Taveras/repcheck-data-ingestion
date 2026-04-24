@@ -145,18 +145,65 @@ class DockerComposeE2EStackSpec extends AnyFlatSpec with Matchers with BeforeAnd
     count should be >= 1L
   }
 
-  it should "persist exactly 5 votes (3 Senate + 2 House) from votes-pipeline" taggedAs DockerRequired in {
+  it should "persist exactly 6 votes (3 Senate + 3 House incl. Speaker election) from votes-pipeline" taggedAs DockerRequired in {
     val count = sqlLong(sql"SELECT COUNT(*) FROM votes")
-    count shouldBe 5L
+    count shouldBe 6L
   }
 
-  it should "split votes by chamber correctly (2 House / 3 Senate)" taggedAs DockerRequired in {
+  it should "split votes by chamber correctly (3 House / 3 Senate)" taggedAs DockerRequired in {
     val house  = sqlLong(sql"SELECT COUNT(*) FROM votes WHERE chamber='House'")
     val senate = sqlLong(sql"SELECT COUNT(*) FROM votes WHERE chamber='Senate'")
     // Bind the first assertion's result so the value isn't discarded (the
     // final assertion in a `in { ... }` block is returned implicitly).
-    val _ = house shouldBe 2L
+    val _ = house shouldBe 3L
     senate shouldBe 3L
+  }
+
+  it should "classify the Speaker-election vote as VoteType.Election" taggedAs DockerRequired in {
+    val voteType = sql"SELECT vote_type::text FROM votes WHERE natural_key = '119-House-1-2'"
+      .query[Option[String]]
+      .unique
+      .transact(xa)
+      .unsafeRunSync()
+    voteType shouldBe Some("Election")
+  }
+
+  it should "persist Speaker-election positions with vote_cast='Candidate' and populated vote_cast_candidate_name" taggedAs DockerRequired in {
+    val speakerVoteId = sql"SELECT id FROM votes WHERE natural_key = '119-House-1-2'"
+      .query[Long]
+      .unique
+      .transact(xa)
+      .unsafeRunSync()
+    // Every position row for the Speaker election should have voteCast = 'Candidate' and a non-NULL
+    // vote_cast_candidate_name — the DB CHECK constraint (chk_vp_candidate_name from migration 025)
+    // would have rejected any other combination.
+    val candidateCount = sqlLong(
+      sql"""SELECT COUNT(*) FROM vote_positions
+            WHERE vote_id = $speakerVoteId
+              AND position = 'Candidate'
+              AND vote_cast_candidate_name IS NOT NULL"""
+    )
+    // Fixture has 434 rows in houseRollCallVoteMemberVotes.results, but some members may have skipped
+    // (absent/not voting) — those rows' voteCast is something other than Candidate. We verify the bulk
+    // of the rows are Candidate-cast with non-null names.
+    candidateCount should be >= 400L
+  }
+
+  it should "preserve candidate names including district disambiguators (e.g. 'Johnson (LA)')" taggedAs DockerRequired in {
+    val distinctNames = sql"""SELECT DISTINCT vote_cast_candidate_name FROM vote_positions vp
+                              JOIN votes v ON v.id = vp.vote_id
+                              WHERE v.natural_key = '119-House-1-2'
+                                AND vp.vote_cast_candidate_name IS NOT NULL"""
+      .query[String]
+      .to[List]
+      .transact(xa)
+      .unsafeRunSync()
+      .toSet
+    // The recorded fixture for this vote has exactly three candidate names — Hakeem Jeffries,
+    // Tom Emmer, and Mike Johnson (disambiguated as "Johnson (LA)" because multiple members share the
+    // surname). Preserving the parenthesized form through TEXT storage is a regression guard against
+    // any future normalization that might accidentally strip them.
+    distinctNames should contain allOf ("Emmer", "Jeffries", "Johnson (LA)")
   }
 
   it should "leave PN373 Senate vote with NULL bill_id (procedural, not bill-linked)" taggedAs DockerRequired in {
@@ -170,8 +217,9 @@ class DockerComposeE2EStackSpec extends AnyFlatSpec with Matchers with BeforeAnd
 
   it should "persist vote_positions for every vote" taggedAs DockerRequired in {
     val count = sqlLong(sql"SELECT COUNT(*) FROM vote_positions")
-    // 3 Senate * 100 senators + 2 House * ~430 reps = ~1160
-    count should be >= 500L
+    // 3 Senate * 100 senators + 3 House * ~430 reps = ~1590. Speaker election adds ~434 rows (all with
+    // voteCast = 'Candidate' and a populated candidate name — see the Election classifier test).
+    count should be >= 900L
   }
 
   it should "upsert lis_members via LisResolver (ON CONFLICT dedup)" taggedAs DockerRequired in {
@@ -185,9 +233,10 @@ class DockerComposeE2EStackSpec extends AnyFlatSpec with Matchers with BeforeAnd
     count should be >= 3L
   }
 
-  it should "publish VoteRecordedEvents to vote-events topic (5 messages on vote-recorded-sub)" taggedAs DockerRequired in {
+  it should "publish VoteRecordedEvents to vote-events topic (6 messages on vote-recorded-sub)" taggedAs DockerRequired in {
     val count = pubsubPullCount("vote-recorded-sub")
-    count should be >= 5
+    // One event per vote: 3 Senate + 3 House (the Speaker election publishes too even though billId is None).
+    count should be >= 6
   }
 
   it should "publish BillTextIngestedEvents on bill-text-ingested topic" taggedAs DockerRequired in {

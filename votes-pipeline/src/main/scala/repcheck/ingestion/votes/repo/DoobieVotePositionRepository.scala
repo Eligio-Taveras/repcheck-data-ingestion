@@ -27,13 +27,13 @@ class DoobieVotePositionRepository extends VotePositionRepository {
 
   /**
    * Explicit column list matching [[VotePositionDO]] constructor parameter order. Order: `id`, `vote_id`, `member_id`,
-   * `position`, `party_at_vote`, `state_at_vote`, `created_at`, `lis_member_id`. Migration 023 added `lis_member_id` at
-   * the end of the physical row via `ALTER TABLE ADD COLUMN`; the DO mirrors that ordering so Doobie's auto-derived
-   * `Read`/`Write` align positionally. `SELECT *` would still work today but would silently misalign if any future
-   * migration injects a column between existing ones — list columns explicitly.
+   * `position`, `party_at_vote`, `state_at_vote`, `created_at`, `lis_member_id`, `vote_cast_candidate_name`. Migrations
+   * 023 + 025 each added a column at the end of the physical row via `ALTER TABLE ADD COLUMN`; the DO mirrors that
+   * ordering so Doobie's auto-derived `Read`/`Write` align positionally. `SELECT *` would still work today but would
+   * silently misalign if any future migration injects a column between existing ones — list columns explicitly.
    */
   private val positionColumns: Fragment =
-    fr"id, vote_id, member_id, position, party_at_vote, state_at_vote, created_at, lis_member_id"
+    fr"id, vote_id, member_id, position, party_at_vote, state_at_vote, created_at, lis_member_id, vote_cast_candidate_name"
 
   override def findByVoteId(voteId: Long): ConnectionIO[List[VotePositionDO]] = {
     val table = Fragment.const(Tables.VotePositions)
@@ -119,11 +119,14 @@ class DoobieVotePositionRepository extends VotePositionRepository {
       connection.unit
     } else {
       val insertSql = s"""INSERT INTO ${Tables.VotePositions}
-        (vote_id, member_id, position, party_at_vote, state_at_vote, lis_member_id)
-        VALUES (?, ?, ?, ?, ?, ?)"""
-      type Row = (Long, Option[Long], Option[VoteCast], Option[Party], Option[UsState], Option[Long])
+        (vote_id, member_id, position, party_at_vote, state_at_vote, lis_member_id, vote_cast_candidate_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?)"""
+      type Row =
+        (Long, Option[Long], Option[VoteCast], Option[Party], Option[UsState], Option[Long], Option[String])
       val rows: List[Row] =
-        positions.map(p => (voteId, p.memberId, p.position, p.partyAtVote, p.stateAtVote, p.lisMemberId))
+        positions.map(p =>
+          (voteId, p.memberId, p.position, p.partyAtVote, p.stateAtVote, p.lisMemberId, p.voteCastCandidateName)
+        )
       Update[Row](insertSql).updateMany(rows).void
     }
 
@@ -159,11 +162,11 @@ class DoobieVotePositionRepository extends VotePositionRepository {
   private[repo] def upsertHouse(p: VotePositionDO): ConnectionIO[Unit] = {
     val table = Fragment.const(Tables.VotePositions)
     (fr"INSERT INTO" ++ table ++
-      fr"(vote_id, member_id, lis_member_id, position, party_at_vote, state_at_vote)" ++
+      fr"(vote_id, member_id, lis_member_id, position, party_at_vote, state_at_vote, vote_cast_candidate_name)" ++
       fr"VALUES (${p.voteId}, ${p.memberId}, ${Option
-          .empty[Long]}, ${p.position}, ${p.partyAtVote}, ${p.stateAtVote})" ++
+          .empty[Long]}, ${p.position}, ${p.partyAtVote}, ${p.stateAtVote}, ${p.voteCastCandidateName})" ++
       fr"ON CONFLICT (vote_id, member_id) WHERE member_id IS NOT NULL" ++
-      fr"DO UPDATE SET position = EXCLUDED.position, party_at_vote = EXCLUDED.party_at_vote, state_at_vote = EXCLUDED.state_at_vote").update.run.void
+      fr"DO UPDATE SET position = EXCLUDED.position, party_at_vote = EXCLUDED.party_at_vote, state_at_vote = EXCLUDED.state_at_vote, vote_cast_candidate_name = EXCLUDED.vote_cast_candidate_name").update.run.void
   }
 
   /**
@@ -178,17 +181,17 @@ class DoobieVotePositionRepository extends VotePositionRepository {
   private[repo] def upsertSenate(p: VotePositionDO): ConnectionIO[Unit] = {
     val table = Fragment.const(Tables.VotePositions)
     (fr"INSERT INTO" ++ table ++
-      fr"(vote_id, member_id, lis_member_id, position, party_at_vote, state_at_vote)" ++
+      fr"(vote_id, member_id, lis_member_id, position, party_at_vote, state_at_vote, vote_cast_candidate_name)" ++
       fr"VALUES (${p.voteId}, ${Option
-          .empty[Long]}, ${p.lisMemberId}, ${p.position}, ${p.partyAtVote}, ${p.stateAtVote})" ++
+          .empty[Long]}, ${p.lisMemberId}, ${p.position}, ${p.partyAtVote}, ${p.stateAtVote}, ${p.voteCastCandidateName})" ++
       fr"ON CONFLICT (vote_id, lis_member_id) WHERE lis_member_id IS NOT NULL" ++
-      fr"DO UPDATE SET position = EXCLUDED.position, party_at_vote = EXCLUDED.party_at_vote, state_at_vote = EXCLUDED.state_at_vote").update.run.void
+      fr"DO UPDATE SET position = EXCLUDED.position, party_at_vote = EXCLUDED.party_at_vote, state_at_vote = EXCLUDED.state_at_vote, vote_cast_candidate_name = EXCLUDED.vote_cast_candidate_name").update.run.void
   }
 
   override def findByMemberAndBill(memberId: Long, billId: Long): ConnectionIO[List[VotePositionDO]] = {
     val positionsTable = Fragment.const(Tables.VotePositions)
     val votesTable     = Fragment.const(Tables.Votes)
-    (fr"SELECT vp.id, vp.vote_id, vp.member_id, vp.position, vp.party_at_vote, vp.state_at_vote, vp.created_at, vp.lis_member_id" ++
+    (fr"SELECT vp.id, vp.vote_id, vp.member_id, vp.position, vp.party_at_vote, vp.state_at_vote, vp.created_at, vp.lis_member_id, vp.vote_cast_candidate_name" ++
       fr"FROM" ++ positionsTable ++ fr"vp" ++
       fr"JOIN" ++ votesTable ++ fr"v ON v.id = vp.vote_id" ++
       fr"WHERE vp.member_id = $memberId AND v.bill_id = $billId")
