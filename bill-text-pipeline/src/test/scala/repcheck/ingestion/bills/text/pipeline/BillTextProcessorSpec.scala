@@ -15,7 +15,12 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.bills.common.persistence.{BillRepository, BillTextVersionRepository}
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, EmbeddingGenerationFailed, EmbeddingService}
+import repcheck.ingestion.bills.text.embedding.{
+  EmbeddingConfig,
+  EmbeddingContextLengthExceeded,
+  EmbeddingGenerationFailed,
+  EmbeddingService,
+}
 import repcheck.ingestion.bills.text.errors.{BillTextProcessingFailed, TextDownloadFailed}
 import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
 import repcheck.ingestion.common.events.IngestionEventPublisher
@@ -411,6 +416,27 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = result.isFailed shouldBe true
     result match {
       case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
+  }
+
+  it should "classify EmbeddingContextLengthExceeded as Systemic" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure("some content"))
+    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
+      .thenReturn(
+        IO.raiseError(
+          EmbeddingContextLengthExceeded("input length exceeds context length", 30000)
+        )
+      )
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Systemic"
       case other                                     => fail(s"Expected Failed but got $other")
     }
   }

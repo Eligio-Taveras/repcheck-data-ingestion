@@ -7,7 +7,7 @@ import io.circe.{Decoder, Encoder, Json}
 
 import org.http4s.circe.{jsonEncoderOf, jsonOf}
 import org.http4s.client.Client
-import org.http4s.{EntityDecoder, EntityEncoder, Method, Request, Uri}
+import org.http4s.{EntityDecoder, EntityEncoder, Method, Request, Response, Uri}
 
 import repcheck.ingestion.common.logging.PipelineLogger
 
@@ -92,6 +92,10 @@ class OllamaEmbeddingService[F[_]: Async] private[text] (
           val withResult: Map[Int, Array[Float]] =
             nonEmpty.zip(embeddings).map { case ((_, originalIdx), emb) => originalIdx -> emb }.toMap
           Async[F].pure(texts.indices.toList.map(i => withResult.get(i)))
+        // EmbeddingContextLengthExceeded is NOT swallowed: retrying the same oversized input always fails the same
+        // way, so propagate it so the pipeline can mark the bill Failed-Systemic. See
+        // BillTextProcessor.classifyError for the routing.
+        case Left(error: EmbeddingContextLengthExceeded) => Async[F].raiseError(error)
         case Left(error) =>
           logger
             .warn(
@@ -111,12 +115,28 @@ class OllamaEmbeddingService[F[_]: Async] private[text] (
       uri <- parseUri(s"${config.baseUrl}/api/embed")
       request = Request[F](method = Method.POST, uri = uri)
         .withEntity(EmbedRequest(config.modelName, texts, config.dimensions))
-      response   <- client.expect[EmbedResponse](request)
+      response   <- client.expectOr[EmbedResponse](request)(classifyOllamaError(texts))
       embeddings <- extractEmbeddings(response, texts)
       _          <- embeddings.traverse_(emb => validateDimension(emb, totalCharsOf(texts)))
     } yield embeddings
 
   private def totalCharsOf(texts: List[String]): Int = texts.iterator.map(_.length).sum
+
+  /**
+   * Classify a non-2xx Ollama response into a typed exception. HTTP 400 with a body containing "context length" is
+   * routed to [[EmbeddingContextLengthExceeded]] so the pipeline can mark Failed-Systemic and skip retry; everything
+   * else is the generic [[EmbeddingGenerationFailed]] (caught and degraded to None at the batch level).
+   */
+  private def classifyOllamaError(texts: List[String])(response: Response[F]): F[Throwable] =
+    response.bodyText.compile.string.map { body =>
+      val totalChars     = totalCharsOf(texts)
+      val isContextError = response.status.code === 400 && body.toLowerCase.contains("context length")
+      if (isContextError) {
+        EmbeddingContextLengthExceeded(body.trim, totalChars)
+      } else {
+        EmbeddingGenerationFailed(s"HTTP ${response.status.code.toString}: ${body.trim}", totalChars)
+      }
+    }
 
   private def parseUri(raw: String): F[Uri] =
     Async[F].fromEither(
