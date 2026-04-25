@@ -92,13 +92,34 @@ class BillTextDownloader[F[_]: Async](
 
   private[download] def extractText(content: String, textFormat: String): F[String] =
     Async[F].delay {
-      textFormat match {
+      val raw = textFormat match {
         case "Formatted Text" => extractHtmlText(content)
         case "Formatted XML"  => extractXmlText(content)
         case "PDF"            => content
         case _                => content
       }
+      normalizeWhitespace(raw)
     }
+
+  /**
+   * Collapse runs of whitespace (spaces, tabs, newlines, indentation) to single spaces and trim leading/trailing
+   * whitespace.
+   *
+   * Bills downloaded as "Formatted Text" arrive as a `<pre>` block whose contents preserve the original document
+   * formatting — table alignment, indentation hierarchy, page-break runs of blank lines. That formatting is dead tokens
+   * for the embedding model: it consumes context window without contributing semantic content. For prose-heavy
+   * documents like Public Laws, normalizing whitespace shrinks the input ~10-22% (measured on PLAW-119publ60.htm: 4.6M
+   * raw chars → 3.6M after Jsoup `.text()` + this normalization step).
+   *
+   * Trade-off: the stored `raw_bill_text.content` rows lose the original whitespace formatting. For embedding +
+   * semantic search this is the right trade because the formatting carries no semantic weight; for high-fidelity
+   * display, downstream consumers can refetch from `bill_text_versions.url` if needed.
+   *
+   * Already applied implicitly by `extractXmlText` for "Formatted XML"; this method makes the pass uniform across all
+   * formats.
+   */
+  private[download] def normalizeWhitespace(text: String): String =
+    text.replaceAll("\\s+", " ").trim
 
   /**
    * Extract bill text from Congress.gov "Formatted Text" HTML.

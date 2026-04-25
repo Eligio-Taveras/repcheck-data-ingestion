@@ -233,7 +233,7 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
 
   // --- Pass-through formats ---
 
-  it should "pass through PDF format without modification" in {
+  it should "pass through PDF format (whitespace normalization is a no-op for whitespace-free input)" in {
     val rawContent = "raw pdf bytes"
     wireMock.stubFor(
       get(urlPathEqualTo("/text"))
@@ -244,7 +244,7 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     result shouldBe rawContent
   }
 
-  it should "pass through unknown format without modification" in {
+  it should "pass through unknown format (whitespace normalization is a no-op for whitespace-free input)" in {
     val rawContent = "Just some raw text content."
     wireMock.stubFor(
       get(urlPathEqualTo("/text"))
@@ -285,6 +285,63 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     val xml    = "<root><data>Fallback</data></root>"
     val result = downloader.extractXmlText(xml)
     result should include("Fallback")
+  }
+
+  "normalizeWhitespace" should "collapse runs of spaces to a single space" in {
+    val result = downloader.normalizeWhitespace("Section    1.    Title")
+    result shouldBe "Section 1. Title"
+  }
+
+  it should "collapse runs of newlines to a single space" in {
+    val result = downloader.normalizeWhitespace("Section 1.\n\n\n\nTitle")
+    result shouldBe "Section 1. Title"
+  }
+
+  it should "collapse runs of mixed tabs/newlines/spaces to a single space" in {
+    val result = downloader.normalizeWhitespace("Section\t\n  1.\r\n\t Title")
+    result shouldBe "Section 1. Title"
+  }
+
+  it should "trim leading and trailing whitespace" in {
+    val result = downloader.normalizeWhitespace("  \n\t  Section 1. Title \n  ")
+    result shouldBe "Section 1. Title"
+  }
+
+  it should "leave single spaces between words untouched" in {
+    val text   = "Section 1. The bill text."
+    val result = downloader.normalizeWhitespace(text)
+    result shouldBe text
+  }
+
+  it should "return an empty string for whitespace-only input" in {
+    val result = downloader.normalizeWhitespace("   \n\t  \r\n   ")
+    result shouldBe ""
+  }
+
+  it should "return an empty string for empty input" in {
+    val result = downloader.normalizeWhitespace("")
+    result shouldBe ""
+  }
+
+  "extractText" should "apply normalizeWhitespace to Formatted Text output" in {
+    // Pre-tag with embedded whitespace runs (typical PLAW formatting)
+    val html =
+      """<html><body><pre>
+        |[[Page 717]]
+        |
+        |
+        |       SECTION 1.    TITLE.
+        |   This is the bill text.</pre></body></html>""".stripMargin
+    val result = downloader.extractText(html, "Formatted Text").unsafeRunSync()
+    val _      = result should not include "  "
+    val _      = result should not include "\n"
+    result should include("SECTION 1. TITLE.")
+  }
+
+  it should "apply normalizeWhitespace to unknown formats" in {
+    val raw    = "leading\n\n\n   text\twith   runs"
+    val result = downloader.extractText(raw, "UnknownFormat").unsafeRunSync()
+    result shouldBe "leading text with runs"
   }
 
 }
