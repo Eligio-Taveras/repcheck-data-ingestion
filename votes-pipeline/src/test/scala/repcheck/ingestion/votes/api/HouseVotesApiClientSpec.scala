@@ -18,7 +18,7 @@ import com.github.tomakehurst.wiremock.stubbing.Scenario
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
-import repcheck.ingestion.common.api.{CongressGovClientConfig, FetchParams, HttpClientConfig}
+import repcheck.ingestion.common.api.{CongressGovClientConfig, HttpClientConfig}
 import repcheck.ingestion.votes.config.HouseVotesConfig
 import repcheck.ingestion.votes.errors.{HouseVoteApiErrorClassifier, HouseVoteApiHttpError, HouseVoteFetchFailed}
 import repcheck.pipeline.models.errors.{ErrorClass, RetryConfig, RetryWrapper}
@@ -29,6 +29,11 @@ import repcheck.shared.models.congress.dto.vote.VoteListItemDTO
  * WireMock integration for the happy-path and retry branches. See acceptance-criteria §6.1 rows 1-14 for the full
  * matrix; most rows are covered end-to-end via WireMock while the two that are genuinely unit-level (AC#5: api_key
  * present on every request; AC#13: error context contains all three identifiers) ride alongside.
+ *
+ * Per P6.H5, the (congress, session) tuple is no longer pinned at construction — every list call to
+ * `fetchRecentVotes(congress, session)` carries the pair explicitly. Tests pass `(119, 1)` for determinism. The
+ * underlying `fetchPage` / `fetchAllPages` helpers are private now; pagination, page-delay pacing, and lookback
+ * filtering are all exercised by driving `fetchRecentVotes` against multi-page WireMock fixtures.
  *
  * WireMock binds to `127.0.0.1` + a dynamic port per memory on Windows to avoid firewall prompts. WireMock stubs use
  * recorded real-shape Congress.gov JSON so decoders are exercised against the actual beta-API field names.
@@ -44,7 +49,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
   // Ember client reused across cases — spins up once, shares the event loop. Per-test rate limiting is handled by
   // `pageDelay` in the test config rather than an app-level wrapper because we want to exercise the real inter-page
-  // delay branch of `fetchAll` in the pageDelay test.
+  // delay branch of `fetchAllPages` (private) via the public `fetchRecentVotes` entry point.
   private lazy val httpClient = EmberClientBuilder
     .default[IO]
     .withTimeout(5.seconds)
@@ -59,8 +64,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     retryConfig: RetryConfig =
       RetryConfig(maxRetries = 1, initialBackoffMs = 10L, maxBackoffMs = 100L, backoffMultiplier = 2.0),
     pageDelay: FiniteDuration = Duration.Zero,
-    houseConfig: HouseVotesConfig =
-      HouseVotesConfig(congress = 119, session = 1, parallelism = 1, pageDelay = 0.millis, lookbackDays = 7),
+    houseConfig: HouseVotesConfig = HouseVotesConfig(parallelism = 1, pageDelay = 0.millis, lookbackDays = 0),
     pageSize: Int = 250,
   ): HouseVotesApiClient[IO] = {
     val config = CongressGovClientConfig(
@@ -173,10 +177,10 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   )
 
   // -----------------------------------------------------------------------------------------------------------------
-  // fetchPage — AC#1 (decoded list items), AC#5 (api_key on every request)
+  // fetchRecentVotes (single-page) — AC#1 (decoded list items), AC#5 (api_key on every request)
   // -----------------------------------------------------------------------------------------------------------------
 
-  "fetchPage" should "decode the houseRollCallVotes envelope into VoteListItemDTO instances" in {
+  "fetchRecentVotes" should "decode the houseRollCallVotes envelope into VoteListItemDTO instances" in {
     val singleVote = voteJson(rollCall = 17)
     wireMock.stubFor(
       get(urlPathEqualTo("/v3/house-vote/119/1"))
@@ -189,18 +193,16 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client = makeClient()
-    val page   = client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
+    val items  = client.fetchRecentVotes(119, 1).unsafeRunSync()
 
-    val _    = page.items.size shouldBe 1
-    val item = page.items.headOption.getOrElse(fail("expected one vote in the decoded page"))
+    val _    = items.size shouldBe 1
+    val item = items.headOption.getOrElse(fail("expected one vote in the decoded list"))
     val _    = item.congress shouldBe 119
     val _    = item.rollCallNumber shouldBe 17
     val _    = item.chamber shouldBe "House"
     val _    = item.voteType shouldBe Some("Yea-and-Nay")
     val _    = item.identifier shouldBe Some((1191000000 + 17).toString)
-    val _    = item.sourceDataUrl.exists(_.contains("roll017.xml")) shouldBe true
-    val _    = page.totalCount shouldBe 1
-    page.nextOffset shouldBe None
+    item.sourceDataUrl.exists(_.contains("roll017.xml")) shouldBe true
   }
 
   it should "include api_key as a query parameter on every request" in {
@@ -215,7 +217,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client = makeClient()
-    val _      = client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
+    val _      = client.fetchRecentVotes(119, 1).unsafeRunSync()
     // URL shape confirmed against the Congress.gov OpenAPI spec: `/house-vote/{congress}/{session}` at
     // congress-gov-api.yaml lines 1061-1084. Allowed query params are `format` / `offset` / `limit`; we add `api_key`
     // as the global auth param. Nothing else is emitted.
@@ -229,8 +231,10 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   }
 
   it should "NOT include fromDateTime, toDateTime, or sort query params on /house-vote" in {
-    // AC: the beta endpoint rejects those params with HTTP 400; the client must never emit them even though
-    // `FetchParams` carries slots for them.
+    // AC: the beta endpoint rejects those params with HTTP 400; the client must never emit them. The previous spec
+    // exercised this by passing FetchParams with explicit fromDateTime/toDateTime — those slots are now hidden behind
+    // the private fetchPage/fetchAllPages helpers and the public fetchRecentVotes entry never accepts them, so the
+    // test reduces to "no such params ever appear on the wire". A single fetchRecentVotes call is enough.
     wireMock.stubFor(
       get(urlPathEqualTo("/v3/house-vote/119/1"))
         .willReturn(
@@ -242,15 +246,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client = makeClient()
-    val _ = client
-      .fetchPage(
-        FetchParams(
-          fromDateTime = Some(Instant.parse("2025-01-01T00:00:00Z")),
-          toDateTime = Some(Instant.parse("2025-06-01T00:00:00Z")),
-          pageSize = 250,
-        )
-      )
-      .unsafeRunSync()
+    val _      = client.fetchRecentVotes(119, 1).unsafeRunSync()
 
     wireMock.verify(
       getRequestedFor(urlPathEqualTo("/v3/house-vote/119/1"))
@@ -261,10 +257,10 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   }
 
   // -----------------------------------------------------------------------------------------------------------------
-  // fetchAll (pagination) — AC#2 (stops when items < pageSize)
+  // Pagination — AC#2 (stops when items < pageSize). Driven via fetchRecentVotes which walks pages internally.
   // -----------------------------------------------------------------------------------------------------------------
 
-  "fetchAll" should "collect 550 items across 3 pages (250+250+50) and stop when items < pageSize" in {
+  it should "collect 550 items across 3 pages (250+250+50) and stop when items < pageSize" in {
     val page1 = (1 to 250).map(i => voteJson(rollCall = i)).toList
     val page2 = (251 to 500).map(i => voteJson(rollCall = i)).toList
     val page3 = (501 to 550).map(i => voteJson(rollCall = i)).toList
@@ -302,12 +298,12 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         )
     )
 
-    // Use a large lookbackDays=0 (disabled) so the test doesn't exercise the filter branch.
+    // Use a lookbackDays=0 (disabled) so the test doesn't exercise the filter branch.
     val client = makeClient(
       pageSize = 250,
-      houseConfig = HouseVotesConfig(119, 1, parallelism = 1, pageDelay = 0.millis, lookbackDays = 0),
+      houseConfig = HouseVotesConfig(parallelism = 1, pageDelay = 0.millis, lookbackDays = 0),
     )
-    val items = client.fetchAll(FetchParams(pageSize = 250)).compile.toList.unsafeRunSync()
+    val items = client.fetchRecentVotes(119, 1).unsafeRunSync()
     val _     = items.size shouldBe 550
     wireMock.verify(3, getRequestedFor(urlPathEqualTo("/v3/house-vote/119/1")))
   }
@@ -389,11 +385,12 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   // AC#6 reframed — client-side lookback filtering
   // -----------------------------------------------------------------------------------------------------------------
 
-  "fetchRecentVotes" should "fetch all pages then filter client-side by lookback window" in {
-    // Page 1 (5 items, size == pageSize so fetchAll keeps paginating) all within 7-day lookback. Page 2 (3 items, size
-    // < pageSize so fetchAll stops) all outside the window. After client-side filter we expect just the 5 from page 1,
-    // and WireMock records exactly 2 successful list requests — pagination drives past page 1 because API ordering is
-    // undefined and the client doesn't short-circuit, but terminates on page 2 naturally because items.size < pageSize.
+  "fetchRecentVotes lookback" should "fetch all pages then filter client-side by lookback window" in {
+    // Page 1 (5 items, size == pageSize so fetchAllPages keeps paginating) all within 7-day lookback. Page 2 (3 items,
+    // size < pageSize so fetchAllPages stops) all outside the window. After client-side filter we expect just the 5
+    // from page 1, and WireMock records exactly 2 successful list requests — pagination drives past page 1 because
+    // API ordering is undefined and the client doesn't short-circuit, but terminates on page 2 naturally because
+    // items.size < pageSize.
     val today   = Instant.now().atOffset(java.time.ZoneOffset.ofHours(-4))
     val sixDays = today.minusDays(6).toString
     val tenDays = today.minusDays(10).toString
@@ -423,10 +420,10 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient(
       pageSize = 5,
-      houseConfig = HouseVotesConfig(119, 1, parallelism = 1, pageDelay = 0.millis, lookbackDays = 7),
+      houseConfig = HouseVotesConfig(parallelism = 1, pageDelay = 0.millis, lookbackDays = 7),
     )
 
-    val filtered = client.fetchRecentVotes.unsafeRunSync()
+    val filtered = client.fetchRecentVotes(119, 1).unsafeRunSync()
     val _        = filtered.size shouldBe 5
     val _        = filtered.forall(_.rollCallNumber <= 5) shouldBe true
     // Two list requests — exactly enough to drain the session's vote list. We do NOT short-circuit after one page,
@@ -459,8 +456,8 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client = makeClient()
-    val page   = client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
-    page.items shouldBe empty
+    val items  = client.fetchRecentVotes(119, 1).unsafeRunSync()
+    items shouldBe empty
   }
 
   it should "retry on HTTP 500 and succeed on the second attempt" in {
@@ -484,8 +481,8 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client = makeClient()
-    val page   = client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
-    page.items shouldBe empty
+    val items  = client.fetchRecentVotes(119, 1).unsafeRunSync()
+    items shouldBe empty
   }
 
   it should "NOT retry on HTTP 401 (Systemic) and raise HouseVoteFetchFailed immediately" in {
@@ -496,7 +493,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient()
     val ex = intercept[HouseVoteFetchFailed] {
-      client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
+      client.fetchRecentVotes(119, 1).unsafeRunSync()
     }
     val _ = ex.getMessage should include("congress=119")
     val _ = ex.getMessage should include("session=1")
@@ -511,7 +508,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient()
     val _ = intercept[HouseVoteFetchFailed] {
-      client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
+      client.fetchRecentVotes(119, 1).unsafeRunSync()
     }
     wireMock.verify(1, getRequestedFor(urlPathEqualTo("/v3/house-vote/119/1")))
   }
@@ -524,7 +521,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient()
     val _ = intercept[HouseVoteFetchFailed] {
-      client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
+      client.fetchRecentVotes(119, 1).unsafeRunSync()
     }
     wireMock.verify(1, getRequestedFor(urlPathEqualTo("/v3/house-vote/119/1")))
   }
@@ -590,9 +587,15 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         )
     )
 
-    val client    = makeClient(pageSize = 5, pageDelay = 100.millis)
+    // pageDelay applies between pages internally during fetchAllPages. Use lookbackDays=0 so the filter doesn't drop
+    // any vote and pagination drives all 3 pages.
+    val client = makeClient(
+      pageSize = 5,
+      pageDelay = 100.millis,
+      houseConfig = HouseVotesConfig(parallelism = 1, pageDelay = 0.millis, lookbackDays = 0),
+    )
     val startedAt = System.nanoTime()
-    val _         = client.fetchAll(FetchParams(pageSize = 5)).compile.toList.unsafeRunSync()
+    val _         = client.fetchRecentVotes(119, 1).unsafeRunSync()
     val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
     // 3 pages → 2 inter-page delays of ≥ 100ms → ≥ 200ms total elapsed in the delay dimension. We allow a small margin
     // to avoid flakes from clock resolution on CI hosts but enforce the contract.
@@ -619,7 +622,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
       retryConfig = RetryConfig(maxRetries = 0, initialBackoffMs = 1L, maxBackoffMs = 10L, backoffMultiplier = 1.0)
     )
     val _ = intercept[Exception] {
-      client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
+      client.fetchRecentVotes(119, 1).unsafeRunSync()
     }
   }
 
@@ -669,9 +672,8 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client = makeClient()
-    val page   = client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
-    val _      = page.items shouldBe empty
-    page.totalCount shouldBe 0
+    val items  = client.fetchRecentVotes(119, 1).unsafeRunSync()
+    items shouldBe empty
   }
 
   it should "decode a members envelope with an empty results list" in {
@@ -793,10 +795,10 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
       retry = RetryConfig(maxRetries = 0, initialBackoffMs = 1L, maxBackoffMs = 10L, backoffMultiplier = 1.0),
       http = HttpClientConfig(),
     )
-    val client = HouseVotesApiClient[IO](badConfig, HouseVotesConfig(119, 1), httpClient, retryWrapper)
+    val client = HouseVotesApiClient[IO](badConfig, HouseVotesConfig(), httpClient, retryWrapper)
 
     val ex = intercept[HouseVoteFetchFailed] {
-      client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
+      client.fetchRecentVotes(119, 1).unsafeRunSync()
     }
     val _ = ex.voteNumber shouldBe None
     val _ = ex.congress shouldBe 119
@@ -812,7 +814,7 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
       retry = RetryConfig(maxRetries = 0, initialBackoffMs = 1L, maxBackoffMs = 10L, backoffMultiplier = 1.0),
       http = HttpClientConfig(),
     )
-    val client = HouseVotesApiClient[IO](badConfig, HouseVotesConfig(119, 1), httpClient, retryWrapper)
+    val client = HouseVotesApiClient[IO](badConfig, HouseVotesConfig(), httpClient, retryWrapper)
 
     val ex = intercept[HouseVoteFetchFailed] {
       client.fetchMembersVotePositions(119, 1, 42).unsafeRunSync()
@@ -848,8 +850,8 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client = makeClient()
-    val page   = client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
-    page.items.headOption.flatMap(_.identifier) shouldBe Some("abc-not-an-int")
+    val items  = client.fetchRecentVotes(119, 1).unsafeRunSync()
+    items.headOption.flatMap(_.identifier) shouldBe Some("abc-not-an-int")
   }
 
   it should "accept a payload with no identifier field at all" in {
@@ -873,8 +875,8 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client = makeClient()
-    val page   = client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
-    page.items.headOption.flatMap(_.identifier) shouldBe None
+    val items  = client.fetchRecentVotes(119, 1).unsafeRunSync()
+    items.headOption.flatMap(_.identifier) shouldBe None
   }
 
   it should "accept the legacy sourceDataUrl (lowercase l) field if the API changes casing" in {
@@ -901,8 +903,8 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     )
 
     val client = makeClient()
-    val page   = client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
-    page.items.headOption.flatMap(_.sourceDataUrl) shouldBe Some("https://clerk.house.gov/evs/2025/roll001.xml")
+    val items  = client.fetchRecentVotes(119, 1).unsafeRunSync()
+    items.headOption.flatMap(_.sourceDataUrl) shouldBe Some("https://clerk.house.gov/evs/2025/roll001.xml")
   }
 
   private def sampleListItem(rollCall: Int, updateDate: Option[String]): VoteListItemDTO =

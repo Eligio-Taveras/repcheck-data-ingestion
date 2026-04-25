@@ -44,8 +44,9 @@ class VotesPipelineResourcesSpec extends AnyFlatSpec with Matchers with MockitoS
         retry = RetryConfig(),
       ),
       pipeline = VotesPipelineConfig(
-        house = HouseVotesConfig(congress = 118, session = 1, parallelism = 1, pageDelay = 1.millis, lookbackDays = 0),
+        house = HouseVotesConfig(parallelism = 1, pageDelay = 1.millis, lookbackDays = 0),
         senate = SenateVoteXmlConfig(),
+        congresses = List(118),
       ),
       eventPublisher =
         EventPublisherConfig(projectId = "repcheck-test", topicName = "vote-events", source = "votes-pipeline"),

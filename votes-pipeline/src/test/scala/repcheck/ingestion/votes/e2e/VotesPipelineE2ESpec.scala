@@ -164,8 +164,6 @@ class VotesPipelineE2ESpec
       ),
       pipeline = VotesPipelineConfig(
         house = HouseVotesConfig(
-          congress = testCongress,
-          session = testSession,
           parallelism = 1,
           pageDelay = 1.millis,
           lookbackDays = 0, // 0 disables the client-side lookback filter — accept every recorded fixture
@@ -176,6 +174,7 @@ class VotesPipelineE2ESpec
           requestDelay = 1.millis,
           retry = RetryConfig(maxRetries = 0, initialBackoffMs = 1L, maxBackoffMs = 5L, backoffMultiplier = 1.0),
         ),
+        congresses = List(testCongress),
       ),
       eventPublisher = EventPublisherConfig(
         projectId = emulatorProjectId,
@@ -217,7 +216,8 @@ class VotesPipelineE2ESpec
         loggerFactory = IO.pure(capturing),
         resourceBuilder = (_: VotesPipeline.AppConfig) => buildResources(),
         processorFactory = VotesProcessorFactory.build[IO],
-        streamFactory = (p, rid) => p.streamAll(rid),
+        congressesResolver = (_, _, _) => IO.pure(List(testCongress)),
+        streamFactory = (p, rid, congresses) => p.streamAll(rid, congresses),
       )
       .unsafeRunSync()
     (exitCode, capturing.lines)

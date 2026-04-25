@@ -63,8 +63,9 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         retry = RetryConfig(),
       ),
       pipeline = VotesPipelineConfig(
-        house = HouseVotesConfig(congress = 118, session = 1, parallelism = 1, pageDelay = 1.millis, lookbackDays = 0),
+        house = HouseVotesConfig(parallelism = 1, pageDelay = 1.millis, lookbackDays = 0),
         senate = SenateVoteXmlConfig(),
+        congresses = List(118),
       ),
       eventPublisher =
         EventPublisherConfig(projectId = "repcheck-test", topicName = "vote-events", source = "votes-pipeline"),
@@ -104,7 +105,7 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   // Ordering + wiring
   // =====================================================================================
 
-  "runWithFactories" should "invoke each factory exactly once in config → logger → resources → processor → stream order" in {
+  "runWithFactories" should "invoke each factory exactly once in config → logger → resources → congressesResolver → processor → stream order" in {
     val trace     = new Trace
     val config    = makeAppConfig()
     val resources = makeResources()
@@ -120,7 +121,8 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         resourceBuilder =
           (_: VotesPipeline.AppConfig) => Resource.eval(IO { trace.record("resourceBuilder"); resources }),
         processorFactory = (_, _, _) => { trace.record("processorFactory"); processor },
-        streamFactory = (_, _) => { trace.record("streamFactory"); stream },
+        congressesResolver = (_, _, _) => IO { trace.record("congressesResolver"); List(118) },
+        streamFactory = (_, _, _) => { trace.record("streamFactory"); stream },
       )
       .unsafeRunSync()
 
@@ -128,6 +130,7 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
       "configLoader",
       "loggerFactory",
       "resourceBuilder",
+      "congressesResolver",
       "processorFactory",
       "streamFactory",
     )
@@ -151,7 +154,8 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
           val _ = configSeenByProc.set(Some(c))
           mock[VoteProcessor[IO]]
         },
-        streamFactory = (_, _) => Stream.empty,
+        congressesResolver = (_, _, _) => IO.pure(List(118)),
+        streamFactory = (_, _, _) => Stream.empty,
       )
       .unsafeRunSync()
 
@@ -170,7 +174,8 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         resourceBuilder =
           (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipelineResources.Resources[IO]](makeResources()),
         processorFactory = (_, _, _) => mock[VoteProcessor[IO]],
-        streamFactory = (_, rid) => {
+        congressesResolver = (_, _, _) => IO.pure(List(118)),
+        streamFactory = (_, rid, _) => {
           val _ = runIdSeen.set(Some(rid))
           Stream.empty
         },
@@ -198,7 +203,8 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
           val _ = loggerSeen.set(Some(l))
           mock[VoteProcessor[IO]]
         },
-        streamFactory = (_, _) => Stream.empty,
+        congressesResolver = (_, _, _) => IO.pure(List(118)),
+        streamFactory = (_, _, _) => Stream.empty,
       )
       .unsafeRunSync()
 
@@ -223,7 +229,8 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         resourceBuilder =
           (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipelineResources.Resources[IO]](makeResources()),
         processorFactory = (_, _, _) => mock[VoteProcessor[IO]],
-        streamFactory = (_, _) => successStream,
+        congressesResolver = (_, _, _) => IO.pure(List(118)),
+        streamFactory = (_, _, _) => successStream,
       )
       .unsafeRunSync()
 
@@ -243,7 +250,8 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         resourceBuilder =
           (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipelineResources.Resources[IO]](makeResources()),
         processorFactory = (_, _, _) => mock[VoteProcessor[IO]],
-        streamFactory = (_, _) => mixedStream,
+        congressesResolver = (_, _, _) => IO.pure(List(118)),
+        streamFactory = (_, _, _) => mixedStream,
       )
       .unsafeRunSync()
 

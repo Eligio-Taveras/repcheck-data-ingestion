@@ -35,8 +35,14 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
   private val correlationId: UUID = UUID.fromString("33333333-4444-5555-6666-777777777777")
 
-  private def houseConfig(p: Int = 1)  = HouseVotesConfig(congress = 119, session = 1, parallelism = p)
+  private def houseConfig(p: Int = 1)  = HouseVotesConfig(parallelism = p)
   private def senateConfig(p: Int = 1) = SenateVoteXmlConfig(parallelism = p)
+
+  // Per P6.H5 the processor iterates over a list of congresses, fanning out to (congress, session) pairs internally.
+  // Tests pass a single-element list `List(119)` so the per-vote behaviour exercised here is identical to the prior
+  // single-(congress, session) regime; sessions {1, 2} are always covered, but stubbed clients return empty for
+  // session 2 in tests that don't care, keeping behaviour deterministic.
+  private val testCongresses: List[Int] = List(119)
 
   private def voteDO(
     voteId: Long = 0L,
@@ -116,8 +122,6 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       findStoredVote = findStoredVote,
       houseConfig = houseConfig(),
       senateConfig = senateConfig(),
-      congress = 119,
-      session = 1,
       logger = mkLogger,
     )
 
@@ -260,32 +264,37 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
   "streamAll" should "emit house-chamber Failed when fetchRecentVotes raises; senate stream still runs" in {
     val mocks = mkMocks()
-    when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.raiseError(new RuntimeException("house 401")))
-    when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1)))
+    // fetchRecentVotes(congress, session) — raises for any (congress, session). The processor iterates both sessions
+    // {1, 2} so we expect one house-chamber-<c>-<s> failure per session that errored.
+    when(mocks.houseClient.fetchRecentVotes(eqTo(119), any[Int]))
+      .thenReturn(IO.raiseError(new RuntimeException("house 401")))
+    when(mocks.senateClient.fetchVoteIndex(eqTo(119), any[Int]))
       .thenReturn(IO.pure(List.empty[SenateVoteIndexEntry]))
 
-    val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
+    val results = mocks.build.streamAll("run-1", testCongresses).compile.toList.unsafeRunSync()
 
     val houseFailures = results.collect {
-      case f @ ProcessingResult.Failed(id, _, _) if id == "house-chamber" => f
+      case f @ ProcessingResult.Failed(id, _, _) if id.startsWith("house-chamber") => f
     }
-    val _ = houseFailures.length shouldBe 1
-    houseFailures.headOption.foreach(f => f.reason should include("house 401"))
+    // Sessions {1, 2} → both fail → 2 chamber-level failures, both carrying the same upstream cause.
+    val _ = houseFailures.length shouldBe 2
+    houseFailures.foreach(f => f.reason should include("house 401"))
   }
 
   it should "emit senate-chamber Failed when fetchVoteIndex raises" in {
     val mocks = mkMocks()
-    when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List.empty))
-    when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1)))
+    when(mocks.houseClient.fetchRecentVotes(eqTo(119), any[Int])).thenReturn(IO.pure(List.empty))
+    when(mocks.senateClient.fetchVoteIndex(eqTo(119), any[Int]))
       .thenReturn(IO.raiseError(new RuntimeException("senate index decode failed")))
 
-    val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
+    val results = mocks.build.streamAll("run-1", testCongresses).compile.toList.unsafeRunSync()
 
     val senateFailures = results.collect {
-      case f @ ProcessingResult.Failed(id, _, _) if id == "senate-chamber" => f
+      case f @ ProcessingResult.Failed(id, _, _) if id.startsWith("senate-chamber") => f
     }
-    val _ = senateFailures.length shouldBe 1
-    senateFailures.headOption.foreach(f => f.reason should include("senate index decode failed"))
+    // Sessions {1, 2} → both fail.
+    val _ = senateFailures.length shouldBe 2
+    senateFailures.foreach(f => f.reason should include("senate index decode failed"))
   }
 
   // ------------------------------------------------------------------
@@ -339,7 +348,9 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       stateAtVote = Some(UsState.NewYork),
     )
 
-    when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List(listItem)))
+    // Session 1 returns the test vote; session 2 returns empty so the test exercises exactly one vote end-to-end.
+    when(mocks.houseClient.fetchRecentVotes(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(listItem)))
+    when(mocks.houseClient.fetchRecentVotes(eqTo(119), eqTo(2))).thenReturn(IO.pure(List.empty))
     when(mocks.houseClient.fetchMembersVotePositions(eqTo(119), eqTo(1), eqTo(42)))
       .thenReturn(IO.pure(membersDto))
     when(
@@ -353,7 +364,7 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     )
     when(mocks.memberLookup.resolveAll(any(), any[LogContext])).thenReturn(IO.pure(Map("A000055" -> 7L)))
 
-    when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1)))
+    when(mocks.senateClient.fetchVoteIndex(eqTo(119), any[Int]))
       .thenReturn(IO.pure(List.empty[SenateVoteIndexEntry]))
 
     when(mocks.findStoredVote.apply(anyString())).thenReturn(IO.pure(Option.empty[VoteDO]))
@@ -362,7 +373,7 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     when(mocks.persister.persistNew(any[VoteDO], any()))
       .thenReturn(IO.pure(vote.copy(voteId = 42L)))
 
-    val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
+    val results = mocks.build.streamAll("run-1", testCongresses).compile.toList.unsafeRunSync()
 
     val _ = results.length shouldBe 1
     // emitSuccess fires once with the persisted vote (billId=Some(900L)) — the emitter's internal stance-mark is
@@ -370,9 +381,9 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     val _ = verify(mocks.eventEmitter, times(1))
       .emitSuccess(any[VoteDO], any[Option[String]], any[Boolean], any[UUID], any[LogContext])
     results.headOption.getOrElse(fail("expected one result")) match {
-      case ProcessingResult.Succeeded(id, emitted) =>
-        val _ = id shouldBe "119-House-1-42"
-        emitted shouldBe true
+      case ProcessingResult.Succeeded(resultId, resultEmitted) =>
+        val _ = resultId shouldBe "119-House-1-42"
+        resultEmitted shouldBe true
       case other => fail(s"expected Succeeded, got $other")
     }
   }
@@ -407,8 +418,10 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       stateAtVote = Some(UsState.NewYork),
     )
 
-    when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List.empty))
+    when(mocks.houseClient.fetchRecentVotes(eqTo(119), any[Int])).thenReturn(IO.pure(List.empty))
+    // Session 1 returns the test entry; session 2 returns empty so exactly one Senate vote flows end-to-end.
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(entry)))
+    when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(2))).thenReturn(IO.pure(List.empty))
     when(mocks.senateClient.fetchVote(eqTo(119), eqTo(1), eqTo(17))).thenReturn(IO.pure(senDto))
     when(mocks.lisResolver.resolve(eqTo(senDto))).thenReturn(IO.pure(Map("S428" -> 99L)))
     when(
@@ -427,7 +440,7 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     when(mocks.persister.persistNew(any[VoteDO], any()))
       .thenReturn(IO.pure(vote.copy(voteId = 77L)))
 
-    val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
+    val results = mocks.build.streamAll("run-1", testCongresses).compile.toList.unsafeRunSync()
 
     val _ = results.length shouldBe 1
     verify(mocks.eventEmitter, times(1))
@@ -456,13 +469,14 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       identifier = None,
       sourceDataUrl = None,
     )
-    when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List(listItem)))
+    when(mocks.houseClient.fetchRecentVotes(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(listItem)))
+    when(mocks.houseClient.fetchRecentVotes(eqTo(119), eqTo(2))).thenReturn(IO.pure(List.empty))
     when(mocks.houseClient.fetchMembersVotePositions(eqTo(119), eqTo(1), eqTo(99)))
       .thenReturn(IO.raiseError(new RuntimeException("fetch detail 404")))
-    when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1)))
+    when(mocks.senateClient.fetchVoteIndex(eqTo(119), any[Int]))
       .thenReturn(IO.pure(List.empty[SenateVoteIndexEntry]))
 
-    val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
+    val results = mocks.build.streamAll("run-1", testCongresses).compile.toList.unsafeRunSync()
 
     val perVoteFailures = results.collect { case f: ProcessingResult.Failed => f }
     val _               = perVoteFailures.length shouldBe 1
@@ -475,12 +489,13 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     val mocks = mkMocks()
     val entry = SenateVoteIndexEntry(voteNumber = 44, voteDate = "Mar 1", question = "On Passage", result = "Passed")
 
-    when(mocks.houseClient.fetchRecentVotes).thenReturn(IO.pure(List.empty))
+    when(mocks.houseClient.fetchRecentVotes(eqTo(119), any[Int])).thenReturn(IO.pure(List.empty))
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(entry)))
+    when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(2))).thenReturn(IO.pure(List.empty))
     when(mocks.senateClient.fetchVote(eqTo(119), eqTo(1), eqTo(44)))
       .thenReturn(IO.raiseError(new RuntimeException("senate xml 500")))
 
-    val results = mocks.build.streamAll("run-1").compile.toList.unsafeRunSync()
+    val results = mocks.build.streamAll("run-1", testCongresses).compile.toList.unsafeRunSync()
 
     val perVoteFailures = results.collect { case f: ProcessingResult.Failed => f }
     val _               = perVoteFailures.length shouldBe 1

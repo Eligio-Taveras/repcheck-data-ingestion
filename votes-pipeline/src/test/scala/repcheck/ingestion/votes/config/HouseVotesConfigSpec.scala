@@ -11,10 +11,10 @@ import org.scalatest.matchers.should.Matchers
 class HouseVotesConfigSpec extends AnyFlatSpec with Matchers {
 
   "HouseVotesConfig" should "derive from a full HOCON block" in {
+    // Per P6.H5 the (congress, session) tuple is no longer part of HouseVotesConfig — it's resolved upstream and
+    // passed to fetchRecentVotes at call time. This block exercises only the fields the case class actually carries.
     val raw = """
       |house {
-      |  congress = 119
-      |  session = 1
       |  parallelism = 2
       |  page-delay = 3s
       |  lookback-days = 14
@@ -22,8 +22,6 @@ class HouseVotesConfigSpec extends AnyFlatSpec with Matchers {
       |""".stripMargin
 
     val cfg = ConfigSource.fromConfig(ConfigFactory.parseString(raw)).at("house").loadOrThrow[HouseVotesConfig]
-    val _   = cfg.congress shouldBe 119
-    val _   = cfg.session shouldBe 1
     val _   = cfg.parallelism shouldBe 2
     val _   = cfg.pageDelay shouldBe 3.seconds
     cfg.lookbackDays shouldBe 14
@@ -36,8 +34,7 @@ class HouseVotesConfigSpec extends AnyFlatSpec with Matchers {
   it should "fail to load when required fields are omitted from HOCON" in {
     val raw = """
       |house {
-      |  congress = 119
-      |  session = 1
+      |  parallelism = 2
       |}
       |""".stripMargin
 
@@ -46,9 +43,7 @@ class HouseVotesConfigSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "expose all fields via the case class accessors for downstream use" in {
-    val cfg = HouseVotesConfig(congress = 118, session = 2)
-    val _   = cfg.congress shouldBe 118
-    val _   = cfg.session shouldBe 2
+    val cfg = HouseVotesConfig()
     val _   = cfg.parallelism shouldBe 1
     val _   = cfg.pageDelay shouldBe 2.seconds
     cfg.lookbackDays shouldBe 7

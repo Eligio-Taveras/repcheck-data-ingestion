@@ -250,11 +250,13 @@ services:
       CONGRESS_GOV_API_KEY: e2e-test-key
       # Senate — served under /senate/* from the same WireMock container.
       SENATE_BASE_URL: http://wiremock:8080/senate
-      # House config: 119th Congress, session 1. lookback-days=0 accepts every
-      # recorded fixture regardless of timestamp (the fixtures were captured
-      # months ago; real lookback would filter them out).
-      HOUSE_CONGRESS: "119"
-      HOUSE_SESSION: "1"
+      # Pin to a single congress for the WireMock fixture set (recorded for 119/1 only).
+      # Per P6.H5 the pipeline normally derives the congress list from the bills table; in
+      # the E2E stack we override via VOTES_CONGRESSES so the test is deterministic regardless
+      # of how many bills the fixture seeds into the DB.
+      VOTES_CONGRESSES: "119"
+      # lookback-days=0 accepts every recorded fixture regardless of timestamp (the fixtures
+      # were captured months ago; real lookback would filter them out).
       HOUSE_LOOKBACK_DAYS: "0"
       HOUSE_PARALLELISM: "1"
       HOUSE_PAGE_DELAY: 10ms

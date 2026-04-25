@@ -150,8 +150,6 @@ private[votes] object VotesProcessorFactory {
       findStoredVote = findStoredVote,
       houseConfig = config.pipeline.house,
       senateConfig = config.pipeline.senate,
-      congress = config.pipeline.house.congress,
-      session = config.pipeline.house.session,
       logger = logger,
     )
   }
