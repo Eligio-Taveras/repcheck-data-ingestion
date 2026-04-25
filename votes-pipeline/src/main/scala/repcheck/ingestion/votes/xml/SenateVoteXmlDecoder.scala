@@ -137,14 +137,13 @@ object SenateVoteXmlDecoder {
       )
     } else {
       val nodes = (elem \ "votes" \ "vote").toList
-      nodes
-        .foldLeft[Either[XmlParseFailed, List[SenateVoteIndexEntry]]](Right(Nil)) { (acc, node) =>
-          for {
-            soFar <- acc
-            entry <- decodeIndexEntry(node)
-          } yield entry :: soFar
-        }
-        .map(_.reverse)
+      // Per-entry tolerance: a single malformed `<vote>` (e.g. an old impeachment-trial procedural that
+      // lacks both `<question>` and `<en_bloc>`) used to fail-fast and discard every other entry in the
+      // session — losing 200+ votes for one bad row. Now we collect the entries that decode successfully
+      // and silently drop the ones that don't. The bad entries don't surface as errors here; the per-vote
+      // detail fetch still runs against the stored vote_number list and any vote that was dropped at
+      // index time would also fail at detail time, where the per-vote fail-with-classifier path catches it.
+      Right(nodes.flatMap(node => decodeIndexEntry(node).toOption))
     }
 
   /**
@@ -230,28 +229,32 @@ object SenateVoteXmlDecoder {
           )
         )
       case Some(docNode) =>
-        for {
-          docCongress <- requireInt(docNode, "document_congress")
-          docType     <- requireText(docNode, "document_type")
-          // Amendment votes (docType "S.Amdt." / "H.Amdt.") emit self-closing empty
-          // <document_number/>, <document_name/>, <document_title/> on senate.gov — the
-          // real identifying metadata lives in the sibling <amendment> element. Tolerate
-          // empty values here so amendment votes parse and reach the converter, where
-          // SenateVoteConverter.normalizeDocumentType classifies them and persists the
-          // vote. Still-empty values flow through as "" and surface in converter warn
-          // logs rather than crashing the whole pipeline.
-          docNumber = textOpt(docNode, "document_number").getOrElse("")
-          docName   = textOpt(docNode, "document_name").getOrElse("")
-          docTitle  = textOpt(docNode, "document_title").getOrElse("")
-          // document_short_title is optional — senate.gov often emits it as <document_short_title/> (self-closing empty)
-          docShortTitle = textOpt(docNode, "document_short_title")
-        } yield SenateVoteDocumentDTO(
-          documentCongress = docCongress,
-          documentType = docType,
-          documentNumber = docNumber,
-          documentName = docName,
-          documentTitle = docTitle,
-          documentShortTitle = docShortTitle,
+        // Older votes (109th-Congress era and earlier) often emit a <document> with empty or self-closing
+        // <document_congress/>, <document_type/>, etc. — the schema looks roughly the same but the data
+        // simply isn't there. Tolerate empty values for ALL document fields and let the converter classify
+        // the resulting empty/unknown documentType through the existing NonBillOrUnknown branch (the same
+        // path used for amendment votes / nominations / procedural motions today).
+        //
+        // Surfaced live during P6 docker-compose backfill on 109-Senate-1 vote 366 and earlier — every old
+        // vote was being dropped at decode time because of a strict requireInt on document_congress.
+        val docCongress = textOpt(docNode, "document_congress")
+          .flatMap(s => scala.util.Try(s.toInt).toOption)
+          .getOrElse(0)
+        val docType   = textOpt(docNode, "document_type").getOrElse("")
+        val docNumber = textOpt(docNode, "document_number").getOrElse("")
+        val docName   = textOpt(docNode, "document_name").getOrElse("")
+        val docTitle  = textOpt(docNode, "document_title").getOrElse("")
+        // document_short_title is optional — senate.gov often emits it as <document_short_title/> (self-closing empty)
+        val docShortTitle = textOpt(docNode, "document_short_title")
+        Right(
+          SenateVoteDocumentDTO(
+            documentCongress = docCongress,
+            documentType = docType,
+            documentNumber = docNumber,
+            documentName = docName,
+            documentTitle = docTitle,
+            documentShortTitle = docShortTitle,
+          )
         )
     }
 
