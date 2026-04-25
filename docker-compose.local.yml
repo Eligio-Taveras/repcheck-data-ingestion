@@ -307,7 +307,16 @@ services:
       SENATE_BASE_URL: https://www.senate.gov/legislative/LIS
       # Per P6.H5 the votes pipeline iterates all congresses with bills in the DB. To override,
       # set VOTES_CONGRESSES (comma-separated, e.g. "117,118,119"). Unset = derive from DB.
-      HOUSE_LOOKBACK_DAYS: ${HOUSE_LOOKBACK_DAYS:-7}
+      #
+      # HOUSE_LOOKBACK_DAYS=0 means "no client-side lookback filter — keep every paginated House
+      # vote regardless of updateDate". The local-dev stack runs as a backfill / development
+      # tool, not a steady-state cron, so we want full ingestion every run for parity with the
+      # Senate path (senate.gov returns the entire vote_menu for the session in one request and
+      # has no equivalent filter). Cloud-Run-Job production would override this back to 7 (the
+      # `HouseVotesConfig.lookbackDays` PureConfig default) so the every-2-hour scheduled tick
+      # only re-fetches recently-touched votes. Set HOUSE_LOOKBACK_DAYS=7 (or any positive int)
+      # in your shell env to flip back to steady-state mode locally.
+      HOUSE_LOOKBACK_DAYS: ${HOUSE_LOOKBACK_DAYS:-0}
       HOUSE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
       SENATE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
       # Pub/Sub — GCP_PROJECT_ID + VOTE_EVENTS_TOPIC match the application.conf keys.
