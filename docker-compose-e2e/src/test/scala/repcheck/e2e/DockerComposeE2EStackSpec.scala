@@ -141,7 +141,11 @@ class DockerComposeE2EStackSpec extends AnyFlatSpec with Matchers with BeforeAnd
   }
 
   it should "persist a 1536-dim embedding via the WireMock Ollama stub" taggedAs DockerRequired in {
-    val count = sqlLong(sql"SELECT COUNT(*) FROM bill_text_versions WHERE embedding IS NOT NULL")
+    // Post db-migrations 026 / P6.H4c: text + embedding moved off `bill_text_versions` and into
+    // `raw_bill_text` (one row per chunk). The chunker produces ≥1 chunk for every fetched bill,
+    // and each chunk gets its own 1536-dim embedding from Ollama. Asserting ≥1 row here proves
+    // (a) the chunker ran, (b) the embedding round-trip survived, (c) the new persistence path is wired.
+    val count = sqlLong(sql"SELECT COUNT(*) FROM raw_bill_text WHERE embedding IS NOT NULL")
     count should be >= 1L
   }
 
