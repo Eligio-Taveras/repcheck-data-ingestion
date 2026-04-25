@@ -352,7 +352,7 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     when(mocks.houseClient.fetchRecentVotes(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(listItem)))
     when(mocks.houseClient.fetchRecentVotes(eqTo(119), eqTo(2))).thenReturn(IO.pure(List.empty))
     when(mocks.houseClient.fetchMembersVotePositions(eqTo(119), eqTo(1), eqTo(42)))
-      .thenReturn(IO.pure(membersDto))
+      .thenReturn(IO.pure(Some(membersDto)))
     when(
       mocks.houseConverter.convert(
         any[repcheck.shared.models.congress.dto.vote.VoteMembersDTO],

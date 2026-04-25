@@ -323,8 +323,11 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         )
     )
 
-    val client  = makeClient()
-    val members = client.fetchMembersVotePositions(congress = 119, session = 1, voteNumber = 240).unsafeRunSync()
+    val client = makeClient()
+    val members = client
+      .fetchMembersVotePositions(congress = 119, session = 1, voteNumber = 240)
+      .unsafeRunSync()
+      .getOrElse(fail("expected Some(VoteMembersDTO) for a populated vote response"))
 
     val _       = members.congress shouldBe 119
     val _       = members.rollCallNumber shouldBe 240
@@ -350,8 +353,11 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         )
     )
 
-    val client  = makeClient()
-    val members = client.fetchMembersVotePositions(119, 1, 17).unsafeRunSync()
+    val client = makeClient()
+    val members = client
+      .fetchMembersVotePositions(119, 1, 17)
+      .unsafeRunSync()
+      .getOrElse(fail("expected Some(VoteMembersDTO) for a populated vote response"))
     members.voteQuestion shouldBe Some(rawQuestion)
   }
 
@@ -687,9 +693,42 @@ class HouseVotesApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         )
     )
 
-    val client  = makeClient()
-    val members = client.fetchMembersVotePositions(119, 1, 5).unsafeRunSync()
+    val client = makeClient()
+    val members = client
+      .fetchMembersVotePositions(119, 1, 5)
+      .unsafeRunSync()
+      .getOrElse(fail("expected Some(VoteMembersDTO) when the envelope object is present (just with empty results)"))
     members.results shouldBe Some(List.empty[repcheck.shared.models.congress.dto.vote.VoteResultDTO])
+  }
+
+  it should "return None for the sentinel 'no member-vote data' shape (houseRollCallVoteMemberVotes is an empty array)" in {
+    // Surfaced live during P6 backfill on 117-House-1-1 (Jan 2021 — early 117th congress vote that
+    // pre-dates the API's member-vote dataset). Congress.gov returns the wrapper with an empty array
+    // instead of the normal object body. Pre-fix the decoder failed and the whole vote was dropped;
+    // post-fix the API client returns None and the processor emits ProcessingResult.Skipped.
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/house-vote/117/1/1/members"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(
+              """{
+                |  "houseRollCallVoteMemberVotes": [],
+                |  "request": {
+                |    "congress": "117",
+                |    "contentType": "application/json",
+                |    "format": "json",
+                |    "session": "1"
+                |  }
+                |}""".stripMargin
+            )
+        )
+    )
+
+    val client = makeClient()
+    val result = client.fetchMembersVotePositions(117, 1, 1).unsafeRunSync()
+    result shouldBe None
   }
 
   // -----------------------------------------------------------------------------------------------------------------
