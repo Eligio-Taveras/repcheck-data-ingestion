@@ -298,4 +298,90 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
     result.forall(_.isEmpty) shouldBe true
   }
 
+  "context-length error classification" should "raise EmbeddingContextLengthExceeded for HTTP 400 with 'context length' in body" in {
+    // Real Ollama runner emits e.g. '{"error":"the input length exceeds the context length"}' on 400.
+    wireMock.stubFor(
+      post(urlEqualTo("/api/embed"))
+        .willReturn(
+          aResponse()
+            .withStatus(400)
+            .withHeader("Content-Type", "application/json")
+            .withBody("""{"error":"the input length exceeds the context length"}""")
+        )
+    )
+
+    val error = service.callOllama(List("oversized text")).attempt.unsafeRunSync()
+    val _     = error.isLeft shouldBe true
+    error.swap.getOrElse(fail("Expected error")) shouldBe a[EmbeddingContextLengthExceeded]
+  }
+
+  it should "match 'context length' substring case-insensitively" in {
+    wireMock.stubFor(
+      post(urlEqualTo("/api/embed"))
+        .willReturn(
+          aResponse()
+            .withStatus(400)
+            .withHeader("Content-Type", "application/json")
+            .withBody("""{"error":"Context Length exceeded for input"}""")
+        )
+    )
+
+    val error = service.callOllama(List("oversized")).attempt.unsafeRunSync()
+    error.swap.getOrElse(fail("Expected error")) shouldBe a[EmbeddingContextLengthExceeded]
+  }
+
+  it should "not classify a non-400 response with 'context length' in body as EmbeddingContextLengthExceeded" in {
+    // 500 response body coincidentally mentions the phrase — should still be a generic failure (not a Systemic skip).
+    wireMock.stubFor(
+      post(urlEqualTo("/api/embed"))
+        .willReturn(aResponse().withStatus(500).withBody("server crashed during context length check"))
+    )
+
+    val error = service.callOllama(List("text")).attempt.unsafeRunSync()
+    val _     = error.isLeft shouldBe true
+    val ex    = error.swap.getOrElse(fail("Expected error"))
+    val _     = ex shouldBe a[EmbeddingGenerationFailed]
+    ex shouldNot be(a[EmbeddingContextLengthExceeded])
+  }
+
+  it should "not classify a 400 without 'context length' as EmbeddingContextLengthExceeded" in {
+    // Ollama can return 400 for other reasons (malformed JSON, unknown model, etc.) — those stay generic and degrade
+    // to None at the batch level rather than triggering the Systemic skip path.
+    wireMock.stubFor(
+      post(urlEqualTo("/api/embed"))
+        .willReturn(aResponse().withStatus(400).withBody("""{"error":"model not found"}"""))
+    )
+
+    val error = service.callOllama(List("text")).attempt.unsafeRunSync()
+    val ex    = error.swap.getOrElse(fail("Expected error"))
+    val _     = ex shouldBe a[EmbeddingGenerationFailed]
+    ex shouldNot be(a[EmbeddingContextLengthExceeded])
+  }
+
+  it should "propagate EmbeddingContextLengthExceeded through generateEmbeddings (not swallow it)" in {
+    wireMock.stubFor(
+      post(urlEqualTo("/api/embed"))
+        .willReturn(
+          aResponse()
+            .withStatus(400)
+            .withHeader("Content-Type", "application/json")
+            .withBody("""{"error":"input length exceeds context length"}""")
+        )
+    )
+
+    val error = service.generateEmbeddings(List("oversized")).attempt.unsafeRunSync()
+    error.swap.getOrElse(fail("Expected error to propagate")) shouldBe a[EmbeddingContextLengthExceeded]
+  }
+
+  it should "still degrade to None at generateEmbeddings on non-context-length 400s" in {
+    wireMock.stubFor(
+      post(urlEqualTo("/api/embed"))
+        .willReturn(aResponse().withStatus(400).withBody("""{"error":"model not found"}"""))
+    )
+
+    val result = service.generateEmbeddings(List("a", "b")).unsafeRunSync()
+    val _      = result.size shouldBe 2
+    result.forall(_.isEmpty) shouldBe true
+  }
+
 }
