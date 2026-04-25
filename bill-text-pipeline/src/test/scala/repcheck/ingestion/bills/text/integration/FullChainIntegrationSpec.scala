@@ -66,6 +66,7 @@ class FullChainIntegrationSpec
     dimensions = 1536,
     timeoutSeconds = 10,
     maxChunkChars = 30000,
+    embedBatchSize = 10,
   )
 
   private val testRetryConfig =

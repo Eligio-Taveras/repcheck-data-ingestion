@@ -43,6 +43,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     dimensions = 4,
     timeoutSeconds = 5,
     maxChunkChars = 30000,
+    embedBatchSize = 10,
   )
 
   private case class TestFixture(
@@ -121,7 +122,11 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   ): Unit = {
     stubBillLookup(f, billId)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure(content))
-    when(f.embeddingService.generateEmbedding(anyString())).thenReturn(IO.pure(None))
+    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
+      .thenAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
+        val texts = invocation.getArgument[List[String]](0)
+        IO.pure(List.fill(texts.size)(None))
+      }
     when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
     val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
       .thenReturn(IO.pure("msg-id-123"))
@@ -177,7 +182,11 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val event = makeEvent()
     stubBillLookup(f)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure("some content"))
-    when(f.embeddingService.generateEmbedding(anyString())).thenReturn(IO.pure(None))
+    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
+      .thenAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
+        val texts = invocation.getArgument[List[String]](0)
+        IO.pure(List.fill(texts.size)(None))
+      }
     when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO]))
       .thenReturn(doobie.free.connection.raiseError(new RuntimeException("DB connection lost")))
 
@@ -192,7 +201,11 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val event = makeEvent()
     stubBillLookup(f)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure("some content"))
-    when(f.embeddingService.generateEmbedding(anyString())).thenReturn(IO.pure(None))
+    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
+      .thenAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
+        val texts = invocation.getArgument[List[String]](0)
+        IO.pure(List.fill(texts.size)(None))
+      }
     when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
     when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
       .thenReturn(IO.raiseError(new RuntimeException("Pub/Sub unavailable")))
@@ -237,7 +250,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val embedding = Array(0.1f, 0.2f, 0.3f)
     stubBillLookup(f)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure("some content"))
-    when(f.embeddingService.generateEmbedding("some content")).thenReturn(IO.pure(Some(embedding)))
+    when(f.embeddingService.generateEmbeddings(List("some content"))).thenReturn(IO.pure(List(Some(embedding))))
     when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
     val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
       .thenReturn(IO.pure("msg-id-123"))
@@ -376,7 +389,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val event = makeEvent()
     stubBillLookup(f)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure("some content"))
-    when(f.embeddingService.generateEmbedding(anyString()))
+    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
       .thenReturn(IO.raiseError(new RuntimeException("embedding model unavailable")))
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
@@ -390,7 +403,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val event = makeEvent()
     stubBillLookup(f)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure("some content"))
-    when(f.embeddingService.generateEmbedding(anyString()))
+    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
       .thenReturn(IO.raiseError(EmbeddingGenerationFailed("model unavailable", 12)))
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
@@ -456,7 +469,11 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val contentWithNulls = "Bill\u0000text\u0000with\u0000nulls"
     stubBillLookup(f)
     when(f.downloader.download(anyString(), anyString(), any[UUID])).thenReturn(IO.pure(contentWithNulls))
-    when(f.embeddingService.generateEmbedding(anyString())).thenReturn(IO.pure(None))
+    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
+      .thenAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
+        val texts = invocation.getArgument[List[String]](0)
+        IO.pure(List.fill(texts.size)(None))
+      }
     when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
     val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
       .thenReturn(IO.pure("msg-id-123"))

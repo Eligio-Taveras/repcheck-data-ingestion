@@ -13,4 +13,7 @@ class NoOpEmbeddingService[F[_]: Applicative] extends EmbeddingService[F] {
   override def generateEmbedding(text: String): F[Option[Array[Float]]] =
     Applicative[F].pure(None)
 
+  override def generateEmbeddings(texts: List[String]): F[List[Option[Array[Float]]]] =
+    Applicative[F].pure(List.fill(texts.size)(None))
+
 }

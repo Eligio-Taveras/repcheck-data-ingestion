@@ -43,6 +43,7 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
       dimensions = 4,
       timeoutSeconds = 5,
       maxChunkChars = 30000,
+      embedBatchSize = 10,
     )
 
   private def service: OllamaEmbeddingService[IO] =
@@ -76,6 +77,19 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
             .withStatus(200)
             .withHeader("Content-Type", "application/json")
             .withBody(s"""{"embeddings":[$embeddingJson]}""")
+        )
+    )
+  }
+
+  private def stubBatchEmbedding(embeddings: List[List[Float]]): Unit = {
+    val arrays = embeddings.map(e => e.map(_.toString).mkString("[", ",", "]")).mkString("[", ",", "]")
+    val _ = wireMock.stubFor(
+      post(urlEqualTo("/api/embed"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(s"""{"embeddings":$arrays}""")
         )
     )
   }
@@ -165,7 +179,7 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
         )
     )
 
-    val error = service.callOllama("some text").attempt.unsafeRunSync()
+    val error = service.callOllama(List("some text")).attempt.unsafeRunSync()
     val _     = error.isLeft shouldBe true
     error.swap.getOrElse(fail("Expected error")) shouldBe a[EmbeddingGenerationFailed]
   }
@@ -181,7 +195,7 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
         )
     )
 
-    val error = service.callOllama("some text").attempt.unsafeRunSync()
+    val error = service.callOllama(List("some text")).attempt.unsafeRunSync()
     val _     = error.isLeft shouldBe true
     error.swap.getOrElse(fail("Expected error")) shouldBe a[EmbeddingGenerationFailed]
   }
@@ -195,6 +209,93 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
 
     val _ = result1.isDefined shouldBe true
     result1.map(_.toList) shouldBe result2.map(_.toList)
+  }
+
+  "generateEmbeddings" should "return embeddings in input order for a batch of texts" in {
+    val embeddings = List(
+      List(0.1f, 0.2f, 0.3f, 0.4f),
+      List(0.5f, 0.6f, 0.7f, 0.8f),
+      List(0.9f, 1.0f, 1.1f, 1.2f),
+    )
+    stubBatchEmbedding(embeddings)
+
+    val result = service.generateEmbeddings(List("a", "b", "c")).unsafeRunSync()
+
+    val _ = result.size shouldBe 3
+    val _ = result.flatten.map(_.toList) shouldBe embeddings
+    result.forall(_.isDefined) shouldBe true
+  }
+
+  it should "return empty list for empty input list" in {
+    val result = service.generateEmbeddings(List.empty).unsafeRunSync()
+    result shouldBe empty
+  }
+
+  it should "return all None for a list of empty/whitespace-only strings without calling Ollama" in {
+    // No stubFor — if the service calls Ollama, the request will fail (no stub matches).
+    val result = service.generateEmbeddings(List("", "   ", "\t\n")).unsafeRunSync()
+    val _      = result.size shouldBe 3
+    result.forall(_.isEmpty) shouldBe true
+  }
+
+  it should "interleave None at empty-input positions and Some at non-empty positions" in {
+    val embeddings = List(
+      List(0.1f, 0.2f, 0.3f, 0.4f),
+      List(0.5f, 0.6f, 0.7f, 0.8f),
+    )
+    stubBatchEmbedding(embeddings)
+
+    // 4-element input, positions 1 and 3 are empty → those should be None in the output.
+    val result = service.generateEmbeddings(List("first", "", "third", "  ")).unsafeRunSync()
+
+    val _ = result.size shouldBe 4
+    val _ = result(0).map(_.toList) shouldBe Some(List(0.1f, 0.2f, 0.3f, 0.4f))
+    val _ = result(1) shouldBe None
+    val _ = result(2).map(_.toList) shouldBe Some(List(0.5f, 0.6f, 0.7f, 0.8f))
+    result(3) shouldBe None
+  }
+
+  it should "send input as a JSON array on the batch endpoint" in {
+    stubBatchEmbedding(List(List(0.1f, 0.2f, 0.3f, 0.4f), List(0.5f, 0.6f, 0.7f, 0.8f)))
+
+    val _ = service.generateEmbeddings(List("alpha", "beta")).unsafeRunSync()
+
+    wireMock.verify(
+      postRequestedFor(urlEqualTo("/api/embed"))
+        .withRequestBody(matchingJsonPath("$.input[0]", equalTo("alpha")))
+        .withRequestBody(matchingJsonPath("$.input[1]", equalTo("beta")))
+    )
+  }
+
+  it should "return all None for the batch when Ollama returns HTTP error (graceful degradation)" in {
+    wireMock.stubFor(
+      post(urlEqualTo("/api/embed"))
+        .willReturn(aResponse().withStatus(500).withBody("Internal Server Error"))
+    )
+
+    val result = service.generateEmbeddings(List("a", "b", "c")).unsafeRunSync()
+    val _      = result.size shouldBe 3
+    result.forall(_.isEmpty) shouldBe true
+  }
+
+  it should "return all None for the batch when Ollama returns wrong embedding count" in {
+    // Request 3 inputs but Ollama returns only 2 embeddings — protocol violation.
+    val embeddings = List(List(0.1f, 0.2f, 0.3f, 0.4f), List(0.5f, 0.6f, 0.7f, 0.8f))
+    stubBatchEmbedding(embeddings)
+
+    val result = service.generateEmbeddings(List("a", "b", "c")).unsafeRunSync()
+    val _      = result.size shouldBe 3
+    result.forall(_.isEmpty) shouldBe true
+  }
+
+  it should "return all None for the batch on dimension mismatch" in {
+    // Wrong dim — config expects 4 but Ollama returns 3.
+    val embeddings = List(List(0.1f, 0.2f, 0.3f), List(0.4f, 0.5f, 0.6f))
+    stubBatchEmbedding(embeddings)
+
+    val result = service.generateEmbeddings(List("a", "b")).unsafeRunSync()
+    val _      = result.size shouldBe 2
+    result.forall(_.isEmpty) shouldBe true
   }
 
 }
