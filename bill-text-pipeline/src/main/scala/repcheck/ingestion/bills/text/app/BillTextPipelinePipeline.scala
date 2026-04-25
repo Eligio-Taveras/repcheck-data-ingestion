@@ -13,6 +13,7 @@ import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, Doobie
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
+import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 import repcheck.ingestion.common.db.DatabaseConfig
@@ -96,6 +97,7 @@ private[app] object BillTextPipelinePipeline {
   ): BillTextProcessor[F] = {
     val billRepository        = new DoobieBillRepository
     val textVersionRepository = new DoobieBillTextVersionRepository
+    val rawBillTextRepository = new DoobieRawBillTextRepository
     val downloader            = new BillTextDownloader[F](httpClient, config.pipeline, logger)
     val retryWrapper          = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
     val eventPublisher = new DefaultIngestionEventPublisher[F](
@@ -111,7 +113,9 @@ private[app] object BillTextPipelinePipeline {
       downloader = downloader,
       billRepository = billRepository,
       textVersionRepository = textVersionRepository,
+      rawBillTextRepository = rawBillTextRepository,
       embeddingService = embeddingService,
+      embeddingConfig = config.embedding,
       eventPublisher = eventPublisher,
       xa = xa,
       logger = logger,

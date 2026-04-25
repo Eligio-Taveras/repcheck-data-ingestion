@@ -67,8 +67,6 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
       versionDate = Some(date),
       formatType = Some(FormatType.FormattedText),
       url = Some(s"https://congress.gov/text/$code"),
-      content = Some(s"Full text content for $code version of the bill."),
-      embedding = None,
       fetchedAt = Some(Instant.now()),
       createdAt = None,
     )
@@ -100,14 +98,13 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
     }
   }
 
-  it should "preserve content text" taggedAs DockerRequired in {
-    val billId      = insertBillAndGetId()
-    val longContent = "A" * 10000
-    val version     = makeVersion(billId, "IH", LocalDate.parse("2024-01-15")).copy(content = Some(longContent))
+  it should "round-trip metadata for an inserted version" taggedAs DockerRequired in {
+    val billId  = insertBillAndGetId()
+    val version = makeVersion(billId, "IH", LocalDate.parse("2024-01-15"))
 
     val _     = textVersionRepo.insertVersion(version).transact(xa).unsafeRunSync()
     val found = textVersionRepo.findByBillId(billId).transact(xa).unsafeRunSync()
-    found.headOption.flatMap(_.content) shouldBe Some(longContent)
+    found.headOption.map(_.versionCode) shouldBe Some("IH")
   }
 
   it should "allow multiple versions per bill (append-only)" taggedAs DockerRequired in {
@@ -211,13 +208,13 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
     bill.flatMap(_.latestTextVersionId) shouldBe Some(versionId)
   }
 
-  "embedding" should "be None at insert time" taggedAs DockerRequired in {
+  "BillTextVersionDO insert" should "persist version metadata only (content/embedding now live in raw_bill_text)" taggedAs DockerRequired in {
     val billId  = insertBillAndGetId()
     val version = makeVersion(billId, "IH", LocalDate.parse("2024-01-15"))
 
     val _     = textVersionRepo.insertVersion(version).transact(xa).unsafeRunSync()
     val found = textVersionRepo.findByBillId(billId).transact(xa).unsafeRunSync()
-    found.headOption.flatMap(_.embedding) shouldBe None
+    found.size shouldBe 1
   }
 
 }

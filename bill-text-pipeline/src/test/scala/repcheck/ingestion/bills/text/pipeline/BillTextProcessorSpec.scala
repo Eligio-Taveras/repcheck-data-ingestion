@@ -15,13 +15,14 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.bills.common.persistence.{BillRepository, BillTextVersionRepository}
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{EmbeddingGenerationFailed, EmbeddingService}
+import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, EmbeddingGenerationFailed, EmbeddingService}
 import repcheck.ingestion.bills.text.errors.{BillTextProcessingFailed, TextDownloadFailed}
+import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.events.{BillTextAvailableEvent, BillTextIngestedEvent}
 import repcheck.pipeline.models.metadata.ProcessingResult
-import repcheck.shared.models.congress.dos.bill.{BillDO, BillTextVersionDO}
+import repcheck.shared.models.congress.dos.bill.{BillDO, BillTextVersionDO, RawBillTextDO}
 
 class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -36,10 +37,19 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   private val correlationId = UUID.randomUUID()
   private val testDbBillId  = 42L
 
+  private val testEmbeddingConfig: EmbeddingConfig = EmbeddingConfig(
+    baseUrl = "http://localhost:11434",
+    modelName = "qwen3-embedding",
+    dimensions = 4,
+    timeoutSeconds = 5,
+    maxChunkChars = 30000,
+  )
+
   private case class TestFixture(
     downloader: BillTextDownloader[IO],
     billRepository: BillRepository[ConnectionIO],
     textVersionRepository: BillTextVersionRepository[ConnectionIO],
+    rawBillTextRepository: RawBillTextRepository[ConnectionIO],
     embeddingService: EmbeddingService[IO],
     eventPublisher: IngestionEventPublisher[IO],
     logger: PipelineLogger[IO],
@@ -50,7 +60,9 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         downloader = downloader,
         billRepository = billRepository,
         textVersionRepository = textVersionRepository,
+        rawBillTextRepository = rawBillTextRepository,
         embeddingService = embeddingService,
+        embeddingConfig = testEmbeddingConfig,
         eventPublisher = eventPublisher,
         xa = testXa,
         logger = logger,
@@ -65,10 +77,14 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     when(loggerMock.error(any[LogContext], anyString(), any[Option[Throwable]])).thenReturn(IO.unit)
     when(loggerMock.debug(any[LogContext], anyString())).thenReturn(IO.unit)
 
+    val rawRepoMock = mock[RawBillTextRepository[ConnectionIO]]
+    when(rawRepoMock.replaceAll(any[Long], any[List[RawBillTextDO]])).thenReturn(doobie.free.connection.unit)
+
     TestFixture(
       downloader = mock[BillTextDownloader[IO]],
       billRepository = mock[BillRepository[ConnectionIO]],
       textVersionRepository = mock[BillTextVersionRepository[ConnectionIO]],
+      rawBillTextRepository = rawRepoMock,
       embeddingService = mock[EmbeddingService[IO]],
       eventPublisher = mock[IngestionEventPublisher[IO]],
       logger = loggerMock,
@@ -207,11 +223,15 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = stored.versionCode shouldBe "enr"
     val _ = stored.versionType shouldBe "Formatted XML"
     val _ = stored.url shouldBe Some("https://api.congress.gov/v3/bill/118/s/42/text/enr")
-    val _ = stored.content shouldBe Some("Enrolled bill text")
-    stored.fetchedAt.toString should not be empty
+    val _ = stored.fetchedAt.toString should not be empty
+
+    // Content now lives in raw_bill_text chunk rows (P6.H4c refactor); assert it was forwarded there.
+    val rawCaptor = ArgumentCaptor.forClass(classOf[List[RawBillTextDO]])
+    val _         = verify(f.rawBillTextRepository, times(1)).replaceAll(any[Long], rawCaptor.capture())
+    rawCaptor.getValue.map(_.content).mkString shouldBe "Enrolled bill text"
   }
 
-  it should "include embedding in BillTextVersionDO when embedding service returns one" in {
+  it should "include embedding on raw_bill_text chunk rows when embedding service returns one" in {
     val f         = createFixture()
     val event     = makeEvent()
     val embedding = Array(0.1f, 0.2f, 0.3f)
@@ -224,25 +244,27 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    val captor = ArgumentCaptor.forClass(classOf[BillTextVersionDO])
-    val _      = verify(f.textVersionRepository, times(1)).storeAndUpdateBill(captor.capture())
-    val stored = captor.getValue
+    val rawCaptor = ArgumentCaptor.forClass(classOf[List[RawBillTextDO]])
+    val _         = verify(f.rawBillTextRepository, times(1)).replaceAll(any[Long], rawCaptor.capture())
+    val chunks    = rawCaptor.getValue
 
-    stored.embedding shouldBe Some(embedding)
+    val _ = chunks should not be empty
+    chunks.headOption.flatMap(_.embedding).map(_.toList) shouldBe Some(embedding.toList)
   }
 
-  it should "set embedding to None when embedding service returns None" in {
+  it should "set embedding to None on raw_bill_text chunk rows when embedding service returns None" in {
     val f     = createFixture()
     val event = makeEvent()
     stubSuccessfulFlow(f)
 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    val captor = ArgumentCaptor.forClass(classOf[BillTextVersionDO])
-    val _      = verify(f.textVersionRepository, times(1)).storeAndUpdateBill(captor.capture())
-    val stored = captor.getValue
+    val rawCaptor = ArgumentCaptor.forClass(classOf[List[RawBillTextDO]])
+    val _         = verify(f.rawBillTextRepository, times(1)).replaceAll(any[Long], rawCaptor.capture())
+    val chunks    = rawCaptor.getValue
 
-    stored.embedding shouldBe None
+    val _ = chunks should not be empty
+    chunks.headOption.flatMap(_.embedding) shouldBe None
   }
 
   it should "populate BillTextIngestedEvent with correct fields" in {
@@ -441,11 +463,9 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    val captor = ArgumentCaptor.forClass(classOf[BillTextVersionDO])
-    val _      = verify(f.textVersionRepository, times(1)).storeAndUpdateBill(captor.capture())
-    val stored = captor.getValue
-
-    stored.content shouldBe Some("Billtextwithnulls")
+    val rawCaptor = ArgumentCaptor.forClass(classOf[List[RawBillTextDO]])
+    val _         = verify(f.rawBillTextRepository, times(1)).replaceAll(any[Long], rawCaptor.capture())
+    rawCaptor.getValue.map(_.content).mkString shouldBe "Billtextwithnulls"
   }
 
   it should "classify unknown exceptions as Systemic by default" in {

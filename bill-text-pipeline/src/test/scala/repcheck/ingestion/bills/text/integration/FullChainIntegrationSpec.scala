@@ -23,7 +23,8 @@ import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, Doobie
 import repcheck.ingestion.bills.common.testing.{DockerRequired, PubSubEmulatorFixture, TransactorFixture}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.NoOpEmbeddingService
+import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, NoOpEmbeddingService}
+import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.textcheck.api.BillTextApiClient
 import repcheck.ingestion.bills.textcheck.config.BillTextCheckerConfig
@@ -57,6 +58,15 @@ class FullChainIntegrationSpec
 
   private val billRepo        = new DoobieBillRepository()
   private val textVersionRepo = new DoobieBillTextVersionRepository()
+  private val rawTextRepo     = new DoobieRawBillTextRepository()
+
+  private val embeddingConfigStub: EmbeddingConfig = EmbeddingConfig(
+    baseUrl = "http://127.0.0.1:0",
+    modelName = "qwen3-embedding",
+    dimensions = 1536,
+    timeoutSeconds = 10,
+    maxChunkChars = 30000,
+  )
 
   private val testRetryConfig =
     RetryConfig(maxRetries = 1, initialBackoffMs = 1L, maxBackoffMs = 10L, backoffMultiplier = 1.0)
@@ -145,7 +155,9 @@ class FullChainIntegrationSpec
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
+      rawBillTextRepository = rawTextRepo,
       embeddingService = new NoOpEmbeddingService[IO],
+      embeddingConfig = embeddingConfigStub,
       eventPublisher = pipelineEventPublisher,
       xa = xa,
       logger = testLogger,
@@ -266,10 +278,12 @@ class FullChainIntegrationSpec
     val pipelineResult = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
     val _              = pipelineResult.isSucceeded shouldBe true
 
-    // Step 4: Verify text stored in DB
+    // Step 4: Verify text stored in DB. Content lives on raw_bill_text chunks post P6.H4c.
     val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
     val _        = versions.size shouldBe 1
-    versions.headOption.flatMap(_.content).getOrElse("") should include("Full Chain Test Act")
+    val storedV  = versions.headOption.getOrElse(fail("No version stored"))
+    val chunks   = rawTextRepo.findByVersionId(storedV.id).transact(xa).unsafeRunSync()
+    chunks.map(_.content).mkString should include("Full Chain Test Act")
   }
 
   it should "propagate previousVersionCode through the full chain" taggedAs DockerRequired in {

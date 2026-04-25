@@ -33,6 +33,7 @@ import repcheck.ingestion.bills.metadata.pipeline.BillMetadataProcessor
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, NoOpEmbeddingService, OllamaEmbeddingService}
+import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.textcheck.api.BillTextApiClient
 import repcheck.ingestion.bills.textcheck.config.BillTextCheckerConfig
@@ -76,6 +77,16 @@ class MetadataToVectorSearchLifecycleSpec
   // Real Doobie repositories backed by Docker AlloyDB Omni
   private val billRepo        = new DoobieBillRepository()
   private val textVersionRepo = new DoobieBillTextVersionRepository()
+  private val rawTextRepo     = new DoobieRawBillTextRepository()
+
+  private val noEmbedConfig: EmbeddingConfig = EmbeddingConfig(
+    baseUrl = "http://127.0.0.1:0",
+    modelName = "qwen3-embedding",
+    dimensions = 1536,
+    timeoutSeconds = 10,
+    maxChunkChars = 30000,
+  )
+
   private val cosponsorRepo   = new DoobieBillCosponsorRepository()
   private val subjectRepo     = new DoobieBillSubjectRepository()
   private val historyArchiver = new DoobieBillHistoryArchiver()
@@ -200,17 +211,18 @@ class MetadataToVectorSearchLifecycleSpec
   private def buildProcessor(withEmbedding: Boolean): BillTextProcessor[IO] = {
     val pipelineConfig = BillTextPipelineConfig(1, 10, 10485760L, 100.millis)
     val downloader     = new BillTextDownloader[IO](httpClient, pipelineConfig, testLogger)
-    val embeddingService =
+    val (embeddingService, embeddingConfig) =
       if (withEmbedding) {
-        val embeddingConfig = EmbeddingConfig(
+        val cfg = EmbeddingConfig(
           baseUrl = wmBaseUrl,
           modelName = "qwen3-embedding",
           dimensions = 1536,
           timeoutSeconds = 10,
+          maxChunkChars = 30000,
         )
-        new OllamaEmbeddingService[IO](httpClient, embeddingConfig, testLogger)
+        (new OllamaEmbeddingService[IO](httpClient, cfg, testLogger), cfg)
       } else {
-        new NoOpEmbeddingService[IO]
+        (new NoOpEmbeddingService[IO], noEmbedConfig)
       }
     val pubsubPublisher = new GooglePubSubEventPublisher[IO](publisher)
     val eventPublisher =
@@ -226,7 +238,9 @@ class MetadataToVectorSearchLifecycleSpec
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
+      rawBillTextRepository = rawTextRepo,
       embeddingService = embeddingService,
+      embeddingConfig = embeddingConfig,
       eventPublisher = eventPublisher,
       xa = xa,
       logger = testLogger,
@@ -421,12 +435,13 @@ class MetadataToVectorSearchLifecycleSpec
     val result    = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
     val _         = result.isSucceeded shouldBe true
 
-    // Step 6: Verify text version stored in DB
+    // Step 6: Verify text version stored in DB. Content lives on raw_bill_text chunks post P6.H4c.
     val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
     val _        = versions.size shouldBe 1
     val stored   = versions.headOption.getOrElse(fail("No text version stored"))
     val _        = stored.versionCode shouldBe "IH"
-    stored.content.getOrElse("") should include("Lifecycle Test Act")
+    val chunks   = rawTextRepo.findByVersionId(stored.id).transact(xa).unsafeRunSync()
+    chunks.map(_.content).mkString should include("Lifecycle Test Act")
   }
 
   it should "support full chain with embedding and vector search" taggedAs DockerRequired in {
@@ -473,15 +488,17 @@ class MetadataToVectorSearchLifecycleSpec
     val processor = buildProcessor(withEmbedding = true)
     val _         = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
 
-    // Step 4: Verify embedding stored
-    val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
-    val _        = versions.headOption.flatMap(_.embedding).isDefined shouldBe true
+    // Step 4: Verify embedding stored on at least one chunk row
+    val versions   = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
+    val storedV    = versions.headOption.getOrElse(fail("No text version stored"))
+    val storedRows = rawTextRepo.findByVersionId(storedV.id).transact(xa).unsafeRunSync()
+    val _          = storedRows.exists(_.embedding.isDefined) shouldBe true
 
-    // Step 5: pgvector cosine similarity search
+    // Step 5: pgvector cosine similarity search against raw_bill_text
     val queryVector = knownEmbedding.mkString("[", ",", "]")
     val similarity = sql"""
       SELECT 1 - (embedding <=> $queryVector::vector) as similarity
-      FROM bill_text_versions
+      FROM raw_bill_text
       WHERE bill_id = $dbBillId AND embedding IS NOT NULL
       ORDER BY embedding <=> $queryVector::vector
       LIMIT 1
@@ -583,13 +600,14 @@ class MetadataToVectorSearchLifecycleSpec
     val proc2 = buildProcessor(withEmbedding = true)
     val _     = proc2.processEvent(evt2, UUID.randomUUID()).unsafeRunSync()
 
-    // --- Vector search: query with embedding1 should rank bill 902 first ---
+    // --- Vector search: query with embedding1 should rank bill 902 first.
+    // Embeddings now live on raw_bill_text rows (P6.H4c).
     val queryVector = embedding1.mkString("[", ",", "]")
     val results = sql"""
-      SELECT btv.bill_id, 1 - (btv.embedding <=> $queryVector::vector) as similarity
-      FROM bill_text_versions btv
-      WHERE btv.embedding IS NOT NULL
-      ORDER BY btv.embedding <=> $queryVector::vector
+      SELECT rbt.bill_id, 1 - (rbt.embedding <=> $queryVector::vector) as similarity
+      FROM raw_bill_text rbt
+      WHERE rbt.embedding IS NOT NULL
+      ORDER BY rbt.embedding <=> $queryVector::vector
       LIMIT 2
     """.query[(Long, Double)].to[List].transact(xa).unsafeRunSync()
 

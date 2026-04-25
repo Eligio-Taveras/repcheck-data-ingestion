@@ -29,6 +29,7 @@ import repcheck.ingestion.bills.text.embedding.{
   NoOpEmbeddingService,
   OllamaEmbeddingService,
 }
+import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, GooglePubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
@@ -58,6 +59,15 @@ class PipelineIntegrationSpec
 
   private val billRepo        = new DoobieBillRepository()
   private val textVersionRepo = new DoobieBillTextVersionRepository()
+  private val rawTextRepo     = new DoobieRawBillTextRepository()
+
+  private val defaultEmbeddingConfig: EmbeddingConfig = EmbeddingConfig(
+    baseUrl = "http://127.0.0.1:0",
+    modelName = "qwen3-embedding",
+    dimensions = 1536,
+    timeoutSeconds = 10,
+    maxChunkChars = 30000,
+  )
 
   private val pipelineConfig = BillTextPipelineConfig(
     parallelism = 1,
@@ -102,7 +112,10 @@ class PipelineIntegrationSpec
     super.afterEach()
   }
 
-  private def buildProcessor(embeddingService: EmbeddingService[IO]): BillTextProcessor[IO] = {
+  private def buildProcessor(
+    embeddingService: EmbeddingService[IO],
+    embeddingConfig: EmbeddingConfig = defaultEmbeddingConfig,
+  ): BillTextProcessor[IO] = {
     val downloader      = new BillTextDownloader[IO](httpClient, pipelineConfig, testLogger)
     val pubsubPublisher = new GooglePubSubEventPublisher[IO](publisher)
     val eventPublisher =
@@ -118,7 +131,9 @@ class PipelineIntegrationSpec
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
+      rawBillTextRepository = rawTextRepo,
       embeddingService = embeddingService,
+      embeddingConfig = embeddingConfig,
       eventPublisher = eventPublisher,
       xa = xa,
       logger = testLogger,
@@ -134,9 +149,10 @@ class PipelineIntegrationSpec
       modelName = "qwen3-embedding",
       dimensions = 1536,
       timeoutSeconds = 10,
+      maxChunkChars = 30000,
     )
     val ollamaService = new OllamaEmbeddingService[IO](httpClient, embeddingConfig, testLogger)
-    buildProcessor(ollamaService)
+    buildProcessor(ollamaService, embeddingConfig)
   }
 
   private def seedBill(naturalKey: String, congress: Int = 118, number: String): Long = {
@@ -272,7 +288,9 @@ class PipelineIntegrationSpec
     val _      = stored.versionCode shouldBe "IH"
     val _      = stored.billId shouldBe dbBillId
     val _      = stored.url shouldBe Some(s"http://127.0.0.1:${wireMock.port().toString}$textPath")
-    stored.content.getOrElse("") should include("Test Act")
+    // Content now lives in raw_bill_text chunk rows.
+    val chunks = rawTextRepo.findByVersionId(stored.id).transact(xa).unsafeRunSync()
+    chunks.map(_.content).mkString should include("Test Act")
   }
 
   it should "store embedding and allow pgvector similarity search" taggedAs DockerRequired in {
@@ -291,15 +309,17 @@ class PipelineIntegrationSpec
     val processor = buildProcessorWithOllama()
     val _         = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
 
-    // Verify embedding stored
-    val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
-    val _        = versions.headOption.flatMap(_.embedding).isDefined shouldBe true
+    // Verify embedding stored on at least one raw_bill_text chunk row
+    val versions   = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
+    val storedVer  = versions.headOption.getOrElse(fail("No version stored"))
+    val storedRows = rawTextRepo.findByVersionId(storedVer.id).transact(xa).unsafeRunSync()
+    val _          = storedRows.exists(_.embedding.isDefined) shouldBe true
 
-    // Verify similarity search works via pgvector
+    // Verify similarity search works via pgvector against raw_bill_text
     val queryVector = knownEmbedding.mkString("[", ",", "]")
     val similarity = sql"""
       SELECT 1 - (embedding <=> $queryVector::vector) as similarity
-      FROM bill_text_versions
+      FROM raw_bill_text
       WHERE bill_id = $dbBillId AND embedding IS NOT NULL
       ORDER BY embedding <=> $queryVector::vector
       LIMIT 1
@@ -370,12 +390,13 @@ class PipelineIntegrationSpec
 
     val _ = result.isSucceeded shouldBe true
 
-    // Verify text stored, embedding is None
+    // Verify text stored on chunk rows, embedding is None on those chunks
     val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
     val _        = versions.size shouldBe 1
     val stored   = versions.headOption.getOrElse(fail("No version stored"))
-    val _        = stored.content.getOrElse("") should include("Test Act")
-    stored.embedding.isDefined shouldBe false
+    val chunks   = rawTextRepo.findByVersionId(stored.id).transact(xa).unsafeRunSync()
+    val _        = chunks.map(_.content).mkString should include("Test Act")
+    chunks.forall(_.embedding.isEmpty) shouldBe true
   }
 
   it should "return Failed when bill is not found in database" taggedAs DockerRequired in {
@@ -407,7 +428,9 @@ class PipelineIntegrationSpec
     val _         = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
 
     val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
-    val content  = versions.headOption.flatMap(_.content).getOrElse("")
+    val storedV  = versions.headOption.getOrElse(fail("No version stored"))
+    val chunks   = rawTextRepo.findByVersionId(storedV.id).transact(xa).unsafeRunSync()
+    val content  = chunks.map(_.content).mkString
     // Content should not contain HTML tags
     val _ = content should not include "<b>"
     val _ = content should not include "<i>"

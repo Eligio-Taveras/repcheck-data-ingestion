@@ -29,8 +29,6 @@ class BillTextVersionRepositorySpec extends AnyFlatSpec with Matchers {
     versionDate = None,
     formatType = Some(FormatType.FormattedXml),
     url = Some("https://example.com/text"),
-    content = None,
-    embedding = None,
     fetchedAt = None,
     createdAt = None,
   )
