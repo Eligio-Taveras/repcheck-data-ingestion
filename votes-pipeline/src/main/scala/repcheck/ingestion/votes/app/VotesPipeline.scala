@@ -8,6 +8,9 @@ import org.http4s.ember.client.EmberClientBuilder
 import fs2.Stream
 import fs2.io.net.Network
 
+import doobie.implicits._
+import doobie.util.transactor.Transactor
+
 import pureconfig.ConfigSource
 
 import repcheck.ingestion.common.api.CongressGovClientConfig
@@ -69,7 +72,9 @@ private[votes] object VotesPipeline {
           pubSubPublisherFactory = PubSubPublisherResource.make[F](_),
         ),
       processorFactory = VotesProcessorFactory.build[F],
-      streamFactory = (processor: VoteProcessor[F], runId: String) => processor.streamAll(runId),
+      congressesResolver = (cfg, xa, logger) => resolveCongresses[F](cfg, xa, logger),
+      streamFactory =
+        (processor: VoteProcessor[F], runId: String, congresses: List[Int]) => processor.streamAll(runId, congresses),
     )
 
   /**
@@ -83,7 +88,8 @@ private[votes] object VotesPipeline {
     loggerFactory: F[PipelineLogger[F]],
     resourceBuilder: AppConfig => Resource[F, VotesPipelineResources.Resources[F]],
     processorFactory: (AppConfig, VotesPipelineResources.Resources[F], PipelineLogger[F]) => VoteProcessor[F],
-    streamFactory: (VoteProcessor[F], String) => Stream[F, ProcessingResult],
+    congressesResolver: (AppConfig, Transactor[F], PipelineLogger[F]) => F[List[Int]],
+    streamFactory: (VoteProcessor[F], String, List[Int]) => Stream[F, ProcessingResult],
   ): F[ExitCode] =
     for {
       config    <- configLoader
@@ -91,11 +97,63 @@ private[votes] object VotesPipeline {
       stepRunId <- extractStepRunId[F](args)
       logger    <- loggerFactory
       exitCode <- resourceBuilder(config).use { resources =>
-        val processor = processorFactory(config, resources, logger)
-        val stream    = streamFactory(processor, runId)
-        PipelineExecutor.execute[F](stream, logger, PipelineName, runId, stepRunId)
+        for {
+          congresses <- congressesResolver(config, resources.xa, logger)
+          processor = processorFactory(config, resources, logger)
+          stream    = streamFactory(processor, runId, congresses)
+          result <- PipelineExecutor.execute[F](stream, logger, PipelineName, runId, stepRunId)
+        } yield result
       }
     } yield exitCode
+
+  /**
+   * Resolve the list of congresses to ingest. Three layers, in priority order:
+   *
+   *   1. `VOTES_CONGRESSES` env var (comma-separated, e.g. `"117,118,119"`). Highest priority — read directly via
+   *      `sys.env` because HOCON cannot parse a string into `List[Int]`. Trimmed entries; non-numeric tokens raise. 2.
+   *      `config.pipeline.congresses` from `application.conf` / test profiles. Useful for forcing a specific
+   *      multi-congress list without touching env vars. 3. `SELECT DISTINCT congress FROM bills` from the live DB.
+   *      Default — lets votes-pipeline naturally follow whatever congresses the bills pipeline has covered.
+   *
+   * This is the production wiring; the unit spec replaces the whole resolver with a stub so it never touches env or DB.
+   */
+  private[app] def resolveCongresses[F[_]: Async](
+    config: AppConfig,
+    xa: Transactor[F],
+    logger: PipelineLogger[F],
+  ): F[List[Int]] = {
+    val ctx = repcheck.ingestion.common.logging.LogContext("startup", "votes-pipeline:resolve-congresses")
+
+    Sync[F].delay(sys.env.get("VOTES_CONGRESSES").map(_.trim).filter(_.nonEmpty)).flatMap {
+      case Some(raw) =>
+        Sync[F]
+          .delay(raw.split(",").iterator.map(_.trim).filter(_.nonEmpty).map(_.toInt).toList)
+          .flatMap(parsed =>
+            logger
+              .info(ctx, s"Using ${parsed.size} congresses from VOTES_CONGRESSES env: ${parsed.mkString(",")}")
+              .as(parsed)
+          )
+      case None if config.pipeline.congresses.nonEmpty =>
+        val configured = config.pipeline.congresses
+        logger
+          .info(
+            ctx,
+            s"Using ${configured.size} congresses from config.pipeline.congresses: ${configured.mkString(",")}",
+          )
+          .as(configured)
+      case None =>
+        val query = sql"SELECT DISTINCT congress FROM bills WHERE congress IS NOT NULL ORDER BY congress DESC"
+          .query[Int]
+          .to[List]
+        for {
+          derived <- xa.trans.apply(query)
+          _ <- logger.info(
+            ctx,
+            s"No env or config override — derived ${derived.size} congresses from bills table: ${derived.mkString(",")}",
+          )
+        } yield derived
+    }
+  }
 
   /**
    * Extract the step-level identifier from `args(2)` and parse it as a `Long`. The launcher is responsible for creating

@@ -67,22 +67,34 @@ class VoteProcessor[F[_]: Async](
   findStoredVote: String => F[Option[VoteDO]],
   houseConfig: HouseVotesConfig,
   senateConfig: SenateVoteXmlConfig,
-  congress: Int,
-  session: Int,
   logger: PipelineLogger[F],
 ) {
 
   private val StepName: String = "votes-processing"
 
   /**
-   * Top-level entry point. Merges the two chamber streams and lets fs2 interleave emitted `ProcessingResult` values
-   * opportunistically. The caller (`VotesPipelineApp` / `PipelineExecutor`) folds the stream down into a
-   * `PipelineRunSummary`.
+   * Sessions covered for every congress. Both House and Senate organize roll-call votes by session 1 and 2 within a
+   * 2-year congress; iterating both is correct in all cases.
    */
-  def streamAll(runId: String): Stream[F, ProcessingResult] = {
-    val houseCtx  = LogContext(runId, StepName + ":house")
-    val senateCtx = LogContext(runId, StepName + ":senate")
-    processHouseVotes(runId, houseCtx).merge(processSenateVotes(runId, senateCtx))
+  private val Sessions: List[Int] = List(1, 2)
+
+  /**
+   * Top-level entry point. Iterates over the supplied congresses (resolved upstream from `VOTES_CONGRESSES` env or the
+   * bills table) and, for each one, fans out House + Senate streams across sessions {1, 2}.
+   *
+   * Per-(congress, session) failures convert to `ProcessingResult.Failed("<chamber>-chamber-<c>-<s>", ...)` via the
+   * existing chamber-level `handleErrorWith` so a single 404 (e.g. on an old congress without electronic vote data)
+   * does not abort the rest of the run.
+   */
+  def streamAll(runId: String, congresses: List[Int]): Stream[F, ProcessingResult] = {
+    val pairs: List[(Int, Int)] = congresses.flatMap(c => Sessions.map(s => (c, s)))
+    Stream.emits(pairs).flatMap {
+      case (congress, session) =>
+        val houseCtx  = LogContext(runId, StepName + ":house")
+        val senateCtx = LogContext(runId, StepName + ":senate")
+        processHouseVotes(congress, session, runId, houseCtx)
+          .merge(processSenateVotes(congress, session, runId, senateCtx))
+    }
   }
 
   // =========================================================================
@@ -90,11 +102,13 @@ class VoteProcessor[F[_]: Async](
   // =========================================================================
 
   private[pipeline] def processHouseVotes(
+    congress: Int,
+    session: Int,
     runId: String,
     logCtx: LogContext,
   ): Stream[F, ProcessingResult] =
     Stream
-      .evalSeq(houseClient.fetchRecentVotes)
+      .evalSeq(houseClient.fetchRecentVotes(congress, session))
       .parEvalMap(houseConfig.parallelism) { listItem =>
         val naturalKey    = VoteNaturalKeys.houseVote(listItem, fallbackSession = session)
         val correlationId = UUID.randomUUID()
@@ -106,11 +120,13 @@ class VoteProcessor[F[_]: Async](
       }
       .handleErrorWith { e =>
         Stream.eval(
-          logger.error(logCtx, s"House stream failed: ${e.getMessage}", Some(e))
-        ) *> Stream.emit(ProcessingResult.Failed("house-chamber", e.getMessage))
+          logger.error(logCtx, s"House stream failed for $congress/$session: ${e.getMessage}", Some(e))
+        ) *> Stream.emit(ProcessingResult.Failed(s"house-chamber-$congress-$session", e.getMessage))
       }
 
   private[pipeline] def processSenateVotes(
+    congress: Int,
+    session: Int,
     runId: String,
     logCtx: LogContext,
   ): Stream[F, ProcessingResult] =
@@ -119,7 +135,7 @@ class VoteProcessor[F[_]: Async](
       .parEvalMap(senateConfig.parallelism) { entry =>
         val naturalKey    = VoteNaturalKeys.senateVote(entry, congress, session)
         val correlationId = UUID.randomUUID()
-        processSenateVote(entry, correlationId, runId, naturalKey)
+        processSenateVote(entry, congress, session, correlationId, runId, naturalKey)
           .handleErrorWith { e =>
             logger.error(logCtx, s"Senate vote $naturalKey failed: ${e.getMessage}", Some(e)) *>
               Async[F].pure(ProcessingResult.Failed(naturalKey, e.getMessage))
@@ -127,8 +143,8 @@ class VoteProcessor[F[_]: Async](
       }
       .handleErrorWith { e =>
         Stream.eval(
-          logger.error(logCtx, s"Senate stream failed: ${e.getMessage}", Some(e))
-        ) *> Stream.emit(ProcessingResult.Failed("senate-chamber", e.getMessage))
+          logger.error(logCtx, s"Senate stream failed for $congress/$session: ${e.getMessage}", Some(e))
+        ) *> Stream.emit(ProcessingResult.Failed(s"senate-chamber-$congress-$session", e.getMessage))
       }
 
   // =========================================================================
@@ -147,10 +163,13 @@ class VoteProcessor[F[_]: Async](
       correlationId = Some(correlationId),
       entityId = Some(naturalKey),
     )
+    // House DTO carries congress/sessionNumber inline; sessionNumber is occasionally absent on older list items so
+    // we fall back to the listItem's enclosing session via the API call site (House detail endpoint requires both).
+    val callSession = listItem.sessionNumber.getOrElse(1)
     for {
       dto <- houseClient.fetchMembersVotePositions(
         congress = listItem.congress,
-        session = listItem.sessionNumber.getOrElse(session),
+        session = callSession,
         voteNumber = listItem.rollCallNumber,
       )
       conversion <- houseConverter.convert(dto, billLookup.forContext(logCtx), logCtx)
@@ -163,6 +182,8 @@ class VoteProcessor[F[_]: Async](
 
   private[pipeline] def processSenateVote(
     entry: SenateVoteIndexEntry,
+    congress: Int,
+    session: Int,
     correlationId: UUID,
     runId: String,
     naturalKey: String,

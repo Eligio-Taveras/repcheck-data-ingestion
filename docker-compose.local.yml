@@ -305,8 +305,8 @@ services:
       CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
       # Senate — real senate.gov URL.
       SENATE_BASE_URL: https://www.senate.gov/legislative/LIS
-      HOUSE_CONGRESS: ${HOUSE_CONGRESS:-119}
-      HOUSE_SESSION: ${HOUSE_SESSION:-1}
+      # Per P6.H5 the votes pipeline iterates all congresses with bills in the DB. To override,
+      # set VOTES_CONGRESSES (comma-separated, e.g. "117,118,119"). Unset = derive from DB.
       HOUSE_LOOKBACK_DAYS: ${HOUSE_LOOKBACK_DAYS:-7}
       HOUSE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
       SENATE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}

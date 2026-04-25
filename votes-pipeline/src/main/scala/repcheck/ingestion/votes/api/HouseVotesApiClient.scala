@@ -16,15 +16,21 @@ import org.http4s.client.Client
 import org.http4s.headers.Accept
 import org.http4s.{MediaType, Uri}
 
-import repcheck.ingestion.common.api.{CongressGovClientConfig, CongressGovPaginatedClient, FetchParams, PagedResponse}
+import fs2.Stream
+
+import repcheck.ingestion.common.api.{CongressGovClientConfig, FetchParams, PagedResponse}
 import repcheck.ingestion.votes.config.HouseVotesConfig
 import repcheck.ingestion.votes.errors.{HouseVoteApiErrorClassifier, HouseVoteApiHttpError, HouseVoteFetchFailed}
 import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.vote.{VoteListItemDTO, VoteMembersDTO, VoteResultDTO}
 
 /**
- * Congress.gov beta `/house-vote` API client. Extends [[CongressGovPaginatedClient]] so `fetchAll` can walk the
- * paginated list endpoint; also exposes [[fetchMembersVotePositions]] for the per-vote member-positions endpoint.
+ * Congress.gov beta `/house-vote` API client.
+ *
+ * Per P6.H5 the (congress, session) tuple is NOT bound at construction time — every list/detail call accepts them as
+ * explicit arguments. The pipeline iterates over the resolved congresses list (env or DB-derived) and calls
+ * `fetchRecentVotes(congress, session)` once per pair. Pagination, lookback filtering, and retries all sit inside each
+ * call.
  *
  * ==URL construction==
  * Both URLs match the official Congress.gov OpenAPI spec (see `congress-gov-api.yaml` in the votr docs repo):
@@ -53,17 +59,21 @@ class HouseVotesApiClient[F[_]](
   client: Client[F],
   retryWrapper: RetryWrapper[F],
   temporalInstance: Temporal[F],
-) extends CongressGovPaginatedClient[F, VoteListItemDTO] {
+) {
 
-  override protected def pageDelay: FiniteDuration = config.pageDelay
+  protected def pageDelay: FiniteDuration = config.pageDelay
 
-  implicit override protected def temporal: Temporal[F] = temporalInstance
+  implicit protected def temporal: Temporal[F] = temporalInstance
 
   /** Decoder-scoping: keep the API-shape wrappers lexically next to the client that uses them. */
   import HouseVotesApiClient._
 
-  override def fetchPage(params: FetchParams): F[PagedResponse[VoteListItemDTO]] =
-    parseUri(s"${config.baseUrl}/house-vote/${houseConfig.congress}/${houseConfig.session}", None).flatMap { baseUri =>
+  /**
+   * Fetch a single page of the list endpoint for the given (congress, session). Internal — used by [[fetchAllPages]] to
+   * walk pagination.
+   */
+  private def fetchPage(congress: Int, session: Int, params: FetchParams): F[PagedResponse[VoteListItemDTO]] =
+    parseUri(s"${config.baseUrl}/house-vote/$congress/$session", congress, session, None).flatMap { baseUri =>
       val uri = baseUri
         .withQueryParam("format", "json")
         .withQueryParam("offset", params.offset)
@@ -92,8 +102,8 @@ class HouseVotesApiClient[F[_]](
         classifier = HouseVoteApiErrorClassifier,
         errorFactory = (msg, cause) =>
           HouseVoteFetchFailed(
-            congress = houseConfig.congress,
-            session = houseConfig.session,
+            congress = congress,
+            session = session,
             voteNumber = None,
             detail = msg,
             cause = cause,
@@ -101,6 +111,30 @@ class HouseVotesApiClient[F[_]](
         correlationId = UUID.randomUUID(),
       )
     }
+
+  /**
+   * Walk all pages for the given (congress, session). Mirrors the unfoldEval pattern from the previous
+   * `CongressGovPaginatedClient.fetchAll` base default — inlined here so the per-call (congress, session) closes over
+   * the inner `fetchPage` invocation.
+   */
+  private def fetchAllPages(congress: Int, session: Int, params: FetchParams): Stream[F, VoteListItemDTO] = {
+    val F = temporal
+    Stream
+      .unfoldEval[F, Option[FetchParams], List[VoteListItemDTO]](Some(params)) {
+        case None => F.pure(None)
+        case Some(currentParams) =>
+          F.flatMap(fetchPage(congress, session, currentParams)) { response =>
+            val items = response.items
+            if (items.size < currentParams.pageSize) {
+              F.pure(Some((items, None)))
+            } else {
+              val nextParams = currentParams.copy(offset = currentParams.offset + currentParams.pageSize)
+              F.as(F.sleep(pageDelay), Some((items, Some(nextParams))))
+            }
+          }
+      }
+      .flatMap(Stream.emits)
+  }
 
   /**
    * Fetch member positions for a specific vote. Different return type (`VoteMembersDTO`) than the list endpoint, so
@@ -112,7 +146,7 @@ class HouseVotesApiClient[F[_]](
    */
   def fetchMembersVotePositions(congress: Int, session: Int, voteNumber: Int): F[VoteMembersDTO] = {
     val url = s"${config.baseUrl}/house-vote/$congress/$session/$voteNumber/members"
-    parseUri(url, Some(voteNumber)).flatMap { baseUri =>
+    parseUri(url, congress, session, Some(voteNumber)).flatMap { baseUri =>
       val uri = baseUri
         .withQueryParam("format", "json")
         .withQueryParam("api_key", config.apiKey)
@@ -144,8 +178,8 @@ class HouseVotesApiClient[F[_]](
   }
 
   /**
-   * Fetch every vote for the configured congress/session, sort newest-first, and drop anything older than the lookback
-   * cutoff. Calls [[fetchAll]] under the hood so pagination uses the base trait's stream-of-pages implementation.
+   * Fetch every vote for the given (congress, session), sort newest-first, and drop anything older than the lookback
+   * cutoff. Pagination + lookback filtering all run inside this call.
    *
    * Memory note: one session's vote list fits in a single in-memory list (House has ≤ ~600 roll calls/year). No
    * streaming gymnastics required here — the expensive fan-out happens downstream on [[fetchMembersVotePositions]].
@@ -153,9 +187,24 @@ class HouseVotesApiClient[F[_]](
    * A `lookbackDays` of `0` or negative keeps every item regardless of `updateDate`, which is useful for back-fill
    * runs.
    */
-  def fetchRecentVotes: F[List[VoteListItemDTO]] = {
+  def fetchRecentVotes(congress: Int, session: Int): F[List[VoteListItemDTO]] = {
     val params = FetchParams(pageSize = config.pageSize)
-    fetchAll(params).compile.toList.map(all => filterByLookback(all, houseConfig.lookbackDays))
+    val operation = fetchAllPages(congress, session, params).compile.toList
+      .map(all => filterByLookback(all, houseConfig.lookbackDays))
+
+    // A 404 on the list endpoint means "no votes published for this (congress, session)" — not an error.
+    // Common for future sessions that haven't started yet, or for old congresses pre-electronic-archive.
+    // Recover to an empty list so per-(c,s) iteration in the pipeline continues cleanly instead of
+    // marking the chamber as Failed.
+    operation.recoverWith {
+      case e: HouseVoteFetchFailed if isHttp404(e.cause) =>
+        temporal.pure(List.empty[VoteListItemDTO])
+    }
+  }
+
+  private def isHttp404(cause: Throwable): Boolean = cause match {
+    case h: HouseVoteApiHttpError => h.statusCode == 404
+    case _                        => false
   }
 
   /**
@@ -163,14 +212,14 @@ class HouseVotesApiClient[F[_]](
    * `voteNumber` is `None` for list calls (where the failure context is just congress/session) and `Some(n)` for
    * members calls (where we want to surface the specific vote that triggered the bad URL).
    */
-  private[api] def parseUri(raw: String, voteNumber: Option[Int]): F[Uri] =
+  private[api] def parseUri(raw: String, congress: Int, session: Int, voteNumber: Option[Int]): F[Uri] =
     Uri.fromString(raw) match {
       case Right(uri) => temporal.pure(uri)
       case Left(err) =>
         temporal.raiseError(
           HouseVoteFetchFailed(
-            congress = houseConfig.congress,
-            session = houseConfig.session,
+            congress = congress,
+            session = session,
             voteNumber = voteNumber,
             detail = s"Invalid URL: ${err.sanitized}",
             cause = err,
