@@ -352,7 +352,7 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     when(mocks.houseClient.fetchRecentVotes(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(listItem)))
     when(mocks.houseClient.fetchRecentVotes(eqTo(119), eqTo(2))).thenReturn(IO.pure(List.empty))
     when(mocks.houseClient.fetchMembersVotePositions(eqTo(119), eqTo(1), eqTo(42)))
-      .thenReturn(IO.pure(membersDto))
+      .thenReturn(IO.pure(Some(membersDto)))
     when(
       mocks.houseConverter.convert(
         any[repcheck.shared.models.congress.dto.vote.VoteMembersDTO],
@@ -483,6 +483,57 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     val f               = perVoteFailures.headOption.getOrElse(fail("expected one per-vote failure"))
     val _               = f.entityId shouldBe "119-House-1-99"
     f.reason should include("fetch detail 404")
+  }
+
+  it should "skip the House vote (not fail) when fetchMembersVotePositions returns None (sentinel 'no member-vote data')" in {
+    // Surfaced live during P6 backfill on early 117th-Congress votes — Congress.gov returns
+    // `{"houseRollCallVoteMemberVotes": []}` (empty array) for votes that pre-date its member-vote
+    // dataset. The API client decodes that as None; the processor must emit Skipped (not Failed) and
+    // skip the converter/lookup/persister entirely so a vote with no member-position records doesn't
+    // get half-persisted.
+    val mocks = mkMocks()
+    val listItem = repcheck.shared.models.congress.dto.vote.VoteListItemDTO(
+      congress = 117,
+      chamber = "House",
+      rollCallNumber = 1,
+      sessionNumber = Some(1),
+      startDate = None,
+      updateDate = None,
+      result = None,
+      voteType = None,
+      legislationNumber = None,
+      legislationType = None,
+      legislationUrl = None,
+      url = None,
+      identifier = None,
+      sourceDataUrl = None,
+    )
+    when(mocks.houseClient.fetchRecentVotes(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(listItem)))
+    when(mocks.houseClient.fetchRecentVotes(eqTo(119), eqTo(2))).thenReturn(IO.pure(List.empty))
+    when(mocks.houseClient.fetchMembersVotePositions(eqTo(117), eqTo(1), eqTo(1)))
+      .thenReturn(IO.pure(Option.empty[repcheck.shared.models.congress.dto.vote.VoteMembersDTO]))
+    when(mocks.senateClient.fetchVoteIndex(eqTo(119), any[Int]))
+      .thenReturn(IO.pure(List.empty[SenateVoteIndexEntry]))
+
+    val results = mocks.build.streamAll("run-1", testCongresses).compile.toList.unsafeRunSync()
+
+    val _      = results.length shouldBe 1
+    val result = results.headOption.getOrElse(fail("expected one result"))
+    val _ = result match {
+      case ProcessingResult.Skipped(id, reason) =>
+        val _ = id shouldBe "117-House-1-1"
+        reason should include("no member-vote data")
+      case other => fail(s"expected Skipped, got $other")
+    }
+    // Downstream collaborators must not be invoked when there's no member-vote data to convert.
+    val _ = verify(mocks.houseConverter, never()).convert(
+      any[repcheck.shared.models.congress.dto.vote.VoteMembersDTO],
+      any(),
+      any[LogContext],
+    )
+    val _ = verify(mocks.persister, never()).persistNew(any[VoteDO], any())
+    verify(mocks.eventEmitter, never())
+      .emitSuccess(any[VoteDO], any[Option[String]], any[Boolean], any[UUID], any[LogContext])
   }
 
   it should "isolate Senate per-vote failures: fetchVote raises, chamber stream continues" in {

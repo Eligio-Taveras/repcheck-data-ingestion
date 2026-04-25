@@ -144,7 +144,15 @@ class HouseVotesApiClient[F[_]](
    * specific vote is classified as Systemic (not retried) and surfaces as [[HouseVoteFetchFailed]] with the caller's
    * `voteNumber` preserved so the log entry identifies exactly which vote was missing.
    */
-  def fetchMembersVotePositions(congress: Int, session: Int, voteNumber: Int): F[VoteMembersDTO] = {
+  /**
+   * Fetch the members + their cast votes for a specific House roll-call.
+   *
+   * Returns `None` when Congress.gov reports no member-vote data for the vote — older votes (early 117th-Congress
+   * roll-calls and before) sometimes return `{"houseRollCallVoteMemberVotes": []}` (empty array) instead of the normal
+   * `{...}` object. Callers should treat None as `ProcessingResult.Skipped` rather than failure: the vote exists per
+   * the list endpoint but has no member-position records to ingest.
+   */
+  def fetchMembersVotePositions(congress: Int, session: Int, voteNumber: Int): F[Option[VoteMembersDTO]] = {
     val url = s"${config.baseUrl}/house-vote/$congress/$session/$voteNumber/members"
     parseUri(url, congress, session, Some(voteNumber)).flatMap { baseUri =>
       val uri = baseUri
@@ -369,12 +377,16 @@ object HouseVotesApiClient {
   }
 
   /**
-   * API members response envelope: `{"houseRollCallVoteMemberVotes": {...}}`. The inner object is a `HouseVoteMembers`
-   * — same fields as the detail envelope plus `voteQuestion` + `results`. The `results` array uses
-   * `bioguideID`/`voteParty`/`voteState`, which we map into the shared-models `VoteResultDTO` fields
-   * (`memberId`/`party`/`state`) inside a custom member-result decoder.
+   * API members response envelope: `{"houseRollCallVoteMemberVotes": {...}}`. The inner field is normally an object (a
+   * `HouseVoteMembers` body — same fields as the detail envelope plus `voteQuestion` + `results`). For older votes
+   * where Congress.gov has no member-vote data the API returns an EMPTY ARRAY there instead —
+   * `{"houseRollCallVoteMemberVotes": []}` — which we represent as `data = None`. Callers detect None and treat the
+   * vote as Skipped.
+   *
+   * The `results` array uses `bioguideID`/`voteParty`/`voteState`, which we map into the shared-models `VoteResultDTO`
+   * fields (`memberId`/`party`/`state`) inside a custom member-result decoder.
    */
-  final private[api] case class HouseVoteMembersEnvelope(data: VoteMembersDTO)
+  final private[api] case class HouseVoteMembersEnvelope(data: Option[VoteMembersDTO])
 
   private[api] object HouseVoteMembersEnvelope {
 
@@ -434,7 +446,13 @@ object HouseVotesApiClient {
     }
 
     implicit val decoder: Decoder[HouseVoteMembersEnvelope] = Decoder.instance { c =>
-      c.downField("houseRollCallVoteMemberVotes").as[VoteMembersDTO].map(HouseVoteMembersEnvelope.apply)
+      val field   = c.downField("houseRollCallVoteMemberVotes")
+      val isEmpty = field.focus.flatMap(_.asArray).exists(_.isEmpty)
+      if (isEmpty) {
+        Right(HouseVoteMembersEnvelope(None))
+      } else {
+        field.as[VoteMembersDTO].map(dto => HouseVoteMembersEnvelope(Some(dto)))
+      }
     }
 
   }

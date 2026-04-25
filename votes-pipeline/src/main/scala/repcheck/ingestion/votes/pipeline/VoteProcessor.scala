@@ -166,18 +166,33 @@ class VoteProcessor[F[_]: Async](
     // House DTO carries congress/sessionNumber inline; sessionNumber is occasionally absent on older list items so
     // we fall back to the listItem's enclosing session via the API call site (House detail endpoint requires both).
     val callSession = listItem.sessionNumber.getOrElse(1)
-    for {
-      dto <- houseClient.fetchMembersVotePositions(
+    houseClient
+      .fetchMembersVotePositions(
         congress = listItem.congress,
         session = callSession,
         voteNumber = listItem.rollCallNumber,
       )
-      conversion <- houseConverter.convert(dto, billLookup.forContext(logCtx), logCtx)
-      // House arm: resolve each bioguide to members.id (placeholder + lookup). Resulting map drives buildHousePositions.
-      memberMap <- memberLookup.resolveAll(conversion.positions, logCtx)
-      buildPositions = (voteId: Long) => VotePositionBuilders.house(voteId, conversion.positions, memberMap)
-      result <- processVote(conversion, buildPositions, VoteNaturalKeys.houseBill(dto), correlationId, logCtx)
-    } yield result
+      .flatMap {
+        case None =>
+          // Congress.gov returned `{"houseRollCallVoteMemberVotes": []}` (sentinel "no data" — common
+          // on older votes that pre-date the API's member-vote dataset). Treat as Skipped, not Failed:
+          // the vote exists per the list endpoint but has no member-position records to ingest.
+          logger
+            .warn(
+              logCtx,
+              s"House vote $naturalKey has no member-vote data (Congress.gov returned an empty " +
+                "houseRollCallVoteMemberVotes array) — skipping",
+            )
+            .as(ProcessingResult.Skipped(naturalKey, "no member-vote data available from API"))
+        case Some(dto) =>
+          for {
+            conversion <- houseConverter.convert(dto, billLookup.forContext(logCtx), logCtx)
+            // House arm: resolve each bioguide to members.id (placeholder + lookup).
+            memberMap <- memberLookup.resolveAll(conversion.positions, logCtx)
+            buildPositions = (voteId: Long) => VotePositionBuilders.house(voteId, conversion.positions, memberMap)
+            result <- processVote(conversion, buildPositions, VoteNaturalKeys.houseBill(dto), correlationId, logCtx)
+          } yield result
+      }
   }
 
   private[pipeline] def processSenateVote(
