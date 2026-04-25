@@ -1,0 +1,31 @@
+# Modelfile for the local bill-text embedding model.
+#
+# Wraps the Ollama-published `qwen3-embedding:4b` (≈ 2.5 GB on disk) with parameters tuned for our hardware
+# profile (single GPU, 8 GB VRAM) and our workload profile (long bill texts, batched chunk embedding).
+#
+# Why 4B instead of the default 8B tag:
+#   - 8B (Q4_K_M) is ≈ 4.7 GB on disk and needs ≈ 9-10 GB VRAM with KV cache → forces a 16/84 CPU/GPU
+#     split on an 8 GB card. Every forward pass ferries activations across PCIe to system RAM, which is
+#     the actual throughput bottleneck (not GPU compute, not network).
+#   - 4B fits fully on GPU on the same card with headroom for KV cache + larger num_batch.
+#   - Native dim (2560) truncates cleanly via Matryoshka representation learning to our 1536-dim
+#     `raw_bill_text.embedding` schema, so no migration is needed when swapping.
+#   - Retrieval-quality delta vs 8B is minor (≈ 2 points on MTEB benchmarks); for our citizen-facing
+#     alignment-scoring use case that's well within tolerance.
+#
+# Why the parameters:
+#   - num_ctx 8192: comfortably handles our 30000-char chunks (≈ 7500 tokens). Sized this way deliberately —
+#     ollama's KV-cache memory is num_ctx-proportional, and on an 8 GB card every extra GB of KV cache pushes
+#     model weights back to CPU. At 32K context the KV cache alone consumed ≈ 4.5 GB, forcing a 300 MB CPU
+#     spillover even with the 4B model. 8192 reserves ≈ 1.1 GB for KV → leaves headroom for compute graph
+#     (≈ 800 MB) + model weights (≈ 2.3 GB) on a single 8 GB card. Native max is 40960 if a future card has
+#     the room, but we're optimizing for the 2070 SUPER here.
+#   - num_batch 512: tokens per forward-pass batch on prompt evaluation. Default is 128. 512 better
+#     utilizes the GPU's tensor cores on long-input embed workloads.
+#   - num_gpu 99: force ALL transformer layers to GPU (Ollama's "as many as possible" sentinel).
+
+FROM qwen3-embedding:4b
+
+PARAMETER num_ctx 8192
+PARAMETER num_batch 512
+PARAMETER num_gpu 99
