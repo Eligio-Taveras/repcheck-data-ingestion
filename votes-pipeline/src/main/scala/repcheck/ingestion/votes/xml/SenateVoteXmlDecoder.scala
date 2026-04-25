@@ -202,17 +202,31 @@ object SenateVoteXmlDecoder {
   }
 
   /**
-   * Decode the `<document>` child into [[SenateVoteDocumentDTO]]. Required per senate.gov's schema — every
-   * `<roll_call_vote>` has exactly one `<document>`. Fails loudly if missing; tolerates an empty
-   * `<document_short_title/>` element (represented as `None`).
+   * Decode the `<document>` child into [[SenateVoteDocumentDTO]]. Tolerates a missing `<document>` element entirely —
+   * senate.gov omits it for purely procedural roll-calls that don't reference a bill, nomination, or treaty (e.g.
+   * "Motion to Adjourn the Court of Impeachment Sine Die" during the 2024 Mayorkas trial: 118-Senate-2 votes 129..140
+   * all lack `<document>` because they're votes IN the impeachment trial itself, not on any underlying legislation).
+   * When missing, returns a synthetic `SenateVoteDocumentDTO` with empty strings — the converter's
+   * `normalizeDocumentType` then classifies it as `NonBillOrUnknown` and persists the vote with `billId=None` plus a
+   * warn, the same shape we already use for amendment votes (S.Amdt./H.Amdt.) and presidential nominations (PN).
+   *
+   * Tolerates an empty `<document_short_title/>` element (represented as `None`).
+   *
+   * Surfaced live during P6 docker-compose backfill on Senate 118-2 votes 129..140 (impeachment-trial procedural
+   * motions). Pre-fix every one of those votes was dropped at decode time; post-fix they persist as procedural Senate
+   * votes with no bill linkage.
    */
   private def decodeDocument(elem: Elem): Either[XmlParseFailed, SenateVoteDocumentDTO] =
     (elem \ "document").headOption match {
       case None =>
-        Left(
-          XmlParseFailed(
-            "Missing required <document> element",
-            Some(truncate(elem.toString)),
+        Right(
+          SenateVoteDocumentDTO(
+            documentCongress = 0,
+            documentType = "",
+            documentNumber = "",
+            documentName = "",
+            documentTitle = "",
+            documentShortTitle = None,
           )
         )
       case Some(docNode) =>
