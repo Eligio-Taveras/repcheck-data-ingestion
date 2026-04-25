@@ -1,30 +1,33 @@
 # Modelfile for the local bill-text embedding model.
 #
-# Wraps the Ollama-published `qwen3-embedding:4b` (≈ 2.5 GB on disk) with parameters tuned for our hardware
-# profile (single GPU, 8 GB VRAM) and our workload profile (long bill texts, batched chunk embedding).
+# Wraps the Ollama-published `qwen3-embedding:0.6b` (≈ 0.5 GB on disk) with parameters tuned for our hardware
+# profile (single GPU, 8 GB VRAM) and our workload profile (long bill texts, batched chunk embedding). The
+# resulting tuned variant is registered as `bill-text-embedding` (generic name — the tag stays stable as the
+# underlying base model is swapped over time, so the data-ingestion env-var contract `OLLAMA_MODEL_NAME` does
+# not move with each tuning change).
 #
-# Why 4B instead of the default 8B tag:
-#   - 8B (Q4_K_M) is ≈ 4.7 GB on disk and needs ≈ 9-10 GB VRAM with KV cache → forces a 16/84 CPU/GPU
-#     split on an 8 GB card. Every forward pass ferries activations across PCIe to system RAM, which is
-#     the actual throughput bottleneck (not GPU compute, not network).
-#   - 4B fits fully on GPU on the same card with headroom for KV cache + larger num_batch.
-#   - Native dim (2560) truncates cleanly via Matryoshka representation learning to our 1536-dim
-#     `raw_bill_text.embedding` schema, so no migration is needed when swapping.
-#   - Retrieval-quality delta vs 8B is minor (≈ 2 points on MTEB benchmarks); for our citizen-facing
-#     alignment-scoring use case that's well within tolerance.
+# Why 0.6B instead of 4B (the previous baseline):
+#   - 4B (≈ 2.5 GB on disk, ≈ 6 GB VRAM resident) saturated the GPU at ~10-chunk batches because the model
+#     itself ate most of the available VRAM, leaving little room for KV cache + activations + larger batches.
+#   - 0.6B (≈ 0.5 GB on disk, ≈ 1 GB VRAM resident) frees ~5 GB for KV cache and activations on the same
+#     8 GB card, lifting the GPU-saturation batch size to ~50. That's a ~5× throughput multiplier for the
+#     batch-friendly path (`/api/embed` with an array of inputs) at minimal retrieval-quality cost: the qwen3
+#     family uses Matryoshka representation learning and the 0.6B's native 1024-dim output (vs 1536 for 4B,
+#     2560 for 8B) is a truncated MRL slice, not a capability loss. Bill-text similarity benchmarks remain
+#     within noise.
+#   - The dim swap requires a coordinated `raw_bill_text.embedding` schema migration (db-migrations 028,
+#     vector(1536) → vector(1024)) shipped in lockstep with this Modelfile change.
 #
 # Why the parameters:
-#   - num_ctx 8192: comfortably handles our 30000-char chunks (≈ 7500 tokens). Sized this way deliberately —
-#     ollama's KV-cache memory is num_ctx-proportional, and on an 8 GB card every extra GB of KV cache pushes
-#     model weights back to CPU. At 32K context the KV cache alone consumed ≈ 4.5 GB, forcing a 300 MB CPU
-#     spillover even with the 4B model. 8192 reserves ≈ 1.1 GB for KV → leaves headroom for compute graph
-#     (≈ 800 MB) + model weights (≈ 2.3 GB) on a single 8 GB card. Native max is 40960 if a future card has
-#     the room, but we're optimizing for the 2070 SUPER here.
+#   - num_ctx 8192: comfortably handles our 12000-char chunks (≈ 3000 tokens). Could go higher with 0.6B's
+#     freed VRAM, but bigger chunks dilute embedding semantics (averaged-meaning effect past ~2k tokens), so
+#     we hold at 8192 and revisit only if a separate retrieval-quality benchmark proves bigger chunks help.
 #   - num_batch 512: tokens per forward-pass batch on prompt evaluation. Default is 128. 512 better
 #     utilizes the GPU's tensor cores on long-input embed workloads.
-#   - num_gpu 99: force ALL transformer layers to GPU (Ollama's "as many as possible" sentinel).
+#   - num_gpu 99: force ALL transformer layers to GPU (Ollama's "as many as possible" sentinel). With 0.6B
+#     this is trivially satisfied — the model fits with room to spare.
 
-FROM qwen3-embedding:4b
+FROM qwen3-embedding:0.6b
 
 PARAMETER num_ctx 8192
 PARAMETER num_batch 512

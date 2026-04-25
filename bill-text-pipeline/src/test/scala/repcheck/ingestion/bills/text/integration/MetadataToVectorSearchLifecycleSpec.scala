@@ -81,8 +81,8 @@ class MetadataToVectorSearchLifecycleSpec
 
   private val noEmbedConfig: EmbeddingConfig = EmbeddingConfig(
     baseUrl = "http://127.0.0.1:0",
-    modelName = "qwen3-embedding",
-    dimensions = 1536,
+    modelName = "bill-text-embedding",
+    dimensions = 1024,
     timeoutSeconds = 10,
     maxChunkChars = 30000,
     embedBatchSize = 10,
@@ -216,8 +216,8 @@ class MetadataToVectorSearchLifecycleSpec
       if (withEmbedding) {
         val cfg = EmbeddingConfig(
           baseUrl = wmBaseUrl,
-          modelName = "qwen3-embedding",
-          dimensions = 1536,
+          modelName = "bill-text-embedding",
+          dimensions = 1024,
           timeoutSeconds = 10,
           maxChunkChars = 30000,
           embedBatchSize = 10,
@@ -447,7 +447,7 @@ class MetadataToVectorSearchLifecycleSpec
   }
 
   it should "support full chain with embedding and vector search" taggedAs DockerRequired in {
-    val knownEmbedding = Array.fill(1536)(0.0f).updated(0, 1.0f)
+    val knownEmbedding = Array.fill(1024)(0.0f).updated(0, 1.0f)
 
     // Stub all endpoints including Ollama embedding
     stubBillListApi(118, "hr", "901", "Vector Search Lifecycle Bill")
@@ -512,8 +512,8 @@ class MetadataToVectorSearchLifecycleSpec
 
   it should "find the right bill via cross-bill vector search" taggedAs DockerRequired in {
     // Two bills with different embeddings
-    val embedding1 = Array.fill(1536)(0.0f).updated(0, 1.0f)
-    val embedding2 = Array.fill(1536)(0.0f).updated(1, 1.0f)
+    val embedding1 = Array.fill(1024)(0.0f).updated(0, 1.0f)
+    val embedding2 = Array.fill(1024)(0.0f).updated(1, 1.0f)
 
     // --- Bill 902 ---
     stubBillListApi(118, "hr", "902", "First Vector Bill")

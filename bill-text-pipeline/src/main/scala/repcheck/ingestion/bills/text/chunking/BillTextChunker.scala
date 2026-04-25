@@ -4,7 +4,8 @@ package repcheck.ingestion.bills.text.chunking
  * Naive character-window chunker for bill text. Each invocation slices the input into consecutive substrings of length
  * `maxChunkChars`, with no overlap and no awareness of sentence / paragraph / SEC. boundaries — that's what the
  * structured-section pipeline (future component) is for. This chunker exists purely so the embedding model
- * (`qwen3-embedding`, 1536 dims) can produce one vector per slice without exceeding its input context window.
+ * (`bill-text-embedding`, currently backed by qwen3-embedding:0.6b, 1024 dims) can produce one vector per slice without
+ * exceeding its input context window.
  *
  * The split happens by `String.length` (Java char count = UTF-16 code units). Bill text is overwhelmingly ASCII so the
  * char count tracks byte count closely; the model itself enforces the precise token boundary, so a slightly oversized

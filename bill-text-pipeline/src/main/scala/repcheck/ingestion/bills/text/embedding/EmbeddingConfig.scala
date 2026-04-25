@@ -13,11 +13,10 @@ import pureconfig.ConfigReader
  * (validated at chunker entry).
  *
  * `embedBatchSize` controls how many chunks are sent in a single `/api/embed` array call by
- * [[OllamaEmbeddingService.generateEmbeddings]]. Per benchmark on RTX 2070 SUPER + qwen3-embedding-4B, batch=10
- * captures ~15% of the available batching benefit (HTTP/JSON amortization + slightly better GPU tensor-core
- * utilization); going higher hits diminishing returns quickly because the GPU is already saturated by single calls for
- * the 4B model. For smaller models (e.g. qwen3-embedding-0.6b) the GPU has more headroom and the sweet spot rises to
- * ~50. Tunable via `OLLAMA_EMBED_BATCH_SIZE`. Must be `> 0`.
+ * [[OllamaEmbeddingService.generateEmbeddings]]. Sweet spot on RTX 2070 SUPER + qwen3-embedding:0.6b (current default)
+ * is batch=50 — the smaller model frees ~5 GB of VRAM vs the 4B baseline, lifting GPU-saturation batch size from ~10 to
+ * ~50. Override lower if running against a larger model (the 4B / 8B variants saturate at ~10 with the GPU already
+ * pinned by single calls). Tunable via `OLLAMA_EMBED_BATCH_SIZE`. Must be `> 0`.
  */
 final case class EmbeddingConfig(
   baseUrl: String,

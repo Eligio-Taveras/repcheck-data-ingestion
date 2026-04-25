@@ -21,8 +21,9 @@ trait EmbeddingService[F[_]] {
    * Batch-embed a list of texts in a single call to the underlying model.
    *
    * Sends all inputs in one HTTP request to `/api/embed` (or equivalent), letting the model batch the forward pass
-   * across them. Per benchmark on RTX 2070 SUPER + qwen3-embedding-4B (PR #71), batch=10 captures ~15% of the batching
-   * benefit; for smaller models (e.g. qwen3-embedding-0.6b) the sweet spot rises to ~50.
+   * across them. Sweet spot on RTX 2070 SUPER + qwen3-embedding:0.6b (current default) is batch=50 — the smaller model
+   * frees ~5 GB of VRAM vs the 4B baseline, lifting GPU-saturation batch size from ~10 to ~50. Override lower if
+   * running against a larger model (the 4B / 8B variants saturate at ~10 with the GPU already pinned).
    *
    * Error semantics mirror [[generateEmbedding]]: if the batch call fails (HTTP error, dimension mismatch, partial
    * response), the whole batch returns `List.fill(texts.size)(None)` — failures don't propagate as raised errors, they

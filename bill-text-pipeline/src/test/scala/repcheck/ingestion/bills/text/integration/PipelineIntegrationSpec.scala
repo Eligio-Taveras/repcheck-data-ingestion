@@ -63,8 +63,8 @@ class PipelineIntegrationSpec
 
   private val defaultEmbeddingConfig: EmbeddingConfig = EmbeddingConfig(
     baseUrl = "http://127.0.0.1:0",
-    modelName = "qwen3-embedding",
-    dimensions = 1536,
+    modelName = "bill-text-embedding",
+    dimensions = 1024,
     timeoutSeconds = 10,
     maxChunkChars = 30000,
     embedBatchSize = 10,
@@ -147,8 +147,8 @@ class PipelineIntegrationSpec
   private def buildProcessorWithOllama(): BillTextProcessor[IO] = {
     val embeddingConfig = EmbeddingConfig(
       baseUrl = s"http://127.0.0.1:${wireMock.port().toString}",
-      modelName = "qwen3-embedding",
-      dimensions = 1536,
+      modelName = "bill-text-embedding",
+      dimensions = 1024,
       timeoutSeconds = 10,
       maxChunkChars = 30000,
       embedBatchSize = 10,
@@ -300,8 +300,8 @@ class PipelineIntegrationSpec
     val textPath = "/text/118/hr/102/ih"
     stubTextDownload(textPath, sampleHtml)
 
-    // Create a known 1536-dim embedding (unit vector in first dimension)
-    val knownEmbedding = Array.fill(1536)(0.0f).updated(0, 1.0f)
+    // Create a known 1024-dim embedding (unit vector in first dimension)
+    val knownEmbedding = Array.fill(1024)(0.0f).updated(0, 1.0f)
     stubOllamaEmbedding(knownEmbedding)
 
     val event = makeEvent(

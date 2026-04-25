@@ -281,8 +281,8 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val downloader     = new BillTextDownloader[IO](httpClient, pipelineConfig, testLogger)
     val embeddingConfig = EmbeddingConfig(
       baseUrl = s"http://127.0.0.1:${wireMock.port().toString}",
-      modelName = "qwen3-embedding",
-      dimensions = 1536,
+      modelName = "bill-text-embedding",
+      dimensions = 1024,
       timeoutSeconds = 10,
       maxChunkChars = 30000,
       embedBatchSize = 10,
@@ -430,7 +430,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
         )
     )
     stubTextDownload("/text/118/hr/700/ih", billTextHtml)
-    stubOllamaEmbedding(Array.fill(1536)(0.0f).updated(0, 1.0f))
+    stubOllamaEmbedding(Array.fill(1024)(0.0f).updated(0, 1.0f))
 
     // Step 1: Checker finds bill, publishes to real GCP Pub/Sub
     val checker        = buildChecker()
@@ -465,7 +465,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val dbBillId = seedBill("118-HR-701", "701")
     val textUrl  = s"http://127.0.0.1:${wireMock.port().toString}/text/118/hr/701/ih"
 
-    val knownEmbedding = Array.fill(1536)(0.0f).updated(0, 1.0f)
+    val knownEmbedding = Array.fill(1024)(0.0f).updated(0, 1.0f)
 
     val _ = wireMock.stubFor(
       get(urlPathEqualTo("/v3/bill/118/hr/701/text"))
@@ -516,9 +516,9 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val _       = seedBill("118-HR-703", "703")
 
     // Bill 702: unit vector in dimension 0
-    val embedding1 = Array.fill(1536)(0.0f).updated(0, 1.0f)
+    val embedding1 = Array.fill(1024)(0.0f).updated(0, 1.0f)
     // Bill 703: unit vector in dimension 1 (orthogonal)
-    val embedding2 = Array.fill(1536)(0.0f).updated(1, 1.0f)
+    val embedding2 = Array.fill(1024)(0.0f).updated(1, 1.0f)
 
     val textUrl1 = s"http://127.0.0.1:${wireMock.port().toString}/text/118/hr/702/ih"
     val textUrl2 = s"http://127.0.0.1:${wireMock.port().toString}/text/118/hr/703/ih"

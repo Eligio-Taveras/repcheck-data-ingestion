@@ -68,11 +68,11 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     ),
     embedding = EmbeddingConfig(
       baseUrl = "http://localhost:11434",
-      modelName = "qwen3-embedding",
-      dimensions = 1536,
+      modelName = "bill-text-embedding",
+      dimensions = 1024,
       timeoutSeconds = 5,
       maxChunkChars = 30000,
-      embedBatchSize = 10,
+      embedBatchSize = 50,
     ),
     failureHandler = PipelineFailureHandlerConfig(maxRetries = 1),
   )

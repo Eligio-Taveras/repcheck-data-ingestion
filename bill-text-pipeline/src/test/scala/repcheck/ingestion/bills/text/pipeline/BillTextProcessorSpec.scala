@@ -44,7 +44,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
   private val testEmbeddingConfig: EmbeddingConfig = EmbeddingConfig(
     baseUrl = "http://localhost:11434",
-    modelName = "qwen3-embedding",
+    modelName = "bill-text-embedding",
     dimensions = 4,
     timeoutSeconds = 5,
     maxChunkChars = 30000,

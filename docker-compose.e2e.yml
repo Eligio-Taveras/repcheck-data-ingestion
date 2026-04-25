@@ -25,7 +25,7 @@
 #
 # Note on Ollama: instead of running the real Ollama image (heavy, needs model
 # weights), the single WireMock container also serves `POST /api/embed` with a
-# canned 1536-dim embedding response. bill-text-pipeline points at WireMock via
+# canned 1024-dim embedding response. bill-text-pipeline points at WireMock via
 # OLLAMA_BASE_URL=http://wiremock:8080. Semantic correctness isn't proven by
 # this stack — wiring is. Phase 6 + production dev loops keep using real Ollama.
 #
@@ -212,11 +212,12 @@ services:
       EVENT_PUBLISHER_TOPIC: bill-text-ingested
       EVENT_SUBSCRIBER_SUBSCRIPTION: bill-text-available-sub
       # Ollama — points at the single WireMock container. Stub lives at
-      # e2e/wiremock/mappings/ollama-embed.json and returns 1536 zeros so
-      # OllamaEmbeddingService.validateDimension passes against vector(1536) columns.
+      # e2e/wiremock/mappings/ollama-embed.json and returns 1024 zeros so
+      # OllamaEmbeddingService.validateDimension passes against vector(1024) columns
+      # (per migration 028; the bill-text-embedding model emits 1024-dim).
       OLLAMA_BASE_URL: http://wiremock:8080
-      OLLAMA_MODEL_NAME: qwen3-embedding
-      OLLAMA_EMBEDDING_DIMENSIONS: "1536"
+      OLLAMA_MODEL_NAME: bill-text-embedding
+      OLLAMA_EMBEDDING_DIMENSIONS: "1024"
       OLLAMA_TIMEOUT_SECONDS: "30"
       PIPELINE_PARALLELISM: "1"
 
