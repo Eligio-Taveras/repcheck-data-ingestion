@@ -42,6 +42,7 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
       modelName = "qwen3-embedding",
       dimensions = 4,
       timeoutSeconds = 5,
+      maxChunkChars = 30000,
     )
 
   private def service: OllamaEmbeddingService[IO] =

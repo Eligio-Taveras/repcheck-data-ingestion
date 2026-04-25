@@ -71,6 +71,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       modelName = "qwen3-embedding",
       dimensions = 1536,
       timeoutSeconds = 5,
+      maxChunkChars = 30000,
     ),
     failureHandler = PipelineFailureHandlerConfig(maxRetries = 1),
   )

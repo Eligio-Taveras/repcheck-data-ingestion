@@ -32,8 +32,6 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
           versionDate = Some(LocalDate.parse("2024-01-15")),
           formatType = Some(FormatType.FormattedText),
           url = Some("https://congress.gov/text/IH"),
-          content = None,
-          embedding = None,
           fetchedAt = Some(Instant.now()),
           createdAt = None,
         )

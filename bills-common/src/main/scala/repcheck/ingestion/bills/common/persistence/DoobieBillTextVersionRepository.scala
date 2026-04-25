@@ -4,11 +4,19 @@ import doobie._
 import doobie.implicits._
 import doobie.postgres.implicits._
 
-import repcheck.ingestion.bills.common.persistence.DoobieInstances.{floatArrayGet, floatArrayPut}
 import repcheck.pipeline.models.constants.Tables
 import repcheck.shared.models.congress.common.DoobieEnumInstances._
 import repcheck.shared.models.congress.dos.bill.BillTextVersionDO
 
+/**
+ * Doobie repository over `bill_text_versions`. As of db-migrations 026 the table holds version metadata only —
+ * `content` and `embedding` columns were dropped and the actual text + per-chunk embeddings live in `raw_bill_text`
+ * (one row per chunk). This repository writes/reads ONLY the metadata row; chunk persistence is the responsibility of
+ * `bill-text-pipeline`'s `RawBillTextRepository`, composed under the same transaction by `BillTextProcessor`.
+ *
+ * `storeAndUpdateBill` therefore returns the generated/upserted `bill_text_versions.id` so the processor can pass it as
+ * the parent FK when persisting chunks.
+ */
 class DoobieBillTextVersionRepository extends BillTextVersionRepository[ConnectionIO] {
 
   private val table = Fragment.const(Tables.BillTextVersions)
@@ -21,8 +29,6 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
     version_date::date,
     format_type,
     url,
-    content,
-    embedding,
     fetched_at,
     created_at
   """
@@ -31,15 +37,12 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
     sql"""
       INSERT INTO $table (
         bill_id, version_code, version_type,
-        version_date, format_type, url, content, embedding, fetched_at
+        version_date, format_type, url, fetched_at
       ) VALUES (
         ${version.billId}, ${version.versionCode}::text_version_code_type, ${version.versionType},
-        ${version.versionDate}, ${version.formatType}, ${version.url},
-        ${version.content}, ${version.embedding}::vector, ${version.fetchedAt}
+        ${version.versionDate}, ${version.formatType}, ${version.url}, ${version.fetchedAt}
       )
       ON CONFLICT (bill_id, version_code, version_date) DO UPDATE SET
-        content = EXCLUDED.content,
-        embedding = EXCLUDED.embedding,
         format_type = EXCLUDED.format_type,
         url = EXCLUDED.url,
         fetched_at = EXCLUDED.fetched_at
@@ -75,25 +78,8 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
 
   override def storeAndUpdateBill(version: BillTextVersionDO): ConnectionIO[Long] =
     for {
-      generatedId <- sql"""
-        INSERT INTO $table (
-          bill_id, version_code, version_type,
-          version_date, format_type, url, content, embedding, fetched_at
-        ) VALUES (
-          ${version.billId}, ${version.versionCode}::text_version_code_type, ${version.versionType},
-          ${version.versionDate}, ${version.formatType}, ${version.url},
-          ${version.content}, ${version.embedding}::vector, ${version.fetchedAt}
-        )
-        ON CONFLICT (bill_id, version_code, version_date) DO UPDATE SET
-          content = EXCLUDED.content,
-          embedding = EXCLUDED.embedding,
-          format_type = EXCLUDED.format_type,
-          url = EXCLUDED.url,
-          fetched_at = EXCLUDED.fetched_at
-        RETURNING id
-      """.query[Long].unique
-
-      _ <- buildBillTextFieldsUpdate(version, generatedId)
+      generatedId <- insertVersion(version)
+      _           <- buildBillTextFieldsUpdate(version, generatedId)
     } yield generatedId
 
 }

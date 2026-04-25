@@ -75,15 +75,23 @@ class DockerE2ESpec extends AnyFlatSpec with Matchers with TransactorFixture wit
   it should "store and retrieve bill text versions" taggedAs DockerRequired in {
     val dbBillId = seedBill("118-HR-902", "902")
 
-    // Insert a text version directly
+    // Insert a text version directly. Post P6.H4c, content lives in raw_bill_text — the version row is metadata only.
+    val versionId = sql"""
+      INSERT INTO bill_text_versions (bill_id, version_code, version_type)
+      VALUES ($dbBillId, 'IH', 'Introduced in House')
+    """.update.withUniqueGeneratedKeys[Long]("id").transact(xa).unsafeRunSync()
+
     val _ = sql"""
-      INSERT INTO bill_text_versions (bill_id, version_code, version_type, content)
-      VALUES ($dbBillId, 'IH', 'Introduced in House', 'Test bill text content for E2E')
+      INSERT INTO raw_bill_text (bill_id, version_id, chunk_index, content)
+      VALUES ($dbBillId, $versionId, 0, 'Test bill text content for E2E')
     """.update.run.transact(xa).unsafeRunSync()
 
     val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
     val _        = versions.size shouldBe 1
-    versions.headOption.flatMap(_.content).getOrElse("") should include("E2E")
+    val storedContent = sql"""
+      SELECT content FROM raw_bill_text WHERE version_id = $versionId ORDER BY chunk_index
+    """.query[String].to[List].transact(xa).unsafeRunSync()
+    storedContent.mkString should include("E2E")
   }
 
   it should "publish and pull messages on Pub/Sub emulator" taggedAs DockerRequired in {

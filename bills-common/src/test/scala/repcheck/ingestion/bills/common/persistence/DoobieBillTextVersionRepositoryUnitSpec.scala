@@ -19,8 +19,6 @@ class DoobieBillTextVersionRepositoryUnitSpec extends AnyFlatSpec with Matchers 
     versionDate = Some(LocalDate.parse("2024-01-15")),
     formatType = Some(FormatType.FormattedXml),
     url = Some("http://example.com/text"),
-    content = Some("Bill text content"),
-    embedding = None,
     fetchedAt = Some(Instant.parse("2024-01-15T12:00:00Z")),
     createdAt = None,
   )
@@ -35,7 +33,6 @@ class DoobieBillTextVersionRepositoryUnitSpec extends AnyFlatSpec with Matchers 
       versionDate = None,
       formatType = None,
       url = None,
-      content = None,
       fetchedAt = None,
     )
     val cio = repo.insertVersion(minimal)

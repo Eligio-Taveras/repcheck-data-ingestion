@@ -11,6 +11,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       modelName = "qwen3-embedding",
       dimensions = 1536,
       timeoutSeconds = 30,
+      maxChunkChars = 30000,
     )
     config.baseUrl shouldBe "http://localhost:11434"
   }
@@ -21,6 +22,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       modelName = "qwen3-embedding:4b",
       dimensions = 1536,
       timeoutSeconds = 30,
+      maxChunkChars = 30000,
     )
     config.modelName shouldBe "qwen3-embedding:4b"
   }
@@ -31,6 +33,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       modelName = "qwen3-embedding",
       dimensions = 1536,
       timeoutSeconds = 30,
+      maxChunkChars = 30000,
     )
     config.dimensions shouldBe 1536
   }
@@ -41,6 +44,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       modelName = "qwen3-embedding",
       dimensions = 1536,
       timeoutSeconds = 60,
+      maxChunkChars = 30000,
     )
     config.timeoutSeconds shouldBe 60
   }

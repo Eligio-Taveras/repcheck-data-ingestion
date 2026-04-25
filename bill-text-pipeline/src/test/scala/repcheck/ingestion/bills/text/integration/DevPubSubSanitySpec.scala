@@ -35,6 +35,7 @@ import repcheck.ingestion.bills.common.testing.{E2ETest, TransactorFixture}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
+import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.textcheck.api.BillTextApiClient
 import repcheck.ingestion.bills.textcheck.config.BillTextCheckerConfig
@@ -64,6 +65,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
 
   private val billRepo        = new DoobieBillRepository()
   private val textVersionRepo = new DoobieBillTextVersionRepository()
+  private val rawTextRepo     = new DoobieRawBillTextRepository()
 
   private val projectId = sys.env.getOrElse("GOOGLE_CLOUD_PROJECT", "repcheck-dev")
 
@@ -282,6 +284,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       modelName = "qwen3-embedding",
       dimensions = 1536,
       timeoutSeconds = 10,
+      maxChunkChars = 30000,
     )
     val embeddingService = new OllamaEmbeddingService[IO](httpClient, embeddingConfig, testLogger)
     val pubsubPublisher  = new GooglePubSubEventPublisher[IO](r.publisher)
@@ -298,7 +301,9 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
+      rawBillTextRepository = rawTextRepo,
       embeddingService = embeddingService,
+      embeddingConfig = embeddingConfig,
       eventPublisher = eventPublisher,
       xa = xa,
       logger = testLogger,
@@ -449,7 +454,8 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val stored   = versions.headOption.getOrElse(fail("No version stored"))
     val _        = stored.versionCode shouldBe "IH"
     val _        = stored.billId shouldBe dbBillId
-    stored.content.getOrElse("") should include("E2E Sanity Test Act")
+    val chunks   = rawTextRepo.findByVersionId(stored.id).transact(xa).unsafeRunSync()
+    chunks.map(_.content).mkString should include("E2E Sanity Test Act")
   }
 
   it should "store embedding and find bill via vector search" taggedAs E2ETest in {
@@ -482,15 +488,17 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val processor = buildProcessorWithOllama()
     val _         = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
 
-    // Verify embedding stored
-    val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
-    val _        = versions.headOption.flatMap(_.embedding).isDefined shouldBe true
+    // Verify embedding stored on at least one chunk
+    val versions   = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
+    val storedV    = versions.headOption.getOrElse(fail("No version stored"))
+    val storedRows = rawTextRepo.findByVersionId(storedV.id).transact(xa).unsafeRunSync()
+    val _          = storedRows.exists(_.embedding.isDefined) shouldBe true
 
-    // Verify pgvector cosine similarity search
+    // Verify pgvector cosine similarity search against raw_bill_text
     val queryVector = knownEmbedding.mkString("[", ",", "]")
     val similarity = sql"""
       SELECT 1 - (embedding <=> $queryVector::vector) as similarity
-      FROM bill_text_versions
+      FROM raw_bill_text
       WHERE bill_id = $dbBillId AND embedding IS NOT NULL
       ORDER BY embedding <=> $queryVector::vector
       LIMIT 1
@@ -569,13 +577,14 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       .getOrElse(fail("No event for bill 703"))
     val _ = processor.processEvent(parseEvent(msg703), UUID.randomUUID()).unsafeRunSync()
 
-    // Verify cross-bill vector search: query with embedding1 ranks bill 702 first
+    // Verify cross-bill vector search: query with embedding1 ranks bill 702 first.
+    // Embeddings now live on raw_bill_text rows (P6.H4c refactor), so the search joins via that table.
     val queryVector = embedding1.mkString("[", ",", "]")
     val searchResults = sql"""
-      SELECT btv.bill_id, 1 - (btv.embedding <=> $queryVector::vector) as similarity
-      FROM bill_text_versions btv
-      WHERE btv.embedding IS NOT NULL
-      ORDER BY btv.embedding <=> $queryVector::vector
+      SELECT rbt.bill_id, 1 - (rbt.embedding <=> $queryVector::vector) as similarity
+      FROM raw_bill_text rbt
+      WHERE rbt.embedding IS NOT NULL
+      ORDER BY rbt.embedding <=> $queryVector::vector
       LIMIT 2
     """.query[(Long, Double)].to[List].transact(xa).unsafeRunSync()
 
