@@ -189,8 +189,22 @@ class HouseVotesApiClient[F[_]](
    */
   def fetchRecentVotes(congress: Int, session: Int): F[List[VoteListItemDTO]] = {
     val params = FetchParams(pageSize = config.pageSize)
-    fetchAllPages(congress, session, params).compile.toList
+    val operation = fetchAllPages(congress, session, params).compile.toList
       .map(all => filterByLookback(all, houseConfig.lookbackDays))
+
+    // A 404 on the list endpoint means "no votes published for this (congress, session)" — not an error.
+    // Common for future sessions that haven't started yet, or for old congresses pre-electronic-archive.
+    // Recover to an empty list so per-(c,s) iteration in the pipeline continues cleanly instead of
+    // marking the chamber as Failed.
+    operation.recoverWith {
+      case e: HouseVoteFetchFailed if isHttp404(e.cause) =>
+        temporal.pure(List.empty[VoteListItemDTO])
+    }
+  }
+
+  private def isHttp404(cause: Throwable): Boolean = cause match {
+    case h: HouseVoteApiHttpError => h.statusCode == 404
+    case _                        => false
   }
 
   /**

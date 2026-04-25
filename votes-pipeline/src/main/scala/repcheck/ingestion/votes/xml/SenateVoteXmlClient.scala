@@ -134,7 +134,7 @@ class SenateVoteXmlClient[F[_]: Async](
       logger.info(logCtx, s"Fetching Senate vote index from $url") *>
         fetchAndDecodeIndex(url, congress, session)
 
-    retryWrapper.withRetry(
+    val withRetry = retryWrapper.withRetry(
       operation = operation,
       config = config.retry,
       classifier = SenateVoteXmlErrorClassifier,
@@ -148,6 +148,19 @@ class SenateVoteXmlClient[F[_]: Async](
         ),
       correlationId = correlationId,
     )
+
+    // A 404 on the index endpoint means "no votes published for this (congress, session)" — not an error.
+    // Common for future sessions that haven't started yet, or for old congresses where senate.gov never
+    // hosted electronic vote indexes. Recover to an empty list so per-(c,s) iteration in the pipeline
+    // continues cleanly to the next pair instead of marking the chamber as Failed. Non-404 errors
+    // re-raise unchanged so the chamber-level handler in VoteProcessor still observes them.
+    withRetry.handleErrorWith {
+      case e: SenateVoteFetchFailed if e.statusCode == 404 =>
+        logger
+          .info(logCtx, s"Senate vote index 404 for $congress/$session — no votes for this session, treating as empty")
+          .as(List.empty[SenateVoteIndexEntry])
+      case other => Async[F].raiseError(other)
+    }
   }
 
   private def fetchAndDecodeVote(
