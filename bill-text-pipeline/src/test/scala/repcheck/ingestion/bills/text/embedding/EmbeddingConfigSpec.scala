@@ -12,6 +12,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       dimensions = 1536,
       timeoutSeconds = 30,
       maxChunkChars = 30000,
+      embedBatchSize = 10,
     )
     config.baseUrl shouldBe "http://localhost:11434"
   }
@@ -23,6 +24,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       dimensions = 1536,
       timeoutSeconds = 30,
       maxChunkChars = 30000,
+      embedBatchSize = 10,
     )
     config.modelName shouldBe "qwen3-embedding:4b"
   }
@@ -34,6 +36,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       dimensions = 1536,
       timeoutSeconds = 30,
       maxChunkChars = 30000,
+      embedBatchSize = 10,
     )
     config.dimensions shouldBe 1536
   }
@@ -45,8 +48,33 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       dimensions = 1536,
       timeoutSeconds = 60,
       maxChunkChars = 30000,
+      embedBatchSize = 10,
     )
     config.timeoutSeconds shouldBe 60
+  }
+
+  it should "hold maxChunkChars" in {
+    val config = EmbeddingConfig(
+      baseUrl = "http://localhost:11434",
+      modelName = "qwen3-embedding",
+      dimensions = 1536,
+      timeoutSeconds = 30,
+      maxChunkChars = 12000,
+      embedBatchSize = 10,
+    )
+    config.maxChunkChars shouldBe 12000
+  }
+
+  it should "hold embedBatchSize" in {
+    val config = EmbeddingConfig(
+      baseUrl = "http://localhost:11434",
+      modelName = "qwen3-embedding",
+      dimensions = 1536,
+      timeoutSeconds = 30,
+      maxChunkChars = 12000,
+      embedBatchSize = 50,
+    )
+    config.embedBatchSize shouldBe 50
   }
 
 }

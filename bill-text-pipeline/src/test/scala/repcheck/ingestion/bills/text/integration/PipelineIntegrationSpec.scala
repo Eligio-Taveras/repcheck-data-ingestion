@@ -67,6 +67,7 @@ class PipelineIntegrationSpec
     dimensions = 1536,
     timeoutSeconds = 10,
     maxChunkChars = 30000,
+    embedBatchSize = 10,
   )
 
   private val pipelineConfig = BillTextPipelineConfig(
@@ -150,6 +151,7 @@ class PipelineIntegrationSpec
       dimensions = 1536,
       timeoutSeconds = 10,
       maxChunkChars = 30000,
+      embedBatchSize = 10,
     )
     val ollamaService = new OllamaEmbeddingService[IO](httpClient, embeddingConfig, testLogger)
     buildProcessor(ollamaService, embeddingConfig)

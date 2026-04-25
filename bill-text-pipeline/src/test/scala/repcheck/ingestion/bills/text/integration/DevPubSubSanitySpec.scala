@@ -285,6 +285,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       dimensions = 1536,
       timeoutSeconds = 10,
       maxChunkChars = 30000,
+      embedBatchSize = 10,
     )
     val embeddingService = new OllamaEmbeddingService[IO](httpClient, embeddingConfig, testLogger)
     val pubsubPublisher  = new GooglePubSubEventPublisher[IO](r.publisher)

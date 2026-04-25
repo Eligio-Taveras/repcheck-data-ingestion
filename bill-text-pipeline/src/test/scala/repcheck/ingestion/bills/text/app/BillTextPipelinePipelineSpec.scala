@@ -72,6 +72,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       dimensions = 1536,
       timeoutSeconds = 5,
       maxChunkChars = 30000,
+      embedBatchSize = 10,
     ),
     failureHandler = PipelineFailureHandlerConfig(maxRetries = 1),
   )

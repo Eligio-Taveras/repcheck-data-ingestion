@@ -20,4 +20,15 @@ class NoOpEmbeddingServiceSpec extends AnyFlatSpec with Matchers {
     result shouldBe None
   }
 
+  it should "return a list of None matching input size for generateEmbeddings" in {
+    val result = service.generateEmbeddings(List("a", "b", "c")).unsafeRunSync()
+    val _      = result.size shouldBe 3
+    result.forall(_.isEmpty) shouldBe true
+  }
+
+  it should "return an empty list when given an empty input list to generateEmbeddings" in {
+    val result = service.generateEmbeddings(List.empty).unsafeRunSync()
+    result shouldBe empty
+  }
+
 }

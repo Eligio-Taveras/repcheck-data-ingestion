@@ -16,6 +16,11 @@ import repcheck.ingestion.common.logging.PipelineLogger
  *
  * Calls the Ollama `/api/embed` endpoint to generate embeddings using a configurable model and dimension. The Ollama
  * instance can be local (dev) or a Cloud Run sidecar (prod).
+ *
+ * Both `generateEmbedding` (single) and `generateEmbeddings` (batch) hit the same `/api/embed` endpoint — Ollama's
+ * `input` field accepts either a JSON string or a JSON array of strings. The batch path lets the model amortize
+ * tokenization, kernel-launch overhead, and HTTP round-trip cost across multiple chunks; per benchmark on RTX 2070
+ * SUPER + qwen3-embedding-4B (PR #71), batch=10 captures ~15% of the available batching benefit.
  */
 class OllamaEmbeddingService[F[_]: Async] private[text] (
   client: Client[F],
@@ -23,9 +28,14 @@ class OllamaEmbeddingService[F[_]: Async] private[text] (
   logger: PipelineLogger[F],
 ) extends EmbeddingService[F] {
 
+  /**
+   * Request body for `/api/embed`. `input` is encoded as a JSON array — Ollama accepts both single-string and array
+   * forms, but encoding a length-1 array works for both shapes and lets a single code path handle both single and
+   * batched calls.
+   */
   private case class EmbedRequest(
     model: String,
-    input: String,
+    input: List[String],
     dimensions: Int,
   )
 
@@ -34,7 +44,7 @@ class OllamaEmbeddingService[F[_]: Async] private[text] (
     implicit val encoder: Encoder[EmbedRequest] = Encoder.instance { req =>
       Json.obj(
         "model"      -> Json.fromString(req.model),
-        "input"      -> Json.fromString(req.input),
+        "input"      -> Json.arr(req.input.map(Json.fromString)*),
         "dimensions" -> Json.fromInt(req.dimensions),
       )
     }
@@ -62,42 +72,78 @@ class OllamaEmbeddingService[F[_]: Async] private[text] (
     if (text.trim.isEmpty) {
       Async[F].pure(None)
     } else {
-      callOllama(text).map(Some(_)).handleErrorWith { error =>
-        logger
-          .warn(
-            repcheck.ingestion.common.logging.LogContext(
-              runId = "embedding",
-              stepName = "ollama-embed",
-            ),
-            s"Embedding generation failed, continuing without embedding: ${error.getMessage}",
-          )
-          .as(None)
-      }
+      generateEmbeddings(List(text)).map(_.headOption.flatten)
     }
 
-  private[embedding] def callOllama(text: String): F[Array[Float]] =
+  override def generateEmbeddings(texts: List[String]): F[List[Option[Array[Float]]]] = {
+    // Index → text for non-empty inputs; empty/whitespace inputs short-circuit to None at their position so we never
+    // send them to Ollama (Ollama errors on empty `input` strings, and a None at that index is the correct semantic).
+    val indexed     = texts.zipWithIndex
+    val nonEmpty    = indexed.filter { case (text, _) => text.trim.nonEmpty }
+    val emptyCount  = texts.size - nonEmpty.size
+    val totalLength = texts.iterator.map(_.length).sum
+
+    if (nonEmpty.isEmpty) {
+      Async[F].pure(List.fill(texts.size)(None))
+    } else {
+      callOllama(nonEmpty.map { case (text, _) => text }).attempt.flatMap {
+        case Right(embeddings) =>
+          // Reconstruct the output list with None at empty-input positions and Some(embedding) at the rest.
+          val withResult: Map[Int, Array[Float]] =
+            nonEmpty.zip(embeddings).map { case ((_, originalIdx), emb) => originalIdx -> emb }.toMap
+          Async[F].pure(texts.indices.toList.map(i => withResult.get(i)))
+        case Left(error) =>
+          logger
+            .warn(
+              repcheck.ingestion.common.logging.LogContext(
+                runId = "embedding",
+                stepName = "ollama-embed-batch",
+              ),
+              s"Batch embedding failed for ${nonEmpty.size.toString} chunks (${emptyCount.toString} skipped empty, total ${totalLength.toString} chars), continuing with None embeddings: ${error.getMessage}",
+            )
+            .as(List.fill(texts.size)(None))
+      }
+    }
+  }
+
+  private[embedding] def callOllama(texts: List[String]): F[List[Array[Float]]] =
     for {
       uri <- parseUri(s"${config.baseUrl}/api/embed")
       request = Request[F](method = Method.POST, uri = uri)
-        .withEntity(EmbedRequest(config.modelName, text, config.dimensions))
-      response  <- client.expect[EmbedResponse](request)
-      embedding <- extractEmbedding(response, text.length)
-      _         <- validateDimension(embedding, text.length)
-    } yield embedding
+        .withEntity(EmbedRequest(config.modelName, texts, config.dimensions))
+      response   <- client.expect[EmbedResponse](request)
+      embeddings <- extractEmbeddings(response, texts)
+      _          <- embeddings.traverse_(emb => validateDimension(emb, totalCharsOf(texts)))
+    } yield embeddings
+
+  private def totalCharsOf(texts: List[String]): Int = texts.iterator.map(_.length).sum
 
   private def parseUri(raw: String): F[Uri] =
     Async[F].fromEither(
       Uri.fromString(raw).leftMap(failure => EmbeddingGenerationFailed(s"Invalid Ollama URL: ${failure.message}", 0))
     )
 
-  private def extractEmbedding(response: EmbedResponse, textLength: Int): F[Array[Float]] =
-    response.embeddings match {
-      case head :: _ => Async[F].pure(head.toArray)
-      case Nil =>
-        Async[F].raiseError(
-          EmbeddingGenerationFailed("Ollama returned empty embeddings array", textLength)
+  /**
+   * Convert Ollama's nested `embeddings: List[List[Float]]` response into a `List[Array[Float]]` with the same length
+   * and order as the input texts. Raises [[EmbeddingGenerationFailed]] if the response is empty or has a different
+   * cardinality than the request — both are protocol violations that callers must handle (and `generateEmbeddings`
+   * does, by swallowing into `List.fill(N)(None)`).
+   */
+  private def extractEmbeddings(response: EmbedResponse, texts: List[String]): F[List[Array[Float]]] = {
+    val totalChars = totalCharsOf(texts)
+    if (response.embeddings.isEmpty) {
+      Async[F].raiseError(EmbeddingGenerationFailed("Ollama returned empty embeddings array", totalChars))
+    } else if (response.embeddings.size =!= texts.size) {
+      Async[F].raiseError(
+        EmbeddingGenerationFailed(
+          s"Embedding count mismatch: requested ${texts.size.toString} but got ${response.embeddings.size.toString}",
+          totalChars,
         )
+      )
+    } else {
+      Async[F].pure(response.embeddings.map(_.toArray))
     }
+  }
 
   private def validateDimension(embedding: Array[Float], textLength: Int): F[Unit] =
     if (embedding.length =!= config.dimensions) {

@@ -85,6 +85,7 @@ class MetadataToVectorSearchLifecycleSpec
     dimensions = 1536,
     timeoutSeconds = 10,
     maxChunkChars = 30000,
+    embedBatchSize = 10,
   )
 
   private val cosponsorRepo   = new DoobieBillCosponsorRepository()
@@ -219,6 +220,7 @@ class MetadataToVectorSearchLifecycleSpec
           dimensions = 1536,
           timeoutSeconds = 10,
           maxChunkChars = 30000,
+          embedBatchSize = 10,
         )
         (new OllamaEmbeddingService[IO](httpClient, cfg, testLogger), cfg)
       } else {
