@@ -252,7 +252,13 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
     result.left.toOption.map(_.detail).getOrElse("") should include("Missing <vote_result>")
   }
 
-  it should "reject a missing <document> element" in {
+  it should "tolerate a missing <document> element by returning an empty document (procedural votes)" in {
+    // senate.gov omits <document> for purely procedural roll-calls that don't reference a bill, nomination, or
+    // treaty. Live example: 118-Senate-2 votes 129..140 ("Motion to Adjourn the Court of Impeachment Sine Die"
+    // and surrounding impeachment-trial motions during the 2024 Mayorkas trial). Pre-fix every one of those was
+    // dropped at decode time; post-fix they decode with an empty SenateVoteDocumentDTO whose blank documentType
+    // routes through SenateVoteConverter.normalizeDocumentType into the existing NonBillOrUnknown branch and
+    // persists with billId=None — same shape as amendment / nomination votes.
     val elem = XML.loadString(
       """<roll_call_vote>
         |  <congress>119</congress>
@@ -267,8 +273,18 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
 
     val result = SenateVoteXmlDecoder.decodeVote(elem)
 
-    val _ = result.isLeft shouldBe true
-    result.left.toOption.map(_.detail).getOrElse("") should include("Missing required <document>")
+    val _ = result.isRight shouldBe true
+    result.fold(
+      err => fail(s"decode unexpectedly failed: ${err.detail}"),
+      dto => {
+        val _ = dto.document.documentType shouldBe ""
+        val _ = dto.document.documentNumber shouldBe ""
+        val _ = dto.document.documentName shouldBe ""
+        val _ = dto.document.documentTitle shouldBe ""
+        val _ = dto.document.documentCongress shouldBe 0
+        dto.document.documentShortTitle shouldBe None
+      },
+    )
   }
 
   it should "decode the <document> element populating every field" in {
