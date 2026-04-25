@@ -122,6 +122,16 @@ services:
       - "11434:11434"
     volumes:
       - ollamadata:/root/.ollama
+    environment:
+      # Performance tuning — see ollama/Modelfile for the full reasoning.
+      # Note: flash attention + quantized KV cache were tried first but qwen3-embedding doesn't support
+      # FA (Ollama logs `flash attention enabled but not supported by model`), and KV-cache quantization
+      # requires FA, so both became no-ops. Removed to keep the config honest.
+      # Keep the model resident across embed calls (default unloads after 5 min idle → 5-10 s reload penalty).
+      OLLAMA_KEEP_ALIVE: 24h
+      # Concurrent request slots. GPU is single-tenant so requests serialize on the device anyway, but
+      # this lets the server queue bursts efficiently rather than rejecting.
+      OLLAMA_NUM_PARALLEL: "5"
     deploy:
       resources:
         reservations:
@@ -228,10 +238,15 @@ services:
       GCP_PROJECT_ID: repcheck-local
       EVENT_PUBLISHER_TOPIC: bill-text-ingested
       EVENT_SUBSCRIBER_SUBSCRIPTION: bill-text-available-sub
+      EVENT_SUBSCRIBER_MAX_MESSAGES: ${EVENT_SUBSCRIBER_MAX_MESSAGES:-100}
       OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL_NAME: qwen3-embedding
+      # Tuned model variant baked by ollama/Dockerfile (Modelfile-derived from qwen3-embedding:4b).
+      # The 4B model fits fully on an 8 GB GPU (eliminating the 16/84 CPU/GPU offload that was the
+      # actual throughput bottleneck on the 8B variant).
+      OLLAMA_MODEL_NAME: qwen3-embedding-tuned
       OLLAMA_EMBEDDING_DIMENSIONS: "1536"
       OLLAMA_TIMEOUT_SECONDS: "60"
+      OLLAMA_MAX_CHUNK_CHARS: ${OLLAMA_MAX_CHUNK_CHARS:-12000}
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
     restart: "no"
 
