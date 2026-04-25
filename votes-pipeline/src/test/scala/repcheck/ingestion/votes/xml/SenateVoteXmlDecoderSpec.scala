@@ -396,7 +396,10 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
     result.left.toOption.map(_.detail).getOrElse("") should include("Expected <vote_summary> root")
   }
 
-  it should "fail when a vote entry has a non-numeric <vote_number>" in {
+  it should "silently skip a vote entry with a non-numeric <vote_number> rather than failing the whole index" in {
+    // Per-entry tolerance: a single malformed entry no longer aborts the entire session's index parse.
+    // The bad entry is dropped; any siblings continue to decode normally. Surfaced live during P6
+    // backfill where one bad entry was killing 200+ siblings in older Senate index XMLs.
     val elem = XML.loadString(
       """<vote_summary>
         |  <votes>
@@ -406,14 +409,20 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
         |      <question>Q</question>
         |      <result>R</result>
         |    </vote>
+        |    <vote>
+        |      <vote_number>00100</vote_number>
+        |      <vote_date>2-Jan</vote_date>
+        |      <question>Good Q</question>
+        |      <result>Agreed</result>
+        |    </vote>
         |  </votes>
         |</vote_summary>""".stripMargin
     )
 
-    val result = SenateVoteXmlDecoder.decodeIndex(elem)
-
-    val _ = result.isLeft shouldBe true
-    result.left.toOption.map(_.detail).getOrElse("") should include("vote_number")
+    val result  = SenateVoteXmlDecoder.decodeIndex(elem)
+    val entries = result.toOption.getOrElse(fail("expected Right with the surviving entry"))
+    val _       = entries.size shouldBe 1
+    entries.headOption.map(_.voteNumber) shouldBe Some(100)
   }
 
   it should "produce an empty list when the index has no <vote> entries" in {
@@ -423,7 +432,7 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
     result shouldBe Right(List.empty)
   }
 
-  it should "fail with Missing <question> when a non-en-bloc vote is missing a question" in {
+  it should "silently skip a non-en-bloc entry that is missing <question> rather than failing the whole index" in {
     val elem = XML.loadString(
       """<vote_summary>
         |  <votes>
@@ -433,13 +442,20 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
         |      <!-- question missing, no en_bloc -->
         |      <result>Agreed</result>
         |    </vote>
+        |    <vote>
+        |      <vote_number>00125</vote_number>
+        |      <vote_date>2-Jan</vote_date>
+        |      <question>Good Q</question>
+        |      <result>Agreed</result>
+        |    </vote>
         |  </votes>
         |</vote_summary>""".stripMargin
     )
 
-    val result = SenateVoteXmlDecoder.decodeIndex(elem)
-    val _      = result.isLeft shouldBe true
-    result.left.toOption.map(_.detail).getOrElse("") should include("Missing or empty <question>")
+    val result  = SenateVoteXmlDecoder.decodeIndex(elem)
+    val entries = result.toOption.getOrElse(fail("expected Right with the surviving entry"))
+    val _       = entries.size shouldBe 1
+    entries.headOption.map(_.voteNumber) shouldBe Some(125)
   }
 
   it should "treat a direct <question> child that is only whitespace as missing (en_bloc fallback)" in {
@@ -489,7 +505,7 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
     entry.result shouldBe "En Bloc"
   }
 
-  it should "fail with Missing <result> when a non-en-bloc vote is missing a result" in {
+  it should "silently skip a non-en-bloc entry that is missing <result> rather than failing the whole index" in {
     val elem = XML.loadString(
       """<vote_summary>
         |  <votes>
@@ -499,13 +515,20 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
         |      <question>Q</question>
         |      <!-- result missing, no en_bloc -->
         |    </vote>
+        |    <vote>
+        |      <vote_number>00124</vote_number>
+        |      <vote_date>2-Jan</vote_date>
+        |      <question>Q</question>
+        |      <result>Agreed</result>
+        |    </vote>
         |  </votes>
         |</vote_summary>""".stripMargin
     )
 
-    val result = SenateVoteXmlDecoder.decodeIndex(elem)
-    val _      = result.isLeft shouldBe true
-    result.left.toOption.map(_.detail).getOrElse("") should include("Missing or empty <result>")
+    val result  = SenateVoteXmlDecoder.decodeIndex(elem)
+    val entries = result.toOption.getOrElse(fail("expected Right with the surviving entry"))
+    val _       = entries.size shouldBe 1
+    entries.headOption.map(_.voteNumber) shouldBe Some(124)
   }
 
   it should "preserve <vote> decoding order in the returned list" in {
