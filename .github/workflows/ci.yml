@@ -46,16 +46,51 @@ jobs:
           wait
 
       # ----------------------------------------------------------------------
-      # Tests are split into one step per Docker-using subproject so a failure
-      # isolates to a specific subproject AND each step runs in a fresh sbt JVM
-      # (lower peak memory than one long `dockerTestParallel` session). scoverage
-      # data accumulates on disk across invocations — `coverageReport` at the end
-      # reads every step's measurements as a single combined report.
+      # Tests are split into one step per subproject so a failure isolates to a
+      # specific subproject AND each step runs in a fresh sbt JVM. scoverage
+      # instrumentation roughly doubles compilation heap; running every
+      # subproject in one `sbt coverage test` session OOMed the GHA 7 GB runner
+      # mid-`members-common` test-class compilation. Splitting bounds per-step
+      # peak heap to one subproject + its deps. scoverage data accumulates on
+      # disk across invocations — `coverageReport` at the end reads every
+      # step's measurements as a single combined report. The default
+      # `Test / testOptions` (build.sbt:95-96) already excludes DockerRequired
+      # and com.repcheck.tags.E2ETest, so the non-Docker steps below need no
+      # explicit testOptions override; the Docker steps further down flip the
+      # filter to include DockerRequired.
       # ----------------------------------------------------------------------
 
-      - name: Run non-Docker tests with coverage
-        timeout-minutes: 15
-        run: sbt coverage test
+      - name: Run billsCommon non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'billsCommon/test'
+
+      - name: Run membersCommon non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'membersCommon/test'
+
+      - name: Run billMetadataPipeline non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'billMetadataPipeline/test'
+
+      - name: Run billTextAvailabilityChecker non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'billTextAvailabilityChecker/test'
+
+      - name: Run billTextPipeline non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'billTextPipeline/test'
+
+      - name: Run memberProfilePipeline non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'memberProfilePipeline/test'
+
+      - name: Run lisMappingRefresher non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'lisMappingRefresher/test'
+
+      - name: Run votesPipeline non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'votesPipeline/test'
 
       - name: Run billsCommon Docker tests
         timeout-minutes: 10
