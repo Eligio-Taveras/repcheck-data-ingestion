@@ -67,32 +67,32 @@ class BillTextProcessor[F[_]: Async] private[text] (
     logCtx: LogContext,
   ): F[ProcessingResult] =
     for {
-      _                <- logger.info(logCtx, s"Processing bill text for ${event.naturalKey} (format=${event.textFormat})")
-      dbBillId         <- lookupBillId(event.naturalKey)
+      _        <- logger.info(logCtx, s"Processing bill text for ${event.naturalKey} (format=${event.textFormat})")
+      dbBillId <- lookupBillId(event.naturalKey)
       alreadyProcessed <- isAlreadyProcessed(dbBillId, event.versionCode)
-      result <- if (alreadyProcessed) {
-        logger
-          .info(
-            logCtx,
-            s"Skipping ${event.naturalKey} version=${event.versionCode} — bill_text_versions row already exists (Pub/Sub redelivery or upstream double-emission)",
-          )
-          .as(ProcessingResult.Skipped(event.naturalKey, "already-processed"))
-      } else {
-        processFreshBillText(event, dbBillId, correlationId, logCtx)
-      }
+      result <-
+        if (alreadyProcessed) {
+          logger
+            .info(
+              logCtx,
+              s"Skipping ${event.naturalKey} version=${event.versionCode} — bill_text_versions row already exists (Pub/Sub redelivery or upstream double-emission)",
+            )
+            .as(ProcessingResult.Skipped(event.naturalKey, "already-processed"))
+        } else {
+          processFreshBillText(event, dbBillId, correlationId, logCtx)
+        }
     } yield result
 
   /**
    * Skip-check before doing the expensive download → chunk → embed → persist work. Returns true iff a
-   * `bill_text_versions` row already exists for `(billId, versionCode)`. Guards against two main re-process
-   * cases:
-   *   1. Pub/Sub redelivery — the previous attempt's ack didn't land or the message was redelivered after a
-   *      failure, but the persistence transaction had already committed
-   *   2. Upstream double-emission — bill-text-availability-checker ran twice on the same bill+version (rare,
-   *      but possible with concurrent ofelia ticks before the `text_url IS NULL` filter took effect)
+   * `bill_text_versions` row already exists for `(billId, versionCode)`. Guards against two main re-process cases:
+   *   1. Pub/Sub redelivery — the previous attempt's ack didn't land or the message was redelivered after a failure,
+   *      but the persistence transaction had already committed 2. Upstream double-emission —
+   *      bill-text-availability-checker ran twice on the same bill+version (rare, but possible with concurrent ofelia
+   *      ticks before the `text_url IS NULL` filter took effect)
    *
-   * The check is at the (billId, versionCode) tuple level so a re-versioning of the same bill (e.g., the
-   * IH version was processed but the bill has now progressed to RH) still triggers fresh processing.
+   * The check is at the (billId, versionCode) tuple level so a re-versioning of the same bill (e.g., the IH version was
+   * processed but the bill has now progressed to RH) still triggers fresh processing.
    */
   private[pipeline] def isAlreadyProcessed(billId: Long, versionCode: String): F[Boolean] =
     TransactionRunner
