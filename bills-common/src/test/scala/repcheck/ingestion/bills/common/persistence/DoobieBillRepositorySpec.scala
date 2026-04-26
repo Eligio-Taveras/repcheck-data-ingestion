@@ -177,7 +177,12 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     found.map(_.naturalKey) should contain("118-HR-1")
   }
 
-  it should "include non-final text bills" taggedAs DockerRequired in {
+  it should "exclude bills that already have a text URL captured" taggedAs DockerRequired in {
+    // Regression guard for the post-PR-#76 filter `WHERE text_url IS NULL`. Once a bill has
+    // text_url set (by `updateTextFields` after a successful /text API call), it stays out
+    // of the sweep until the gating column is reset. The follow-up summary-based design
+    // (PR for `expected_text_version_code`) will replace this filter with stage-aware
+    // logic; this test will be updated then.
     val bill = makeBill(number = "2")
     val _    = repo.upsert(bill).transact(xa).unsafeRunSync()
     val billId =
@@ -190,7 +195,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
       .unsafeRunSync()
 
     val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
-    found.map(_.naturalKey) should contain("118-HR-2")
+    found.map(_.naturalKey) should not contain "118-HR-2"
   }
 
   "updateTextFields" should "set text columns without touching metadata" taggedAs DockerRequired in {
