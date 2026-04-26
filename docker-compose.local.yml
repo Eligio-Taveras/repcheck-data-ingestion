@@ -74,7 +74,7 @@ services:
 
   # Run database migrations before any pipeline starts
   db-migrations:
-    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.25
+    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.27
     entrypoint: ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "/opt/docker/lib/*", "repcheck.db.migrations.MigrationApp"]
     depends_on:
       alloydb:
