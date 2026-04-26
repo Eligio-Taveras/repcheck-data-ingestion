@@ -35,7 +35,7 @@ import repcheck.shared.models.congress.dto.bill.{BillReferenceDTO, BillSummaryDT
  * Unknown summary versionCodes raise [[UnrecognizedSummaryVersionCode]] (Systemic) and short-circuit the entire run —
  * fail-fast posture so the operator adds the missing entry to the catalog and redeploys.
  */
-class BillSummaryProcessor[F[_]: Async] private[pipeline] (
+class BillSummaryProcessor[F[_]: Async](
   apiClient: BillSummariesApiClient[F],
   billRepo: BillRepository[ConnectionIO],
   workflowRepo: WorkflowRunStepsRepository[ConnectionIO],
@@ -115,12 +115,27 @@ class BillSummaryProcessor[F[_]: Async] private[pipeline] (
         mapped  <- SummaryVersionCodeMapper.toTextVersionCode(code).toOption
       } yield (billRef, s, mapped)
     }
-    mapped.groupBy(_._1.naturalKey).map {
+    mapped.groupBy(_._1.naturalKey).flatMap {
       case (naturalKey, entries) =>
-        val winner = entries.maxBy(_._3.progressionOrder)
-        (naturalKey, winner)
+        maxByProgressionOrder(entries).map(naturalKey -> _)
     }
   }
+
+  /**
+   * `Wart.IterableOps` blocks `Iterable.maxBy` because it throws on empty collections. Implemented as a `foldLeft`
+   * starting from the explicit `head` of a non-empty pattern match — returns `None` for empty inputs (shouldn't happen
+   * coming from `groupBy.values` but the compiler doesn't know that).
+   */
+  private[pipeline] def maxByProgressionOrder(
+    entries: List[(BillReferenceDTO, BillSummaryDTO, TextVersionCode)]
+  ): Option[(BillReferenceDTO, BillSummaryDTO, TextVersionCode)] =
+    entries match {
+      case Nil => None
+      case head :: tail =>
+        Some(tail.foldLeft(head) { (best, cur) =>
+          if (cur._3.progressionOrder > best._3.progressionOrder) cur else best
+        })
+    }
 
   /**
    * Process one bill's highest-stage summary in this chunk: ensure the bill exists (placeholder if missing), read the
@@ -131,7 +146,7 @@ class BillSummaryProcessor[F[_]: Async] private[pipeline] (
     naturalKey: String,
     triple: (BillReferenceDTO, BillSummaryDTO, TextVersionCode),
     logCtx: LogContext,
-  ): F[List[ProcessingResult]] = {
+  ): F[ProcessingResult] = {
     val (_, _, newStage) = triple
     val txn: ConnectionIO[ProcessingResult] = for {
       _        <- billRepo.upsertPlaceholder(naturalKey)
@@ -157,12 +172,12 @@ class BillSummaryProcessor[F[_]: Async] private[pipeline] (
       .flatMap { result =>
         result match {
           case ProcessingResult.Succeeded(_, _) =>
-            logger.debug(logCtx, s"Updated expected_text_version_code for $naturalKey to $newStage").as(List(result))
+            logger.debug(logCtx, s"Updated expected_text_version_code for $naturalKey to $newStage").as(result)
           case ProcessingResult.Skipped(_, reason) =>
-            logger.debug(logCtx, s"Skipped $naturalKey: $reason").as(List(result))
+            logger.debug(logCtx, s"Skipped $naturalKey: $reason").as(result)
           case ProcessingResult.Failed(_, _, _) =>
             // We don't construct Failed results in `txn`; this branch is here only for exhaustiveness.
-            Async[F].pure(List(result))
+            Async[F].pure(result)
         }
       }
       .handleErrorWith { error =>
@@ -170,7 +185,7 @@ class BillSummaryProcessor[F[_]: Async] private[pipeline] (
         // pipeline counters reflect it; the run continues with subsequent bills.
         logger
           .error(logCtx, s"Failed to process summary for $naturalKey: ${error.getMessage}", Some(error))
-          .as(List(ProcessingResult.Failed(naturalKey, error.getMessage, classifyError(error))))
+          .as(ProcessingResult.Failed(naturalKey, error.getMessage, classifyError(error)))
       }
   }
 

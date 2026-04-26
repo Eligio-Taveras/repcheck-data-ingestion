@@ -193,6 +193,36 @@ services:
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
     restart: "no"
 
+  # Maps Congress.gov /summaries[/{congress}] feed to bills.expected_text_version_code via
+  # SummaryVersionCodeMapper. Acts as the advancing writer alongside bill-metadata-pipeline's
+  # introduced floor — the cooperative-write contract via TextVersionCode.progressionOrder
+  # guarantees neither pipeline can downgrade the other's writes. Reads watermark from
+  # workflow_run_steps; first-run fallback is initial-lookback-days (10y default).
+  bill-summary-pipeline:
+    container_name: bill-summary-pipeline
+    build:
+      context: .
+      dockerfile: bill-summary-pipeline/Dockerfile
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
+      # 10-year first-run lookback per cross-pipeline policy. After the first successful run
+      # the watermark from workflow_run_steps takes over and incremental ticks fetch only the
+      # delta since the prior run's completed_at minus watermark-buffer.
+      PIPELINE_INITIAL_LOOKBACK_DAYS: ${PIPELINE_INITIAL_LOOKBACK_DAYS:-3650}
+      PIPELINE_WATERMARK_BUFFER: ${PIPELINE_WATERMARK_BUFFER:-5m}
+      # Congress list defaults to the active session [119]. Override via env var for backfill,
+      # e.g. PIPELINE_CONGRESSES='[114, 115, 116, 117, 118, 119]'.
+      PIPELINE_CONGRESSES: ${PIPELINE_CONGRESSES:-[119]}
+    restart: "no"
+
   bill-text-availability-checker:
     container_name: bill-text-availability-checker
     build:

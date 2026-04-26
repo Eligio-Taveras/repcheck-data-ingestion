@@ -2,9 +2,8 @@ package repcheck.ingestion.bills.summary.api
 
 import io.circe.Decoder
 
-import repcheck.ingestion.common.api.PagedObject
 import repcheck.shared.models.congress.dto.bill.BillSummaryDTO
-import repcheck.shared.models.congress.dto.common.PaginationInfoDTO
+import repcheck.shared.models.congress.dto.common.{PagedObject, PaginationInfoDTO}
 
 /**
  * Wrapper for Congress.gov `/summaries[/{congress}]` paginated responses. The body shape is `{ summaries: [...],

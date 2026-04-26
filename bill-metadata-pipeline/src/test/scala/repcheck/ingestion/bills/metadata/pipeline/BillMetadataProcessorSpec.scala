@@ -25,6 +25,7 @@ import repcheck.ingestion.common.api.FetchParams
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
 import repcheck.members.common.persistence.MemberRepository
+import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.{BillCosponsorDO, BillDO, BillSubjectDO}
 import repcheck.shared.models.congress.dos.member.MemberDO
@@ -122,9 +123,18 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     when(loggerMock.error(any[LogContext], anyString(), any[Option[Throwable]])).thenReturn(IO.unit)
     when(loggerMock.debug(any[LogContext], anyString())).thenReturn(IO.unit)
 
+    val billRepoMock = mock[BillRepository[ConnectionIO]]
+    // Default stubs for BillPersister.applyExpectedVersionFloor — without these, the new floor-write
+    // path called from inside persistBill returns null when bills with originChamber = Some(...) flow
+    // through processOneBill, which the fixture's bills do. Tests that exercise the floor logic
+    // explicitly override these stubs.
+    when(billRepoMock.findExpectedVersion(anyString())).thenReturn(doobie.free.connection.pure(None))
+    when(billRepoMock.updateExpectedVersion(anyString(), any[TextVersionCode]))
+      .thenReturn(doobie.free.connection.unit)
+
     TestFixture(
       apiClient = mock[BillsApiClient[IO]],
-      billRepo = mock[BillRepository[ConnectionIO]],
+      billRepo = billRepoMock,
       cosponsorRepo = mock[BillCosponsorRepository[ConnectionIO]],
       subjectRepo = mock[BillSubjectRepository[ConnectionIO]],
       historyArchiver = mock[BillHistoryArchiver[ConnectionIO]],

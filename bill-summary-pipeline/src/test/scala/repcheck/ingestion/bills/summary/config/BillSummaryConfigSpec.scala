@@ -2,10 +2,9 @@ package repcheck.ingestion.bills.summary.config
 
 import scala.concurrent.duration._
 
-import com.typesafe.config.ConfigFactory
-
 import pureconfig.ConfigSource
 
+import com.typesafe.config.ConfigFactory
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 

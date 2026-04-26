@@ -19,9 +19,13 @@ import repcheck.pipeline.models.constants.Tables
 trait WorkflowRunStepsRepository[F[_]] {
 
   /**
-   * Return the `end_at` timestamp of the most-recent successful run for `stepName`. Returns `None` when there's no
-   * prior successful run (first-ever invocation, or the step name was just renamed). Callers fall back to a configured
-   * initial-lookback window in that case.
+   * Return the `completed_at` timestamp of the most-recent successful run for `stepName`. Returns `None` when there's
+   * no prior successful run (first-ever invocation, or the step name was just renamed). Callers fall back to a
+   * configured initial-lookback window in that case.
+   *
+   * Uses `status::text IN ('completed', 'completed_with_errors')` to handle the post-migration-017a enum value: a run
+   * that finished but had per-item failures still establishes a watermark — the next run only needs to look back as far
+   * as the previous run's wall-clock end time, regardless of its per-item success rate.
    */
   def lastSuccessfulEndAt(stepName: String): F[Option[Instant]]
 
@@ -32,11 +36,11 @@ class DoobieWorkflowRunStepsRepository extends WorkflowRunStepsRepository[Connec
   private val table = Fragment.const(Tables.WorkflowRunSteps)
 
   override def lastSuccessfulEndAt(stepName: String): ConnectionIO[Option[Instant]] =
-    sql"""SELECT MAX(end_at)
+    sql"""SELECT MAX(completed_at)
           FROM $table
           WHERE step_name = $stepName
-            AND status::text = 'completed'
-            AND end_at IS NOT NULL"""
+            AND status::text IN ('completed', 'completed_with_errors')
+            AND completed_at IS NOT NULL"""
       .query[Option[Instant]]
       .option
       .map(_.flatten)

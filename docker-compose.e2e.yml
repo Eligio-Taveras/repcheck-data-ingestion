@@ -155,6 +155,31 @@ services:
       PIPELINE_PARALLELISM: "1"
       PIPELINE_LOOKBACK_DAYS: "30"
 
+  bill-summary-pipeline:
+    build:
+      context: .
+      dockerfile: bill-summary-pipeline/Dockerfile
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
+      wiremock:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_API_BASE_URL: http://wiremock:8080/v3
+      CONGRESS_GOV_API_KEY: e2e-test-key
+      # E2E uses a tight 30-day window so WireMock fixtures stay manageable. Production default
+      # (in application.conf) is 3650 days for the first-run lookback.
+      PIPELINE_INITIAL_LOOKBACK_DAYS: "30"
+      PIPELINE_WATERMARK_BUFFER: "1m"
+      PIPELINE_CONGRESSES: "[118]"
+
   bill-text-availability-checker:
     build:
       context: .
