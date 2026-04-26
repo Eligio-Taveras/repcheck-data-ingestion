@@ -203,6 +203,12 @@ services:
     build:
       context: .
       dockerfile: bill-summary-pipeline/Dockerfile
+    # Launcher contract: args(0) = config (unused — PureConfig reads env),
+    # args(1) = runId, args(2) = stepRunId. extractStepRunId raises
+    # StepRunIdInvalid without args(2). For local-stack runs we pass `"0"`
+    # placeholders since the launcher / workflow_run_steps integration isn't
+    # wired up in docker-compose yet.
+    command: ["cfg-unused", "local-bill-summary-run", "0"]
     depends_on:
       db-migrations:
         condition: service_completed_successfully

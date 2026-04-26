@@ -47,9 +47,13 @@ class BillSummaryProcessor[F[_]: Async](
   /**
    * Build the result stream for one pipeline run. The stream lazily computes the watermark, then folds across the
    * configured congresses, emitting one `ProcessingResult` per bill for which we attempted a write.
+   *
+   * @param runId
+   *   run-level identifier sourced by the launcher (`workflow_runs.id` string). Threaded into every log line via
+   *   [[LogContext.runId]] so cross-pipeline tracing keys on the same value the launcher created.
    */
-  def streamAll(runId: Long): Stream[F, ProcessingResult] = {
-    val logCtx = LogContext(runId = runId.toString, stepName = config.stepName)
+  def streamAll(runId: String): Stream[F, ProcessingResult] = {
+    val logCtx = LogContext(runId = runId, stepName = config.stepName)
 
     val watermarkProgram: F[(Instant, Instant)] = for {
       now            <- Async[F].realTimeInstant

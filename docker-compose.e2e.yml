@@ -159,6 +159,9 @@ services:
     build:
       context: .
       dockerfile: bill-summary-pipeline/Dockerfile
+    # Launcher contract: args(0) = config (unused), args(1) = runId, args(2) = stepRunId.
+    # See docker-compose.local.yml for the full justification — same pattern.
+    command: ["cfg-unused", "e2e-bill-summary-run", "0"]
     depends_on:
       alloydb:
         condition: service_healthy

@@ -21,10 +21,15 @@ import pureconfig.ConfigReader
  * @param stepName
  *   The workflow_run_steps row key used for watermark queries. Keep stable across deploys — changing it forces a
  *   one-time fallback to the `initialLookbackDays` window.
+ * @param httpConcurrency
+ *   Maximum number of in-flight requests against the Congress.gov client. Drives the `Semaphore` permit count in the
+ *   `rateLimitedClient` wrapper. Configurable so we can lift it without redeploying — even though we expect to run with
+ *   `1` for steady state to share the API key politely with the other Congress.gov-consuming pipelines.
  */
 final case class BillSummaryConfig(
   initialLookbackDays: Int,
   watermarkBuffer: FiniteDuration,
   congresses: List[Int],
   stepName: String,
+  httpConcurrency: Int,
 ) derives ConfigReader

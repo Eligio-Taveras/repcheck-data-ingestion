@@ -16,13 +16,29 @@ import pureconfig.ConfigSource
 import repcheck.ingestion.bills.common.persistence.DoobieBillRepository
 import repcheck.ingestion.bills.summary.api.BillSummariesApiClient
 import repcheck.ingestion.bills.summary.config.BillSummaryConfig
+import repcheck.ingestion.bills.summary.errors.StepRunIdInvalid
 import repcheck.ingestion.bills.summary.persistence.DoobieWorkflowRunStepsRepository
 import repcheck.ingestion.bills.summary.pipeline.BillSummaryProcessor
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
+import repcheck.ingestion.common.execution.PipelineBootstrap
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
 import repcheck.pipeline.models.errors.RetryWrapper
 
+/**
+ * Top-level wiring for the bill-summary pipeline. Loads config, extracts the launcher-supplied `runId` / `stepRunId`,
+ * builds the managed Resource bundle (transactor + rate-limited HTTP client), and hands a result stream to
+ * [[PipelineExecutor]] for streaming aggregation.
+ *
+ * ==Launcher contract==
+ *
+ *   - `args(0)` — config JSON placeholder (currently unused; the pipeline loads `application.conf` directly).
+ *   - `args(1)` — run-level identifier (`workflow_runs.id` string). Required and non-blank.
+ *   - `args(2)` — step-level identifier (`workflow_run_steps.id` `Long`). Required and parseable.
+ *
+ * For docker-compose / Ofelia local environments where the launcher hasn't been wired up yet, callers can pass `"0"`
+ * for both `runId` and `stepRunId` (mirrors votes-pipeline's stance).
+ */
 private[app] object BillSummaryPipeline {
 
   private val PipelineName = "bill-summary-pipeline"
@@ -33,13 +49,12 @@ private[app] object BillSummaryPipeline {
     pipeline: BillSummaryConfig,
   ) derives pureconfig.ConfigReader
 
-  def run[F[_]: Async: Network](args: List[String]): F[ExitCode] = {
-    val _ = args // args reserved for future CLI config override support
+  def run[F[_]: Async: Network](args: List[String]): F[ExitCode] =
     for {
-      config <- Sync[F].delay {
-        ConfigSource.default.loadOrThrow[AppConfig]
-      }
-      logger <- PipelineLoggerFactory.make[F](PipelineName)
+      config    <- Sync[F].delay(ConfigSource.default.loadOrThrow[AppConfig])
+      runId     <- PipelineBootstrap.extractRunId[F](args)
+      stepRunId <- extractStepRunId[F](args)
+      logger    <- PipelineLoggerFactory.make[F](PipelineName)
       exitCode <- buildResources[F](config).use {
         case (xa, httpClient) =>
           val billRepo     = new DoobieBillRepository
@@ -56,28 +71,29 @@ private[app] object BillSummaryPipeline {
             logger = logger,
           )
 
-          // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration once
-          // PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented. Same TODO as the
-          // sibling pipelines.
-          val runId        = 0L
           val resultStream = processor.streamAll(runId)
-          PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId)
+          PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId, stepRunId)
       }
     } yield exitCode
-  }
 
   /**
-   * Wraps an HTTP client with a per-pipeline rate limiter. A semaphore ensures only one request is in-flight at a time,
-   * with `pageDelay` inserted after each request completes — keeps this pipeline's call rate independent of the other
-   * Congress.gov-consuming pipelines that share the same API key.
+   * Wraps an HTTP client with a per-pipeline rate limiter. A semaphore caps in-flight requests at
+   * `config.pipeline.httpConcurrency` (configurable so we can raise it later without redeploying — even though we
+   * expect to keep the value at 1 for steady-state) and `pageDelay` is enforced after each request completes — keeps
+   * this pipeline's call rate independent of the other Congress.gov-consuming pipelines that share the same API key.
+   *
+   * NOTE: this helper exists in copy form across every pipeline (bill-metadata, bill-summary, bill-text,
+   * bill-text-availability-checker, member-profile, votes). A planned follow-up promotes it to ingestion-common as a
+   * single shared `RateLimitedHttpClient` so all pipelines pull the same implementation.
    */
-  private def rateLimitedClient[F[_]: Async](
+  private[app] def rateLimitedClient[F[_]: Async](
     underlying: Client[F],
-    config: CongressGovClientConfig,
+    apiConfig: CongressGovClientConfig,
+    permits: Long,
   ): Resource[F, Client[F]] =
-    Resource.eval(Semaphore[F](1)).map { sem =>
+    Resource.eval(Semaphore[F](permits)).map { sem =>
       Client[F] { request =>
-        Resource.make(sem.acquire)(_ => Temporal[F].sleep(config.pageDelay) >> sem.release) >>
+        Resource.make(sem.acquire)(_ => Temporal[F].sleep(apiConfig.pageDelay) >> sem.release) >>
           underlying.run(request)
       }
     }
@@ -88,7 +104,26 @@ private[app] object BillSummaryPipeline {
     for {
       xa              <- TransactorResource.make[F](config.database)
       rawClient       <- EmberClientBuilder.default[F].build
-      throttledClient <- rateLimitedClient(rawClient, config.congressApi)
+      throttledClient <- rateLimitedClient(rawClient, config.congressApi, config.pipeline.httpConcurrency.toLong)
     } yield (xa, throttledClient)
+
+  /**
+   * Extract the step-level identifier from `args(2)` and parse it as a `Long`. The launcher is responsible for creating
+   * the `workflow_run_steps` row and passing its BIGSERIAL PK before invoking the pipeline — a missing or non-numeric
+   * value indicates a broken launcher contract and fails the run fast via [[StepRunIdInvalid]].
+   *
+   * For docker-compose / Ofelia entries where workflow_run_steps integration is not yet wired, callers pass `"0"` to
+   * supply a placeholder Long that satisfies the contract without dishonestly hardcoding the value in source.
+   */
+  private[app] def extractStepRunId[F[_]: Sync](args: List[String]): F[Long] =
+    args.lift(2) match {
+      case Some(raw) if raw.trim.nonEmpty =>
+        raw.trim.toLongOption match {
+          case Some(id) => Sync[F].pure(id)
+          case None     => Sync[F].raiseError[Long](StepRunIdInvalid(raw))
+        }
+      case Some(raw) => Sync[F].raiseError[Long](StepRunIdInvalid(raw))
+      case None      => Sync[F].raiseError[Long](StepRunIdInvalid("<missing>"))
+    }
 
 }

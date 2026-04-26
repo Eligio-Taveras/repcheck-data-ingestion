@@ -40,6 +40,7 @@ class BillSummaryProcessorSpec extends AnyFlatSpec with Matchers with MockitoSug
     watermarkBuffer = 5.minutes,
     congresses = List(118),
     stepName = "bill-summary-pipeline-test",
+    httpConcurrency = 1,
   )
 
   private def makeLogger: PipelineLogger[IO] = {
