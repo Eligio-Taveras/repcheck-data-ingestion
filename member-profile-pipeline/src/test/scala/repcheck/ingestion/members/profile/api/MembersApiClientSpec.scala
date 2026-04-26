@@ -77,9 +77,15 @@ class MembersApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
        |  "url": "https://api.congress.gov/v3/member/$bioguideId"
        |}""".stripMargin
 
-  private def membersListJson(members: List[String]): String = {
+  private def membersListJson(members: List[String], totalCount: Int = -1): String = {
+    // `pagination.count` in Congress.gov's API is the TOTAL across all pages (used by the
+    // paginated client to decide when offset+pageSize has reached the end). For tests that stub
+    // a single page, the default totalCount = members.size is correct (the stubbed page IS the
+    // whole result set). For tests that stub multiple pages, callers must pass `totalCount` set
+    // to the sum across all pages so the client doesn't terminate prematurely after page 1.
     val items = members.mkString(",")
-    s"""{"members": [$items], "pagination": {"count": ${members.size}}}"""
+    val count = if (totalCount >= 0) totalCount else members.size
+    s"""{"members": [$items], "pagination": {"count": $count}}"""
   }
 
   // The Congress.gov detail endpoint uses plain JSON arrays (not {"item": [...]} wrappers).
@@ -209,7 +215,7 @@ class MembersApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
           aResponse()
             .withStatus(200)
             .withHeader("Content-Type", "application/json")
-            .withBody(membersListJson(page1))
+            .withBody(membersListJson(page1, totalCount = 40))
         )
     )
 
@@ -220,7 +226,7 @@ class MembersApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
           aResponse()
             .withStatus(200)
             .withHeader("Content-Type", "application/json")
-            .withBody(membersListJson(page2))
+            .withBody(membersListJson(page2, totalCount = 40))
         )
     )
 

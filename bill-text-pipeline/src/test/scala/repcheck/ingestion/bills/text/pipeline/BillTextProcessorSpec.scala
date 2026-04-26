@@ -86,10 +86,17 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val rawRepoMock = mock[RawBillTextRepository[ConnectionIO]]
     when(rawRepoMock.replaceAll(any[Long], any[List[RawBillTextDO]])).thenReturn(doobie.free.connection.unit)
 
+    // Default: bill_text_versions has no row for the (billId, versionCode) pair, so the new
+    // `isAlreadyProcessed` skip-check returns false and processing proceeds. Tests that exercise
+    // the "already processed" skip path override this stub.
+    val textVersionRepoMock = mock[BillTextVersionRepository[ConnectionIO]]
+    when(textVersionRepoMock.findByBillId(any[Long]))
+      .thenReturn(doobie.free.connection.pure(List.empty[BillTextVersionDO]))
+
     TestFixture(
       downloader = mock[BillTextDownloader[IO]],
       billRepository = mock[BillRepository[ConnectionIO]],
-      textVersionRepository = mock[BillTextVersionRepository[ConnectionIO]],
+      textVersionRepository = textVersionRepoMock,
       rawBillTextRepository = rawRepoMock,
       embeddingService = mock[EmbeddingService[IO]],
       eventPublisher = mock[IngestionEventPublisher[IO]],

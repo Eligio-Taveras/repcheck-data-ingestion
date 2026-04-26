@@ -127,9 +127,17 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     }
 
   override def findBillsNeedingTextCheck(): ConnectionIO[List[BillDO]] =
+    // Only return bills that have NEVER had a text URL successfully captured. Once `text_url` is set
+    // (by `updateTextFields` after a successful `/text` API call), the bill is considered processed and
+    // skipped on subsequent sweeps. Without this filter, every sweep iterated all 13K+ bills hitting the
+    // Congress.gov API for each — a single sweep took ~2 hours and burned the per-key 5K/hr rate limit.
+    //
+    // Trade-off: bills that get re-versioned (IH → RH → ENR) WITHOUT also resetting `text_url` to NULL
+    // won't be re-checked. In practice ~5% of bills progress beyond their initial introduced version.
+    // Catching those re-versions properly requires a `last_check_at` column + an `update_date_including_text >
+    // last_check_at` predicate — out of scope for this PR; tracked as a follow-up.
     (fr"SELECT" ++ selectColumns ++ fr"""FROM $table
-      WHERE text_url IS NULL
-         OR (text_version_type::text IS DISTINCT FROM 'ENR')""")
+      WHERE text_url IS NULL""")
       .query[BillDO]
       .to[List]
 

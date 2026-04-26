@@ -67,9 +67,15 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     super.afterEach()
   }
 
-  private def billListJson(bills: List[String]): String = {
+  private def billListJson(bills: List[String], totalCount: Int = -1): String = {
+    // `pagination.count` in Congress.gov's API is the TOTAL across all pages (used by the
+    // paginated client to decide when offset+pageSize has reached the end). For tests that stub
+    // a single page, the default totalCount = bills.size is correct. For tests that stub multiple
+    // pages, callers must pass `totalCount` set to the sum across all pages so the client doesn't
+    // terminate prematurely after page 1.
     val items = bills.mkString(",")
-    s"""{"items": [$items], "pagination": {"count": ${bills.size}}}"""
+    val count = if (totalCount >= 0) totalCount else bills.size
+    s"""{"items": [$items], "pagination": {"count": $count}}"""
   }
 
   private def singleBillJson(
@@ -160,7 +166,7 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
           aResponse()
             .withStatus(200)
             .withHeader("Content-Type", "application/json")
-            .withBody(billListJson(page1Bills))
+            .withBody(billListJson(page1Bills, totalCount = 300))
         )
     )
 
@@ -171,7 +177,7 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
           aResponse()
             .withStatus(200)
             .withHeader("Content-Type", "application/json")
-            .withBody(billListJson(page2Bills))
+            .withBody(billListJson(page2Bills, totalCount = 300))
         )
     )
 
