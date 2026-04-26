@@ -190,10 +190,64 @@ class TextVersionSelectorSpec extends AnyFlatSpec with Matchers {
     result.foreach(_.versionType shouldBe Some("RIS"))
   }
 
-  it should "pass through unrecognized versionType unchanged" in {
+  it should "return None for unrecognized versionType (instead of leaking long-form to DB)" in {
     val versions = List(makeVersion(type_ = Some("Unknown Version Type")))
     val result   = TextVersionSelector.selectBestVersion(versions)
-    result.foreach(_.versionType shouldBe Some("Unknown Version Type"))
+    result.foreach(_.versionType shouldBe None)
+  }
+
+  it should "map Public Print to PP" in {
+    val versions = List(makeVersion(type_ = Some("Public Print")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("PP"))
+  }
+
+  it should "map Private Law to PRL" in {
+    val versions = List(makeVersion(type_ = Some("Private Law")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("PRL"))
+  }
+
+  it should "map Engrossed Amendment House to EAH" in {
+    val versions = List(makeVersion(type_ = Some("Engrossed Amendment House")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("EAH"))
+  }
+
+  it should "map Laid on Table in House to LTH" in {
+    val versions = List(makeVersion(type_ = Some("Laid on Table in House")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("LTH"))
+  }
+
+  it should "map Laid on Table in Senate to LTS" in {
+    val versions = List(makeVersion(type_ = Some("Laid on Table in Senate")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("LTS"))
+  }
+
+  it should "map Reference Change Senate to RCS" in {
+    val versions = List(makeVersion(type_ = Some("Reference Change Senate")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("RCS"))
+  }
+
+  it should "map Referral Instructions House to RIH" in {
+    val versions = List(makeVersion(type_ = Some("Referral Instructions House")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("RIH"))
+  }
+
+  it should "passthrough short code EAH unchanged" in {
+    val versions = List(makeVersion(type_ = Some("EAH")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("EAH"))
+  }
+
+  it should "passthrough short code PRL unchanged" in {
+    val versions = List(makeVersion(type_ = Some("PRL")))
+    val result   = TextVersionSelector.selectBestVersion(versions)
+    result.foreach(_.versionType shouldBe Some("PRL"))
   }
 
   it should "handle multiple formats on a single version" in {

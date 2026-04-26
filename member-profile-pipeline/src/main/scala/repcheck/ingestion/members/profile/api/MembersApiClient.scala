@@ -90,7 +90,7 @@ class MembersApiClient[F[_]](
         errorFactory = (msg, cause) =>
           MemberFetchFailed(
             bioguideId = None,
-            detail = s"${uri.renderString}: $msg",
+            detail = s"${uri.removeQueryParam("api_key").renderString}: $msg",
             cause = Option(cause),
           ),
         correlationId = UUID.randomUUID(),
@@ -117,7 +117,7 @@ class MembersApiClient[F[_]](
         errorFactory = (msg, cause) =>
           MemberFetchFailed(
             bioguideId = None,
-            detail = s"${uri.renderString}: $msg",
+            detail = s"${uri.removeQueryParam("api_key").renderString}: $msg",
             cause = Option(cause),
           ),
         correlationId = UUID.randomUUID(),

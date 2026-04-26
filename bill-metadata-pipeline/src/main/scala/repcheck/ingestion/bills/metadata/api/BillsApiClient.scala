@@ -94,7 +94,7 @@ class BillsApiClient[F[_]](
         classifier = BillsApiErrorClassifier,
         errorFactory = (msg, cause) =>
           BillFetchFailed(
-            endpoint = uri.renderString,
+            endpoint = uri.removeQueryParam("api_key").renderString,
             statusCode = 0,
             detail = msg,
             cause = cause,
@@ -122,7 +122,7 @@ class BillsApiClient[F[_]](
         classifier = BillsApiErrorClassifier,
         errorFactory = (msg, cause) =>
           BillFetchFailed(
-            endpoint = uri.renderString,
+            endpoint = uri.removeQueryParam("api_key").renderString,
             statusCode = 0,
             detail = msg,
             cause = cause,
@@ -161,7 +161,7 @@ class BillsApiClient[F[_]](
           classifier = BillsApiErrorClassifier,
           errorFactory = (msg, cause) =>
             BillFetchFailed(
-              endpoint = uri.renderString,
+              endpoint = uri.removeQueryParam("api_key").renderString,
               statusCode = 0,
               detail = msg,
               cause = cause,

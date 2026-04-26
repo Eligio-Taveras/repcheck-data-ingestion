@@ -290,7 +290,15 @@ class FullChainIntegrationSpec
   it should "propagate previousVersionCode through the full chain" taggedAs DockerRequired in {
     val dbBillId = seedBill("118-HR-51", number = "51")
 
-    // First, insert a text version so the bill has existing text
+    // First, insert a text version so the bill has existing text.
+    //
+    // Note: post-#76 the bill-text-availability-checker filter is `WHERE text_url IS NULL`, so we
+    // leave textUrl = None even though textVersionType is set to IH. This is artificial state (in
+    // production, text_url and text_version_type are populated together by upstream pipelines)
+    // but it exercises the previousVersionCode propagation branch — checker sees stored = IH,
+    // API returns RH, emits event with previousVersionCode = IH. The artificial-state setup will
+    // become unnecessary when the summary-based stage filter lands and re-versioning detection
+    // returns to working off populated state directly.
     import repcheck.shared.models.congress.bill.TextVersionCode
     val billWithText = BillDO(
       billId = dbBillId,
@@ -307,7 +315,7 @@ class FullChainIntegrationSpec
       latestActionText = None,
       constitutionalAuthorityText = None,
       sponsorMemberId = None,
-      textUrl = Some("https://old.url"),
+      textUrl = None,
       textFormat = None,
       textVersionType = Some(TextVersionCode.IH),
       textDate = None,

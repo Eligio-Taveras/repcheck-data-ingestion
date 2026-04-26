@@ -247,10 +247,16 @@ class MetadataToCheckerIntegrationSpec
   }
 
   it should "skip bill when text version is unchanged" taggedAs DockerRequired in {
+    // Post-#76 the bill-text-availability-checker filter is `WHERE text_url IS NULL`, so we leave
+    // textUrl = None even though textVersionType is set to IH. This is artificial state (in
+    // production, text_url and text_version_type are populated together by upstream pipelines)
+    // but it exercises the per-bill "stored matches new" branch where the checker emits Skipped.
+    // The artificial-state setup will become unnecessary when the summary-based stage filter
+    // lands and the per-bill check no longer requires text_url IS NULL to enter the sweep.
     val _ = seedBill(
       naturalKey = "118-HR-2",
       number = "2",
-      textUrl = Some("https://congress.gov/text/ih/formatted"),
+      textUrl = None,
       textVersionType = Some(TextVersionCode.IH),
     )
     stubTextVersions(118, "hr", "2", textVersionJson("IH", "https://congress.gov/text/ih/formatted"))
@@ -266,10 +272,13 @@ class MetadataToCheckerIntegrationSpec
   }
 
   it should "emit event with previousVersionCode when text version is upgraded" taggedAs DockerRequired in {
+    // Same artificial-state reasoning as the "skip bill when text version is unchanged" test
+    // above — textUrl = None to satisfy the post-#76 filter while textVersionType = IH preserves
+    // the prior-version signal that previousVersionCode propagation depends on.
     val _ = seedBill(
       naturalKey = "118-HR-3",
       number = "3",
-      textUrl = Some("https://congress.gov/text/ih"),
+      textUrl = None,
       textVersionType = Some(TextVersionCode.IH),
     )
     stubTextVersions(118, "hr", "3", textVersionJson("RH", "https://congress.gov/text/rh/formatted"))
