@@ -19,9 +19,14 @@
 #     vector(1536) → vector(1024)) shipped in lockstep with this Modelfile change.
 #
 # Why the parameters:
-#   - num_ctx 8192: comfortably handles our 12000-char chunks (≈ 3000 tokens). Could go higher with 0.6B's
-#     freed VRAM, but bigger chunks dilute embedding semantics (averaged-meaning effect past ~2k tokens), so
-#     we hold at 8192 and revisit only if a separate retrieval-quality benchmark proves bigger chunks help.
+#   - num_ctx 16384: doubled from the 8192 baseline because legislative text is unusually dense
+#     (citations, statute references, formal definitions) and tokenizes at well below 4 char/token in many
+#     cases. Empirically, our 12000-char chunks were exceeding 8192 tokens often enough to trigger Ollama's
+#     silent input-truncation path — Ollama logs INFO `"input length exceeds the context length"` and
+#     returns an embedding of just the first 8192 tokens, which our pipeline cannot detect (HTTP 200,
+#     valid-shape vector returned). 178 truncation events surfaced in ~1 hour of local ingestion before we
+#     bumped this. 16384 gives ~2× headroom over the worst-case observed token count and still fits the 0.6B
+#     model's KV-cache budget on an 8 GB card with room to spare.
 #   - num_batch 512: tokens per forward-pass batch on prompt evaluation. Default is 128. 512 better
 #     utilizes the GPU's tensor cores on long-input embed workloads.
 #   - num_gpu 99: force ALL transformer layers to GPU (Ollama's "as many as possible" sentinel). With 0.6B
@@ -29,6 +34,6 @@
 
 FROM qwen3-embedding:0.6b
 
-PARAMETER num_ctx 8192
+PARAMETER num_ctx 16384
 PARAMETER num_batch 512
 PARAMETER num_gpu 99
