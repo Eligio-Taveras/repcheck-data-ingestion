@@ -62,8 +62,8 @@ class FullChainIntegrationSpec
 
   private val embeddingConfigStub: EmbeddingConfig = EmbeddingConfig(
     baseUrl = "http://127.0.0.1:0",
-    modelName = "qwen3-embedding",
-    dimensions = 1536,
+    modelName = "bill-text-embedding",
+    dimensions = 1024,
     timeoutSeconds = 10,
     maxChunkChars = 30000,
     embedBatchSize = 10,

@@ -19,8 +19,9 @@ import repcheck.ingestion.common.logging.PipelineLogger
  *
  * Both `generateEmbedding` (single) and `generateEmbeddings` (batch) hit the same `/api/embed` endpoint — Ollama's
  * `input` field accepts either a JSON string or a JSON array of strings. The batch path lets the model amortize
- * tokenization, kernel-launch overhead, and HTTP round-trip cost across multiple chunks; per benchmark on RTX 2070
- * SUPER + qwen3-embedding-4B (PR #71), batch=10 captures ~15% of the available batching benefit.
+ * tokenization, kernel-launch overhead, and HTTP round-trip cost across multiple chunks; sweet spot on RTX 2070 SUPER +
+ * qwen3-embedding:0.6b (current default) is batch=50 — the smaller model frees ~5 GB of VRAM vs the 4B baseline,
+ * lifting GPU-saturation batch size from ~10 to ~50.
  */
 class OllamaEmbeddingService[F[_]: Async] private[text] (
   client: Client[F],

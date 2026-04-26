@@ -21,7 +21,7 @@ class DoobieRawBillTextRepositoryUnitSpec extends AnyFlatSpec with Matchers {
       versionId = Some(7L),
       chunkIndex = idx,
       content = s"chunk content $idx",
-      embedding = if (withEmbedding) Some(Array.fill(1536)(0.5f)) else None,
+      embedding = if (withEmbedding) Some(Array.fill(1024)(0.5f)) else None,
       createdAt = None,
     )
 
@@ -35,7 +35,7 @@ class DoobieRawBillTextRepositoryUnitSpec extends AnyFlatSpec with Matchers {
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
-  it should "accept chunks carrying full 1536-dim embedding arrays without complaint" in {
+  it should "accept chunks carrying full 1024-dim embedding arrays without complaint" in {
     val cio = repo.replaceAll(7L, List(sampleChunk(0, withEmbedding = true)))
     cio shouldBe a[doobie.ConnectionIO[?]]
   }

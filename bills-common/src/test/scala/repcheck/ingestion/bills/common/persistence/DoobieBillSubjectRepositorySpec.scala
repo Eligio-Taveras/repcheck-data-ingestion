@@ -123,8 +123,8 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
     found shouldBe empty
   }
 
-  private def make1536Embedding(seed: Float): Array[Float] =
-    Array.tabulate(1536)(i => seed + i * 0.001f)
+  private def make1024Embedding(seed: Float): Array[Float] =
+    Array.tabulate(1024)(i => seed + i * 0.001f)
 
   it should "round-trip subjects with embeddings" taggedAs DockerRequired in {
     val billId = insertBillAndGetId()
@@ -132,13 +132,13 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
       BillSubjectDO(
         billId = billId,
         subjectName = "Armed Forces",
-        embedding = Some(make1536Embedding(0.1f)),
+        embedding = Some(make1024Embedding(0.1f)),
         updateDate = Some(Instant.parse("2024-01-15T00:00:00Z")),
       ),
       BillSubjectDO(
         billId = billId,
         subjectName = "Veterans",
-        embedding = Some(make1536Embedding(0.4f)),
+        embedding = Some(make1024Embedding(0.4f)),
         updateDate = None,
       ),
     )
@@ -154,7 +154,7 @@ class DoobieBillSubjectRepositorySpec extends AnyFlatSpec with Matchers with Tra
       BillSubjectDO(
         billId = billId,
         subjectName = "Finance",
-        embedding = Some(make1536Embedding(1.0f)),
+        embedding = Some(make1024Embedding(1.0f)),
         updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")),
       )
     )

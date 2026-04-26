@@ -74,7 +74,7 @@ services:
 
   # Run database migrations before any pipeline starts
   db-migrations:
-    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.25
+    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.27
     entrypoint: ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "/opt/docker/lib/*", "repcheck.db.migrations.MigrationApp"]
     depends_on:
       alloydb:
@@ -240,13 +240,15 @@ services:
       EVENT_SUBSCRIBER_SUBSCRIPTION: bill-text-available-sub
       EVENT_SUBSCRIBER_MAX_MESSAGES: ${EVENT_SUBSCRIBER_MAX_MESSAGES:-100}
       OLLAMA_BASE_URL: http://ollama:11434
-      # Tuned model variant baked by ollama/Dockerfile (Modelfile-derived from qwen3-embedding:4b).
-      # The 4B model fits fully on an 8 GB GPU (eliminating the 16/84 CPU/GPU offload that was the
-      # actual throughput bottleneck on the 8B variant).
-      OLLAMA_MODEL_NAME: qwen3-embedding-tuned
-      OLLAMA_EMBEDDING_DIMENSIONS: "1536"
+      # Tuned model variant baked by ollama/Dockerfile (Modelfile-derived from qwen3-embedding:0.6b).
+      # The 0.6B model frees ~5 GB of VRAM vs the 4B baseline on an 8 GB GPU, lifting GPU-saturation
+      # batch size from ~10 to ~50 (~5× throughput on the batch-friendly /api/embed array path).
+      # Tag is generic ("bill-text-embedding") so future base-model swaps don't move this contract.
+      OLLAMA_MODEL_NAME: bill-text-embedding
+      OLLAMA_EMBEDDING_DIMENSIONS: "1024"
       OLLAMA_TIMEOUT_SECONDS: "60"
       OLLAMA_MAX_CHUNK_CHARS: ${OLLAMA_MAX_CHUNK_CHARS:-12000}
+      OLLAMA_EMBED_BATCH_SIZE: ${OLLAMA_EMBED_BATCH_SIZE:-50}
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
     restart: "no"
 

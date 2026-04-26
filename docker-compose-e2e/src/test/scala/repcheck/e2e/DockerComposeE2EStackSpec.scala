@@ -140,10 +140,11 @@ class DockerComposeE2EStackSpec extends AnyFlatSpec with Matchers with BeforeAnd
     count should be >= 1L
   }
 
-  it should "persist a 1536-dim embedding via the WireMock Ollama stub" taggedAs DockerRequired in {
+  it should "persist a 1024-dim embedding via the WireMock Ollama stub" taggedAs DockerRequired in {
     // Post db-migrations 026 / P6.H4c: text + embedding moved off `bill_text_versions` and into
-    // `raw_bill_text` (one row per chunk). The chunker produces ≥1 chunk for every fetched bill,
-    // and each chunk gets its own 1536-dim embedding from Ollama. Asserting ≥1 row here proves
+    // `raw_bill_text` (one row per chunk). Post db-migrations 028: embedding is vector(1024)
+    // (qwen3-embedding:0.6b family). The chunker produces ≥1 chunk for every fetched bill, and
+    // each chunk gets its own 1024-dim embedding from Ollama. Asserting ≥1 row here proves
     // (a) the chunker ran, (b) the embedding round-trip survived, (c) the new persistence path is wired.
     val count = sqlLong(sql"SELECT COUNT(*) FROM raw_bill_text WHERE embedding IS NOT NULL")
     count should be >= 1L

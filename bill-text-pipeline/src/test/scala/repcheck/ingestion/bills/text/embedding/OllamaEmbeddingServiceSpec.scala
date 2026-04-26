@@ -39,7 +39,7 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
   private def config: EmbeddingConfig =
     EmbeddingConfig(
       baseUrl = s"http://127.0.0.1:${wireMock.port().toString}",
-      modelName = "qwen3-embedding",
+      modelName = "bill-text-embedding",
       dimensions = 4,
       timeoutSeconds = 5,
       maxChunkChars = 30000,
@@ -121,7 +121,7 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
 
     wireMock.verify(
       postRequestedFor(urlEqualTo("/api/embed"))
-        .withRequestBody(matchingJsonPath("$.model", equalTo("qwen3-embedding")))
+        .withRequestBody(matchingJsonPath("$.model", equalTo("bill-text-embedding")))
         .withRequestBody(matchingJsonPath("$.dimensions", equalTo("4")))
         .withRequestBody(matchingJsonPath("$.input", equalTo("test text")))
     )
