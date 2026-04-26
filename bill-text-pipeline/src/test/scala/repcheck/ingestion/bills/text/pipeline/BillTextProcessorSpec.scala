@@ -534,4 +534,73 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // isAlreadyProcessed skip path — exercises the TRUE branch of the early skip-check
+  // added in PR #76. Without these, the processFreshBillText branch dominates coverage
+  // and the alreadyProcessed=true flow falls under the per-file 95% threshold.
+  // ---------------------------------------------------------------------------
+
+  "isAlreadyProcessed skip-check" should "return Skipped(\"already-processed\") when bill_text_versions row matches the event versionCode" in {
+    val f     = createFixture()
+    val event = makeEvent(naturalKey = "118-HR-1", versionCode = "ih")
+    stubBillLookup(f)
+
+    // Override the default empty stub with a row whose versionCode matches the event.
+    val existingVersion = mock[BillTextVersionDO]
+    when(existingVersion.versionCode).thenReturn("ih")
+    when(f.textVersionRepository.findByBillId(testDbBillId))
+      .thenReturn(doobie.free.connection.pure(List(existingVersion)))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isSkipped shouldBe true
+    result match {
+      case ProcessingResult.Skipped(entityId, reason) =>
+        val _ = entityId shouldBe "118-HR-1"
+        reason shouldBe "already-processed"
+      case other => fail(s"Expected Skipped but got $other")
+    }
+  }
+
+  it should "skip the expensive download/embed/persist work when already processed" in {
+    val f     = createFixture()
+    val event = makeEvent(naturalKey = "118-HR-1", versionCode = "ih")
+    stubBillLookup(f)
+
+    val existingVersion = mock[BillTextVersionDO]
+    when(existingVersion.versionCode).thenReturn("ih")
+    when(f.textVersionRepository.findByBillId(testDbBillId))
+      .thenReturn(doobie.free.connection.pure(List(existingVersion)))
+
+    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    // None of the heavy-lifting collaborators should have been touched.
+    val _ = verify(f.downloader, never()).download(anyString(), anyString(), any[UUID])
+    val _ = verify(f.embeddingService, never()).generateEmbeddings(any[List[String]]())
+    val _ = verify(f.textVersionRepository, never()).storeAndUpdateBill(any[BillTextVersionDO])
+    val _ = verify(f.rawBillTextRepository, never()).replaceAll(any[Long], any[List[RawBillTextDO]])
+    verify(f.eventPublisher, never()).billTextIngested(any[BillTextIngestedEvent], any[UUID])
+  }
+
+  it should "still call processFreshBillText when bill_text_versions has rows for OTHER versionCodes" in {
+    // Multiple stored versions, none matching → exists() is false → not already-processed → process fresh.
+    val f     = createFixture()
+    val event = makeEvent(naturalKey = "118-HR-1", versionCode = "rh")
+    stubSuccessfulFlow(f)
+
+    val ihVersion = mock[BillTextVersionDO]
+    when(ihVersion.versionCode).thenReturn("ih")
+    val ehVersion = mock[BillTextVersionDO]
+    when(ehVersion.versionCode).thenReturn("eh")
+    when(f.textVersionRepository.findByBillId(testDbBillId))
+      .thenReturn(doobie.free.connection.pure(List(ihVersion, ehVersion)))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isSucceeded shouldBe true
+    // Heavy path WAS exercised because no stored version matched "rh".
+    val _ = verify(f.downloader, times(1)).download(anyString(), anyString(), any[UUID])
+    verify(f.eventPublisher, times(1)).billTextIngested(any[BillTextIngestedEvent], any[UUID])
+  }
+
 }
