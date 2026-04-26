@@ -53,10 +53,10 @@ lazy val commonSettings = Seq(
   ),
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
-    "com.repcheck" %% "repcheck-pipeline-models"  % "0.1.20",
-    "com.repcheck" %% "repcheck-ingestion-common" % "0.1.22",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.28" % Test,
-    "com.repcheck" %% "repchecksharedmodels"       % "0.1.37",
+    "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.20",
+    "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.22",
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.29" % Test,
+    "com.repcheck" %% "repchecksharedmodels"          % "0.1.38",
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
@@ -69,22 +69,21 @@ lazy val commonSettings = Seq(
 
   // WartRemover — enforces FP discipline at compile time
   wartremoverErrors ++= Seq(
-    Wart.AsInstanceOf,          // No unsafe casts
+    Wart.AsInstanceOf,            // No unsafe casts
     Wart.EitherProjectionPartial, // No .get on Either projections
-    Wart.IsInstanceOf,          // No runtime type checks — use pattern matching
-    Wart.MutableDataStructures, // No mutable collections
-    Wart.Null,                  // No null — use Option
-    Wart.OptionPartial,         // No Option.get — use fold/map/getOrElse
-    Wart.Return,                // No return statements
-    Wart.StringPlusAny,         // No string + any — use interpolation
-    Wart.IterableOps,           // No .head/.tail on collections — use headOption
-    Wart.TryPartial,            // No Try.get — use fold/recover
-    Wart.Var                    // No mutable vars
+    Wart.IsInstanceOf,            // No runtime type checks — use pattern matching
+    Wart.MutableDataStructures,   // No mutable collections
+    Wart.Null,                    // No null — use Option
+    Wart.OptionPartial,           // No Option.get — use fold/map/getOrElse
+    Wart.Return,                  // No return statements
+    Wart.StringPlusAny,           // No string + any — use interpolation
+    Wart.IterableOps,             // No .head/.tail on collections — use headOption
+    Wart.TryPartial,              // No Try.get — use fold/recover
+    Wart.Var,                     // No mutable vars
   ),
   wartremoverWarnings ++= Seq(
-    Wart.Throw                  // Warn on bare throw — prefer F.raiseError
+    Wart.Throw // Warn on bare throw — prefer F.raiseError
   ),
-
   exceptionUniquenessRootPackages := Seq("com.repcheck", "repcheck"),
 
   // Suppress Scala 3.4-migration infix warnings for ScalaTest matchers in test sources
@@ -105,13 +104,13 @@ lazy val commonSettings = Seq(
 lazy val pipelineSettings = commonSettings ++ Seq(
   Test / javaOptions += "-Dconfig.resource=application-test.conf",
   assembly / assemblyMergeStrategy := {
-    case PathList("META-INF", "versions", _, _*)         => MergeStrategy.first
+    case PathList("META-INF", "versions", _, _*)              => MergeStrategy.first
     case PathList("META-INF", "io.netty.versions.properties") => MergeStrategy.first
-    case PathList("META-INF", "MANIFEST.MF")             => MergeStrategy.discard
-    case PathList("META-INF", "services", _*)            => MergeStrategy.concat
-    case PathList("module-info.class")                   => MergeStrategy.discard
-    case x if x.endsWith(".proto")                       => MergeStrategy.first
-    case x if x.endsWith(".properties")                  => MergeStrategy.first
+    case PathList("META-INF", "MANIFEST.MF")                  => MergeStrategy.discard
+    case PathList("META-INF", "services", _*)                 => MergeStrategy.concat
+    case PathList("module-info.class")                        => MergeStrategy.discard
+    case x if x.endsWith(".proto")                            => MergeStrategy.first
+    case x if x.endsWith(".properties")                       => MergeStrategy.first
     case x =>
       val oldStrategy = (assembly / assemblyMergeStrategy).value
       oldStrategy(x)
@@ -123,6 +122,7 @@ lazy val root = (project in file("."))
     billsCommon,
     membersCommon,
     billMetadataPipeline,
+    billSummaryPipeline,
     billTextAvailabilityChecker,
     billTextPipeline,
     memberProfilePipeline,
@@ -133,7 +133,7 @@ lazy val root = (project in file("."))
   )
   .settings(
     commonSettings,
-    name := "repcheck-data-ingestion",
+    name           := "repcheck-data-ingestion",
     publish / skip := true,
   )
 
@@ -158,7 +158,7 @@ lazy val membersCommon = (project in file("members-common"))
     name := "members-common",
     libraryDependencies ++= doobie ++ catsEffect ++ diff ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
-    Test / parallelExecution := false,
+    Test / parallelExecution               := false,
   )
 
 lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
@@ -170,9 +170,9 @@ lazy val billMetadataPipeline = (project in file("bill-metadata-pipeline"))
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ diff ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
-    coverageExcludedFiles := ".*BillMetadataPipeline;.*BillMetadataPipelineApp",
-    assembly / mainClass := Some("repcheck.ingestion.bills.metadata.app.BillMetadataPipelineApp"),
-    assembly / assemblyJarName := "bill-metadata-pipeline.jar",
+    coverageExcludedFiles                  := ".*BillMetadataPipeline;.*BillMetadataPipelineApp",
+    assembly / mainClass                   := Some("repcheck.ingestion.bills.metadata.app.BillMetadataPipelineApp"),
+    assembly / assemblyJarName             := "bill-metadata-pipeline.jar",
   )
 
 lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-checker"))
@@ -183,9 +183,24 @@ lazy val billTextAvailabilityChecker = (project in file("bill-text-availability-
     name := "bill-text-availability-checker",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
-    coverageExcludedFiles := ".*BillTextCheckerApp",
-    assembly / mainClass := Some("repcheck.ingestion.bills.textcheck.app.BillTextCheckerApp"),
+    coverageExcludedFiles      := ".*BillTextCheckerApp",
+    assembly / mainClass       := Some("repcheck.ingestion.bills.textcheck.app.BillTextCheckerApp"),
     assembly / assemblyJarName := "bill-text-availability-checker.jar",
+  )
+
+lazy val billSummaryPipeline = (project in file("bill-summary-pipeline"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(billsCommon % "compile->compile;test->test")
+  .settings(pipelineSettings)
+  .settings(
+    name := "bill-summary-pipeline",
+    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
+      ++ catsEffect ++ doobie ++ fs2 ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
+    coverageExcludedFiles                  := ".*BillSummaryPipeline;.*BillSummaryPipelineApp",
+    Test / parallelExecution               := false,
+    assembly / mainClass                   := Some("repcheck.ingestion.bills.summary.app.BillSummaryPipelineApp"),
+    assembly / assemblyJarName             := "bill-summary-pipeline.jar",
   )
 
 lazy val memberProfilePipeline = (project in file("member-profile-pipeline"))
@@ -198,13 +213,13 @@ lazy val memberProfilePipeline = (project in file("member-profile-pipeline"))
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ diff ++ pubSub ++ fs2 ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
-    coverageExcludedFiles := ".*MemberProfilePipelineApp",
+    coverageExcludedFiles                  := ".*MemberProfilePipelineApp",
     // Intra-subproject parallel execution causes FK violations because PlaceholderFillIntegrationSpec
     // and SenatorLifecycleIntegrationSpec share SharedDockerPostgres's singleton container and each
     // suite's afterEach truncates members / member_lis_mapping — which clobbers the other suite's
     // in-flight inserts. Matches the convention used by lisMappingRefresher.
-    Test / parallelExecution := false,
-    assembly / mainClass := Some("repcheck.ingestion.members.profile.app.MemberProfilePipelineApp"),
+    Test / parallelExecution   := false,
+    assembly / mainClass       := Some("repcheck.ingestion.members.profile.app.MemberProfilePipelineApp"),
     assembly / assemblyJarName := "member-profile-pipeline.jar",
   )
 
@@ -217,13 +232,13 @@ lazy val lisMappingRefresher = (project in file("lis-mapping-refresher"))
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ xml ++ pubSub ++ fs2 ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
-    coverageExcludedFiles := ".*LisMappingRefresherApp",
+    coverageExcludedFiles                  := ".*LisMappingRefresherApp",
     // Intra-subproject parallel execution causes FK violations because DoobieLisMember*Spec and
     // DoobieLisMapping*Spec share SharedDockerPostgres's singleton container and each suite's
     // afterEach truncates lis_members / member_lis_mapping — which clobbers the other suite's
     // in-flight inserts. Matches the convention used by billsCommon and membersCommon.
-    Test / parallelExecution := false,
-    assembly / mainClass := Some("repcheck.members.lismapping.app.LisMappingRefresherApp"),
+    Test / parallelExecution   := false,
+    assembly / mainClass       := Some("repcheck.members.lismapping.app.LisMappingRefresherApp"),
     assembly / assemblyJarName := "lis-mapping-refresher.jar",
   )
 
@@ -240,8 +255,8 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
     coverageExcludedFiles := ".*BillTextPipelineApp",
     // WireMock-based tests share a dynamic port; sequential prevents port contention.
     // Cross-subproject parallelism (configurable via `-Dsbt.testConcurrency=N`, default 2) gives us the speedup win.
-    Test / parallelExecution := false,
-    assembly / mainClass := Some("repcheck.ingestion.bills.text.app.BillTextPipelineApp"),
+    Test / parallelExecution   := false,
+    assembly / mainClass       := Some("repcheck.ingestion.bills.text.app.BillTextPipelineApp"),
     assembly / assemblyJarName := "bill-text-pipeline.jar",
   )
 
@@ -255,11 +270,11 @@ lazy val votesPipeline = (project in file("votes-pipeline"))
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ diff ++ xml ++ pubSub ++ fs2 ++ logging ++ testDeps ++ propertyTestDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
-    coverageExcludedFiles := ".*VotesPipeline;.*VotesPipelineApp",
+    coverageExcludedFiles                  := ".*VotesPipeline;.*VotesPipelineApp",
     // Shared DockerPostgres singleton + per-suite table cleanup make intra-subproject parallel execution
     // unsafe; cross-subproject parallelism (configurable via `-Dsbt.testConcurrency=N`, default 2) still provides a speedup.
-    Test / parallelExecution := false,
-    assembly / mainClass := Some("repcheck.ingestion.votes.app.VotesPipelineApp"),
+    Test / parallelExecution   := false,
+    assembly / mainClass       := Some("repcheck.ingestion.votes.app.VotesPipelineApp"),
     assembly / assemblyJarName := "votes-pipeline.jar",
   )
 
@@ -285,6 +300,7 @@ lazy val dockerComposeE2e = (project in file("docker-compose-e2e"))
     Test / test := (Test / test)
       .dependsOn(
         billMetadataPipeline / assembly,
+        billSummaryPipeline / assembly,
         billTextAvailabilityChecker / assembly,
         billTextPipeline / assembly,
         votesPipeline / assembly,
@@ -320,7 +336,10 @@ addCommandAlias(
     "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; votesPipeline / test" +
-    "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
+    "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set billSummaryPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; billSummaryPipeline / test" +
+    "; set billSummaryPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
 )
 
 // `dockerTestParallel` — experimental. Flips every DockerRequired-capable subproject's test
@@ -337,27 +356,29 @@ addCommandAlias(
     "; set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
-    "; all billsCommon/test membersCommon/test billTextPipeline/test billTextAvailabilityChecker/test memberProfilePipeline/test lisMappingRefresher/test votesPipeline/test" +
+    "; set billSummaryPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; all billsCommon/test membersCommon/test billTextPipeline/test billTextAvailabilityChecker/test memberProfilePipeline/test lisMappingRefresher/test votesPipeline/test billSummaryPipeline/test" +
     "; set billsCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))" +
     "; set membersCommon / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"))" +
     "; set billTextPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set billTextAvailabilityChecker / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set memberProfilePipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set lisMappingRefresher / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
-    "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
+    "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set billSummaryPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
 )
 
 lazy val docGenerator = (project in file("doc-generator"))
   .settings(
     commonSettings,
     libraryDependencies ++= Seq(
-      "com.anthropic" % "anthropic-java" % "2.18.0",
-      "org.typelevel" %% "cats-effect" % "3.7.0",
-      "ch.qos.logback" % "logback-classic" % "1.5.32"
+      "com.anthropic"  % "anthropic-java"  % "2.18.0",
+      "org.typelevel" %% "cats-effect"     % "3.7.0",
+      "ch.qos.logback" % "logback-classic" % "1.5.32",
     ),
     // Exclude WartRemover for this utility project — uses Java SDK patterns
-    wartremoverErrors := Seq.empty,
+    wartremoverErrors   := Seq.empty,
     wartremoverWarnings := Seq.empty,
     // Exclude from coverage — utility project with no unit tests
-    coverageEnabled := false
+    coverageEnabled := false,
   )
