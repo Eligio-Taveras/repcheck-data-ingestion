@@ -99,7 +99,7 @@ private[app] object BillTextPipelinePipeline {
     val billRepository        = new DoobieBillRepository
     val textVersionRepository = new DoobieBillTextVersionRepository
     val rawBillTextRepository = new DoobieRawBillTextRepository
-    val downloader            = new BillTextDownloader[F](httpClient, config.pipeline, logger)
+    val downloader            = new BillTextDownloader[F](httpClient, logger)
     val retryWrapper          = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
     val eventPublisher = new DefaultIngestionEventPublisher[F](
       publisher = pubSubPublisher,
@@ -120,7 +120,7 @@ private[app] object BillTextPipelinePipeline {
       eventPublisher = eventPublisher,
       xa = xa,
       logger = logger,
-      extractText = (path, format) => BillTextExtractor.extract[F](path, format),
+      extractText = (bytes, format) => BillTextExtractor.extractStream[F](bytes, format),
     )
   }
 

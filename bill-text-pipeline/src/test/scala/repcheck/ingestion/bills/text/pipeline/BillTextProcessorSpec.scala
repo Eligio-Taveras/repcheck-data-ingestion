@@ -1,12 +1,13 @@
 package repcheck.ingestion.bills.text.pipeline
 
-import java.nio.file.{Path, Paths}
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 
+import cats.effect.IO
 import cats.effect.unsafe.implicits.global
-import cats.effect.{IO, Resource}
+
+import fs2.Stream
 
 import doobie._
 
@@ -56,9 +57,8 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     logHandler = None,
   )
 
-  private val correlationId       = UUID.randomUUID()
-  private val testDbBillId        = 42L
-  private val dummyTempPath: Path = Paths.get(System.getProperty("java.io.tmpdir"), "bill-text-test-fixture")
+  private val correlationId = UUID.randomUUID()
+  private val testDbBillId  = 42L
 
   private val testEmbeddingConfig: EmbeddingConfig = EmbeddingConfig(
     baseUrl = "http://localhost:11434",
@@ -91,36 +91,41 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         eventPublisher = eventPublisher,
         xa = testXa,
         logger = logger,
-        extractText = (_, _) => contentResponseRef.get(),
+        extractText = (_, _) => Stream.eval(contentResponseRef.get()).flatMap(Stream.emit),
       )
 
     /**
-     * Stub the success path: `downloadToTempFile` yields a dummy path, `extractText` returns `content`. Caller is still
-     * responsible for stubbing `billRepository.findByBillId`, embedding service responses, etc.
+     * Stub the success path: `streamBody` yields an empty byte stream (the injected `extractText` stub ignores it and
+     * emits `content` directly via `contentResponseRef`). Caller is still responsible for stubbing
+     * `billRepository.findByBillId`, embedding service responses, etc.
      */
     def stubSuccessfulDownload(content: String): Unit = {
       contentResponseRef.set(IO.pure(content))
-      val _ = when(downloader.downloadToTempFile(anyString(), anyString(), any[UUID]))
-        .thenReturn(Resource.pure[IO, Path](dummyTempPath))
+      val _ = when(downloader.streamBody(anyString(), anyString(), any[UUID]))
+        .thenReturn(Stream.empty.covary[IO])
     }
 
     /**
-     * Stub a failure during the download phase (Resource acquisition raises). The Resource never yields a Path so the
-     * processor's `.use { tempPath => ... }` block aborts with the supplied error before extraction.
+     * Stub a failure during the download phase (the byte stream raises). To make the stubbed `extractText` (which
+     * ignores its byte-stream argument and instead emits from `contentResponseRef`) actually surface the error, we also
+     * flip `contentResponseRef` to raise the same error. In production the byte-stream-level error and the
+     * extractor-level error are the same propagation chain, so this dual-stub matches reality.
      */
     def stubDownloadFailure(error: Throwable): Unit = {
-      val _ = when(downloader.downloadToTempFile(anyString(), anyString(), any[UUID]))
-        .thenReturn(Resource.eval(IO.raiseError[Path](error)))
+      contentResponseRef.set(IO.raiseError[String](error))
+      val _ = when(downloader.streamBody(anyString(), anyString(), any[UUID]))
+        .thenReturn(Stream.raiseError[IO](error))
     }
 
     /**
-     * Stub a failure during the extraction phase (download succeeds but `extractText` raises). Used for tests that
-     * exercise extractor-level errors like `PdfExtractionFailed`.
+     * Stub a failure during the extraction phase (download succeeds but the streaming extractor raises). The injected
+     * `extractText` stub flatMaps the contentResponseRef IO; setting it to `IO.raiseError` makes the resulting Stream
+     * fail when pulled.
      */
     def stubExtractFailure(error: Throwable): Unit = {
       contentResponseRef.set(IO.raiseError[String](error))
-      val _ = when(downloader.downloadToTempFile(anyString(), anyString(), any[UUID]))
-        .thenReturn(Resource.pure[IO, Path](dummyTempPath))
+      val _ = when(downloader.streamBody(anyString(), anyString(), any[UUID]))
+        .thenReturn(Stream.empty.covary[IO])
     }
 
   }
@@ -656,7 +661,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
     // None of the heavy-lifting collaborators should have been touched.
-    val _ = verify(f.downloader, never()).downloadToTempFile(anyString(), anyString(), any[UUID])
+    val _ = verify(f.downloader, never()).streamBody(anyString(), anyString(), any[UUID])
     val _ = verify(f.embeddingService, never()).generateEmbeddings(any[List[String]]())
     val _ = verify(f.textVersionRepository, never()).storeAndUpdateBill(any[BillTextVersionDO])
     val _ = verify(f.rawBillTextRepository, never()).insertOne(any[RawBillTextDO])
@@ -682,7 +687,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val _ = result.isSucceeded shouldBe true
     // Heavy path WAS exercised because no stored version matched "rh".
-    val _ = verify(f.downloader, times(1)).downloadToTempFile(anyString(), anyString(), any[UUID])
+    val _ = verify(f.downloader, times(1)).streamBody(anyString(), anyString(), any[UUID])
     verify(f.eventPublisher, times(1)).billTextIngested(any[BillTextIngestedEvent], any[UUID])
   }
 
@@ -702,7 +707,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
     val _ = result.isSucceeded shouldBe true
-    verify(f.downloader, times(1)).downloadToTempFile(anyString(), anyString(), any[UUID])
+    verify(f.downloader, times(1)).streamBody(anyString(), anyString(), any[UUID])
   }
 
 }

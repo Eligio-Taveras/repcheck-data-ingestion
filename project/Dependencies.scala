@@ -46,9 +46,12 @@ object Dependencies {
   private val scalaXml = "org.scala-lang.modules" %% "scala-xml" % scalaXmlVersion
   private val http4sScalaXml = "org.http4s" %% "http4s-scala-xml" % "0.23.14"
 
-  // HTML parsing
-  private val jsoup  = "org.jsoup" % "jsoup" % Versions.jsoupVersion
-  private val pdfbox = "org.apache.pdfbox" % "pdfbox" % Versions.pdfboxVersion
+  // HTML parsing — TagSoup is a SAX-based HTML parser that gracefully handles malformed
+  // markup (Congress.gov "Formatted Text" payloads occasionally contain stray entities
+  // and unbalanced tags inside the <pre> block). Streaming SAX events lets the
+  // bill-text-pipeline emit text fragments without holding a full HTML DOM in heap.
+  private val tagsoup = "org.ccil.cowan.tagsoup" % "tagsoup" % Versions.tagsoupVersion
+  private val pdfbox  = "org.apache.pdfbox" % "pdfbox" % Versions.pdfboxVersion
 
   // Diffing
   private val difflicious = "com.github.jatcwang" %% "difflicious-core" % Versions.difflicious
@@ -78,7 +81,7 @@ object Dependencies {
   val pubSub: Seq[ModuleID] = Seq(gcpPubSub)
 
   val xml: Seq[ModuleID]         = Seq(scalaXml, http4sScalaXml)
-  val htmlParsing: Seq[ModuleID] = Seq(jsoup)
+  val htmlParsing: Seq[ModuleID] = Seq(tagsoup)
   val pdfParsing: Seq[ModuleID]  = Seq(pdfbox)
 
   val logging: Seq[ModuleID] = Seq(log4catsSlf4j, logbackClassic)
