@@ -309,6 +309,10 @@ services:
       PUBSUB_PROJECT_ID: repcheck-local
       MEMBER_UPDATED_TOPIC: member-updated
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      # Optional comma-separated congress list (e.g. "117,118,119"). When unset, the pipeline
+      # falls back to `SELECT DISTINCT congress FROM bills` so it naturally tracks whatever
+      # congresses bill-metadata-pipeline has covered. Override for targeted backfill / dev runs.
+      MEMBERS_CONGRESSES: ${MEMBERS_CONGRESSES:-}
     restart: "no"
 
   lis-mapping-refresher:

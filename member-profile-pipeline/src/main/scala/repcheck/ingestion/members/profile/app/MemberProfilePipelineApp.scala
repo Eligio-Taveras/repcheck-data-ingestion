@@ -30,6 +30,7 @@ object MemberProfilePipelineApp extends IOApp {
           PubSubPublisherResource.make[IO](_),
         ),
       processorFactory = MemberProfilePipeline.buildProcessor[IO],
+      congressesResolver = (cfg, xa, logger) => MemberProfilePipeline.resolveCongresses[IO](cfg, xa, logger),
       streamFactory = MemberProfilePipeline.buildStream[IO],
     )
   }

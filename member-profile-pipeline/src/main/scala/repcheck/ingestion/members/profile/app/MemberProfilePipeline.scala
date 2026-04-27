@@ -2,19 +2,21 @@ package repcheck.ingestion.members.profile.app
 
 import java.util.UUID
 
-import cats.effect.{Async, ExitCode, Resource}
+import cats.effect.{Async, ExitCode, Resource, Sync}
 import cats.syntax.all._
 
 import org.http4s.client.Client
 
 import fs2.Stream
 
+import doobie._
+import doobie.implicits._
 import doobie.util.transactor.Transactor
 
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
-import repcheck.ingestion.common.logging.PipelineLogger
+import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.members.profile.api.MembersApiClient
 import repcheck.ingestion.members.profile.config.MemberProfileConfig
 import repcheck.ingestion.members.profile.pipeline.MemberProfileProcessor
@@ -60,8 +62,10 @@ private[app] object MemberProfilePipeline {
    *   acquires the transactor, HTTP client, and Pub/Sub publisher as a [[Resource]]
    * @param processorFactory
    *   constructs a [[MemberProfileProcessor]] from resolved dependencies
+   * @param congressesResolver
+   *   resolves the list of congresses to ingest (env > config > DB-derived). Stubbed in tests.
    * @param streamFactory
-   *   builds the [[Stream]] from the processor (allows tests to inject a canned result stream)
+   *   builds the [[Stream]] from the processor + resolved congresses (allows tests to inject a canned result stream)
    */
   private[app] def runWithFactories[F[_]: Async](
     configLoader: F[AppConfig],
@@ -74,19 +78,74 @@ private[app] object MemberProfilePipeline {
       AppConfig,
       PipelineLogger[F],
     ) => MemberProfileProcessor[F],
-    streamFactory: (MemberProfileProcessor[F], PipelineLogger[F]) => Stream[F, ProcessingResult],
+    congressesResolver: (AppConfig, Transactor[F], PipelineLogger[F]) => F[List[Int]],
+    streamFactory: (MemberProfileProcessor[F], PipelineLogger[F], List[Int]) => Stream[F, ProcessingResult],
   ): F[ExitCode] =
     for {
       config <- configLoader
       logger <- loggerFactory(PipelineName)
       exitCode <- resourceBuilder(config, logger).use { resources =>
-        val processor = processorFactory(resources.httpClient, resources.xa, resources.pubSubPublisher, config, logger)
-        val resultStream = streamFactory(processor, logger)
-        // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
-        // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
-        PipelineExecutor.execute[F](resultStream, logger, PipelineName, 0L)
+        for {
+          congresses <- congressesResolver(config, resources.xa, logger)
+          processor    = processorFactory(resources.httpClient, resources.xa, resources.pubSubPublisher, config, logger)
+          resultStream = streamFactory(processor, logger, congresses)
+          // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
+          // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
+          result <- PipelineExecutor.execute[F](resultStream, logger, PipelineName, 0L)
+        } yield result
       }
     } yield exitCode
+
+  /**
+   * Resolve the list of congresses to ingest. Three layers, in priority order:
+   *
+   *   1. `MEMBERS_CONGRESSES` env var (comma-separated, e.g. `"117,118,119"`). Highest priority — read directly via
+   *      `sys.env` because HOCON cannot parse a string into `List[Int]`. Trimmed entries; non-numeric tokens raise.
+   *   1. `config.pipeline.congresses` from `application.conf` / test profiles. Useful for forcing a specific
+   *      multi-congress list without touching env vars.
+   *   1. `SELECT DISTINCT congress FROM bills` from the live DB. Default — lets members-pipeline naturally follow
+   *      whatever congresses the bills pipeline has covered.
+   *
+   * This is the production wiring; the unit spec replaces the whole resolver with a stub so it never touches env or DB.
+   * Mirrors `repcheck.ingestion.votes.app.VotesPipeline.resolveCongresses`.
+   */
+  private[app] def resolveCongresses[F[_]: Async](
+    config: AppConfig,
+    xa: Transactor[F],
+    logger: PipelineLogger[F],
+  ): F[List[Int]] = {
+    val ctx = LogContext("startup", "members-pipeline:resolve-congresses")
+
+    Sync[F].delay(sys.env.get("MEMBERS_CONGRESSES").map(_.trim).filter(_.nonEmpty)).flatMap {
+      case Some(raw) =>
+        Sync[F]
+          .delay(raw.split(",").iterator.map(_.trim).filter(_.nonEmpty).map(_.toInt).toList)
+          .flatMap(parsed =>
+            logger
+              .info(ctx, s"Using ${parsed.size} congresses from MEMBERS_CONGRESSES env: ${parsed.mkString(",")}")
+              .as(parsed)
+          )
+      case None if config.pipeline.congresses.nonEmpty =>
+        val configured = config.pipeline.congresses
+        logger
+          .info(
+            ctx,
+            s"Using ${configured.size} congresses from config.pipeline.congresses: ${configured.mkString(",")}",
+          )
+          .as(configured)
+      case None =>
+        val query = sql"SELECT DISTINCT congress FROM bills WHERE congress IS NOT NULL ORDER BY congress DESC"
+          .query[Int]
+          .to[List]
+        for {
+          derived <- xa.trans.apply(query)
+          _ <- logger.info(
+            ctx,
+            s"No env or config override — derived ${derived.size} congresses from bills table: ${derived.mkString(",")}",
+          )
+        } yield derived
+    }
+  }
 
   /**
    * No-op retry logger used when we don't need per-attempt logging. Extracted as a named method so tests can exercise
@@ -140,10 +199,11 @@ private[app] object MemberProfilePipeline {
   private[app] def buildStream[F[_]](
     processor: MemberProfileProcessor[F],
     logger: PipelineLogger[F],
+    congresses: List[Int],
   ): Stream[F, ProcessingResult] = {
     val _ = logger // reserved for future pre/post-stream logging
     // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration.
-    processor.streamAll(0L)
+    processor.streamAll(0L, congresses)
   }
 
   /**

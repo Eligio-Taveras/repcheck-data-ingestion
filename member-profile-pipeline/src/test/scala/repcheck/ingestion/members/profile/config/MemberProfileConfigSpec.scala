@@ -15,22 +15,42 @@ class MemberProfileConfigSpec extends AnyFlatSpec with Matchers {
     backoffMultiplier = 2.0,
   )
 
-  "MemberProfileConfig" should "hold congress, parallelism, pageDelay, and eventPublishRetry" in {
+  "MemberProfileConfig" should "hold congresses, parallelism, pageDelay, and eventPublishRetry" in {
     val config = MemberProfileConfig(
-      congress = 118,
+      congresses = List(117, 118, 119),
       parallelism = 4,
       pageDelay = 500.millis,
       eventPublishRetry = testRetry,
     )
-    val _ = config.congress shouldBe 118
+    val _ = config.congresses shouldBe List(117, 118, 119)
     val _ = config.parallelism shouldBe 4
     val _ = config.pageDelay shouldBe 500.millis
     config.eventPublishRetry shouldBe testRetry
   }
 
+  it should "accept an empty congresses list (DB-derived fallback path)" in {
+    val config = MemberProfileConfig(
+      congresses = Nil,
+      parallelism = 1,
+      pageDelay = 100.millis,
+      eventPublishRetry = testRetry,
+    )
+    config.congresses shouldBe empty
+  }
+
+  it should "accept a single-congress list" in {
+    val config = MemberProfileConfig(
+      congresses = List(118),
+      parallelism = 1,
+      pageDelay = 100.millis,
+      eventPublishRetry = testRetry,
+    )
+    config.congresses shouldBe List(118)
+  }
+
   it should "allow single-threaded parallelism" in {
     val config = MemberProfileConfig(
-      congress = 118,
+      congresses = List(118),
       parallelism = 1,
       pageDelay = 100.millis,
       eventPublishRetry = testRetry,
@@ -40,7 +60,7 @@ class MemberProfileConfigSpec extends AnyFlatSpec with Matchers {
 
   it should "allow zero page delay" in {
     val config = MemberProfileConfig(
-      congress = 118,
+      congresses = List(118),
       parallelism = 4,
       pageDelay = Duration.Zero,
       eventPublishRetry = testRetry,
