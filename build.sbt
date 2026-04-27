@@ -251,7 +251,7 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
   .settings(
     name := "bill-text-pipeline",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ xml ++ htmlParsing ++ logging ++ testDeps,
+      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ xml ++ htmlParsing ++ pdfParsing ++ logging ++ testDeps,
     coverageExcludedFiles := ".*BillTextPipelineApp",
     // WireMock-based tests share a dynamic port; sequential prevents port contention.
     // Cross-subproject parallelism (configurable via `-Dsbt.testConcurrency=N`, default 2) gives us the speedup win.

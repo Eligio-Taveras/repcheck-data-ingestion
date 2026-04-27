@@ -21,6 +21,24 @@ trait RawBillTextRepository[F[_]] {
   def replaceAll(versionId: Long, chunks: List[RawBillTextDO]): F[Unit]
 
   /**
+   * Delete all chunks for the supplied bill text version. Used by the streaming-INSERT flow to clear partial chunks
+   * left by a previous failed run before re-streaming from scratch. Idempotent: a missing row count is fine.
+   */
+  def deleteByVersionId(versionId: Long): F[Unit]
+
+  /**
+   * INSERT exactly one chunk row. Composes with the streaming-INSERT flow in
+   * [[repcheck.ingestion.bills.text.pipeline.BillTextProcessor]] which iterates the chunk list, embeds each, and
+   * inserts one row per chunk in its own auto-committing transaction so peak heap stays bounded by one chunk's size +
+   * its vector(1024) (~16 KB) instead of holding all chunks + all embeddings in heap before a bulk insert.
+   *
+   * Caller must have already cleared any orphan chunks for this `version_id` (see [[deleteByVersionId]]) — the unique
+   * constraint `(version_id, chunk_index) WHERE version_id IS NOT NULL` would otherwise reject a duplicate
+   * `chunk_index` left over from a prior partial run.
+   */
+  def insertOne(chunk: RawBillTextDO): F[Unit]
+
+  /**
    * Fetch every chunk attached to the supplied bill version, ordered by `chunk_index` so callers can `mkString` to
    * reconstruct the original document. Returns `Nil` if no chunks exist.
    */

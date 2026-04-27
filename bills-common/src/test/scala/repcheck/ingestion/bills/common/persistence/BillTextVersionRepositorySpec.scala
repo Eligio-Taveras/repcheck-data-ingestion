@@ -1,5 +1,7 @@
 package repcheck.ingestion.bills.common.persistence
 
+import java.time.Instant
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
@@ -19,6 +21,8 @@ class BillTextVersionRepositorySpec extends AnyFlatSpec with Matchers {
     override def findLatestByBillId(billId: Long): IO[Option[BillTextVersionDO]] = IO.pure(None)
 
     override def storeAndUpdateBill(version: BillTextVersionDO): IO[Long] = IO.pure(1L)
+
+    override def markFetched(versionId: Long, timestamp: Instant): IO[Unit] = IO.unit
   }
 
   private val sampleVersion = BillTextVersionDO(

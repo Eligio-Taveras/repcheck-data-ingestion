@@ -163,6 +163,8 @@ class FullChainIntegrationSpec
       eventPublisher = pipelineEventPublisher,
       xa = xa,
       logger = testLogger,
+      extractText = (path, format) =>
+        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extract[IO](path, format),
     )
   }
 

@@ -309,6 +309,8 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       eventPublisher = eventPublisher,
       xa = xa,
       logger = testLogger,
+      extractText = (path, format) =>
+        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extract[IO](path, format),
     )
   }
 

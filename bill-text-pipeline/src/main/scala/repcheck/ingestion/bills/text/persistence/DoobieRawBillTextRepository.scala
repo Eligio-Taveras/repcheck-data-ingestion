@@ -57,6 +57,15 @@ class DoobieRawBillTextRepository extends RawBillTextRepository[ConnectionIO] {
     }
   }
 
+  override def deleteByVersionId(versionId: Long): ConnectionIO[Unit] =
+    sql"DELETE FROM $table WHERE version_id = $versionId".update.run.map(_ => ())
+
+  override def insertOne(chunk: RawBillTextDO): ConnectionIO[Unit] = {
+    val row: (Long, Option[Long], Int, String, Option[Array[Float]]) =
+      (chunk.billId, chunk.versionId, chunk.chunkIndex, chunk.content, chunk.embedding)
+    Update[(Long, Option[Long], Int, String, Option[Array[Float]])](insertSql).run(row).map(_ => ())
+  }
+
   override def findByVersionId(versionId: Long): ConnectionIO[List[RawBillTextDO]] =
     (fr"SELECT" ++ selectColumns ++
       fr"FROM $table WHERE version_id = $versionId ORDER BY chunk_index ASC")

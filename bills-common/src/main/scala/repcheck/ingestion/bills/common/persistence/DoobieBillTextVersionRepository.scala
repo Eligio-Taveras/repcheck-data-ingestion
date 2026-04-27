@@ -1,5 +1,7 @@
 package repcheck.ingestion.bills.common.persistence
 
+import java.time.Instant
+
 import doobie._
 import doobie.implicits._
 import doobie.postgres.implicits._
@@ -81,5 +83,10 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
       generatedId <- insertVersion(version)
       _           <- buildBillTextFieldsUpdate(version, generatedId)
     } yield generatedId
+
+  override def markFetched(versionId: Long, timestamp: Instant): ConnectionIO[Unit] =
+    sql"""
+      UPDATE $table SET fetched_at = $timestamp WHERE id = $versionId
+    """.update.run.map(_ => ())
 
 }

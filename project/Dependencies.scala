@@ -47,7 +47,8 @@ object Dependencies {
   private val http4sScalaXml = "org.http4s" %% "http4s-scala-xml" % "0.23.14"
 
   // HTML parsing
-  private val jsoup = "org.jsoup" % "jsoup" % Versions.jsoupVersion
+  private val jsoup  = "org.jsoup" % "jsoup" % Versions.jsoupVersion
+  private val pdfbox = "org.apache.pdfbox" % "pdfbox" % Versions.pdfboxVersion
 
   // Diffing
   private val difflicious = "com.github.jatcwang" %% "difflicious-core" % Versions.difflicious
@@ -76,8 +77,9 @@ object Dependencies {
 
   val pubSub: Seq[ModuleID] = Seq(gcpPubSub)
 
-  val xml: Seq[ModuleID]      = Seq(scalaXml, http4sScalaXml)
+  val xml: Seq[ModuleID]         = Seq(scalaXml, http4sScalaXml)
   val htmlParsing: Seq[ModuleID] = Seq(jsoup)
+  val pdfParsing: Seq[ModuleID]  = Seq(pdfbox)
 
   val logging: Seq[ModuleID] = Seq(log4catsSlf4j, logbackClassic)
 
