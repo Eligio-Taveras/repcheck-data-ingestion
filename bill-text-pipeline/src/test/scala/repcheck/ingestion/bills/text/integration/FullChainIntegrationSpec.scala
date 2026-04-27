@@ -300,14 +300,17 @@ class FullChainIntegrationSpec
 
     // First, insert a text version so the bill has existing text.
     //
-    // Note: post-#76 the bill-text-availability-checker filter is `WHERE text_url IS NULL`, so we
-    // leave textUrl = None even though textVersionType is set to IH. This is artificial state (in
-    // production, text_url and text_version_type are populated together by upstream pipelines)
-    // but it exercises the previousVersionCode propagation branch — checker sees stored = IH,
-    // API returns RH, emits event with previousVersionCode = IH. The artificial-state setup will
-    // become unnecessary when the summary-based stage filter lands and re-versioning detection
-    // returns to working off populated state directly.
-    import repcheck.shared.models.congress.bill.TextVersionCode
+    // Post-#77 the bill-text-availability-checker filter is the stage-aware
+    //   WHERE expected_text_version_code IS NOT NULL
+    //     AND text_version_type IS DISTINCT FROM expected_text_version_code
+    // We need:
+    //   * text_version_type = IH (the bill is currently stored at the IH stage)
+    //   * expected_text_version_code = RH (CRS / bill-summary-pipeline has advanced the expected
+    //     stage to RH because that's what the API now reports as available)
+    // After this PR's seedBill change, `dbBillId` was upserted with expected = IH; we override to
+    // RH below so the DISTINCT-FROM check fires and the checker picks the bill up. The simulated
+    // state here is the steady state right after bill-summary advances expected from IH → RH but
+    // before bill-text-pipeline downloads the RH formatted text and updates text_version_type.
     val billWithText = BillDO(
       billId = dbBillId,
       naturalKey = "118-HR-51",
@@ -340,6 +343,9 @@ class FullChainIntegrationSpec
       latestTextVersionId = None,
     )
     val _ = billRepo.upsert(billWithText).transact(xa).unsafeRunSync()
+    // Override the expected_text_version_code that seedBill defaulted to IH so the sweep filter
+    // fires (text_version_type = IH != expected = RH).
+    val _ = billRepo.updateExpectedVersion("118-HR-51", TextVersionCode.RH).transact(xa).unsafeRunSync()
 
     val textUrl = s"http://127.0.0.1:${wireMock.port().toString}/text/118/hr/51/rh"
     // API returns newer version (RH instead of IH)
