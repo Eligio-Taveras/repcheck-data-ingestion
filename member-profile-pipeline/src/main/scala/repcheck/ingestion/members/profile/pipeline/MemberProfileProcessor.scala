@@ -71,8 +71,8 @@ class MemberProfileProcessor[F[_]: Async](
       // NOTE: `parEvalMap(config.parallelism)` controls how many `processMember` fibers can run concurrently. It does NOT
       // throttle outbound HTTP calls — Congress.gov rate limits are tied to the API key (shared across bills/members/
       // votes/etc.), so the throttle has to live at the http4s `Client[F]` layer. The IOApp wiring (Phase 5A) wraps the
-      // raw EmberClient with a semaphore-gated middleware (see `BillMetadataPipeline.rateLimitedClient` for the
-      // canonical pattern) before constructing `MembersApiClient`, so the call sites here remain unchanged.
+      // raw EmberClient with the centralized `RateLimitedHttpClient.make` (ingestion-common) before constructing
+      // `MembersApiClient`, so the call sites here remain unchanged.
       .parEvalMap(config.parallelism) { listItem =>
         val correlationId = UUID.randomUUID()
         val itemCtx       = LogContext(runId.toString, stepName, Some(correlationId), Some(listItem.bioguideId))

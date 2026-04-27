@@ -1,15 +1,12 @@
 package repcheck.ingestion.votes.app
 
-import scala.concurrent.duration.FiniteDuration
-
-import cats.effect.std.Semaphore
-import cats.effect.{Async, Resource, Temporal}
-import cats.syntax.all._
+import cats.effect.{Async, Resource}
 
 import org.http4s.client.Client
 
 import doobie.util.transactor.Transactor
 
+import repcheck.ingestion.common.api.RateLimitedHttpClient
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{
   DefaultIngestionEventPublisher,
@@ -26,11 +23,11 @@ import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
  * ==Two rate-limited HTTP clients, one raw Ember client==
  *
  * Both the House (Congress.gov JSON) and Senate (senate.gov XML) clients share a single underlying
- * [[org.http4s.ember.client.EmberClientBuilder]] resource, but each wraps it through [[rateLimitedClient]] with its own
- * configurable delay (`house.pageDelay` vs. `senate.requestDelay`). The wrapper uses a one-permit `Semaphore` to
- * serialize requests on each wrapped client so per-request pacing is respected even when upstream
- * `parEvalMap(parallelism > 1)` submits calls concurrently. Sharing the underlying client keeps the connection pool
- * small; the wrappers enforce politeness per-feed.
+ * [[org.http4s.ember.client.EmberClientBuilder]] resource, but each wraps it through
+ * [[repcheck.ingestion.common.api.RateLimitedHttpClient.make]] with its own configurable delay (`house.pageDelay` vs.
+ * `senate.requestDelay`). The shared helper uses a one-permit `Semaphore` to serialize requests on each wrapped client
+ * so per-request pacing is respected even when upstream `parEvalMap(parallelism > 1)` submits calls concurrently.
+ * Sharing the underlying client keeps the connection pool small; the wrappers enforce politeness per-feed.
  */
 private[votes] object VotesPipelineResources {
 
@@ -54,7 +51,7 @@ private[votes] object VotesPipelineResources {
   /**
    * Compose the managed resources needed by [[VotesProcessorFactory.build]]:
    *   - a Doobie `Transactor[F]` against AlloyDB / Cloud SQL PostgreSQL;
-   *   - a `Client[F]` per chamber, each pre-wrapped with its own [[rateLimitedClient]] and pacing delay;
+   *   - a `Client[F]` per chamber, each pre-wrapped with [[RateLimitedHttpClient]] and its own pacing delay;
    *   - a Google Pub/Sub `PubSubEventPublisher[F]`, wrapped as the higher-level `IngestionEventPublisher[F]` so
    *     downstream collaborators only see the application-facing API.
    *
@@ -68,10 +65,18 @@ private[votes] object VotesPipelineResources {
     pubSubPublisherFactory: EventPublisherConfig => Resource[F, PubSubEventPublisher[F]],
   ): Resource[F, Resources[F]] =
     for {
-      xa              <- transactorFactory(config.database)
-      rawClient       <- httpClientFactory
-      houseClient     <- rateLimitedClient(rawClient, config.pipeline.house.pageDelay)
-      senateClient    <- rateLimitedClient(rawClient, config.pipeline.senate.requestDelay)
+      xa        <- transactorFactory(config.database)
+      rawClient <- httpClientFactory
+      houseClient <- RateLimitedHttpClient.make[F](
+        rawClient,
+        pageDelay = config.pipeline.house.pageDelay,
+        permits = 1L,
+      )
+      senateClient <- RateLimitedHttpClient.make[F](
+        rawClient,
+        pageDelay = config.pipeline.senate.requestDelay,
+        permits = 1L,
+      )
       pubSubPublisher <- pubSubPublisherFactory(config.eventPublisher)
       retryWrapper = noOpRetryWrapper[F]
       publisher = new DefaultIngestionEventPublisher[F](
@@ -91,21 +96,5 @@ private[votes] object VotesPipelineResources {
    */
   private[app] def noOpRetryWrapper[F[_]: Async]: RetryWrapper[F] =
     new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
-
-  /**
-   * Wraps an HTTP client with per-client rate limiting: a semaphore ensures only one request is in-flight at a time,
-   * with `delay` inserted after each request completes. Canonical pattern across RepCheck pipelines — each HTTP client
-   * gets its own wrapper with its own configured delay (`house.pageDelay` vs. `senate.requestDelay`).
-   */
-  private[app] def rateLimitedClient[F[_]: Async](
-    underlying: Client[F],
-    delay: FiniteDuration,
-  ): Resource[F, Client[F]] =
-    Resource.eval(Semaphore[F](1)).map { sem =>
-      Client[F] { request =>
-        Resource.make(sem.acquire)(_ => Temporal[F].sleep(delay) >> sem.release) >>
-          underlying.run(request)
-      }
-    }
 
 }

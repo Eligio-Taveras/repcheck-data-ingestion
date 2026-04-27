@@ -297,42 +297,8 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   }
 
   // =====================================================================================
-  // VotesPipelineResources.rateLimitedClient — mechanical behaviour
+  // (rateLimitedClient mechanics are now covered by ingestion-common's RateLimitedHttpClientSpec.)
   // =====================================================================================
-
-  "rateLimitedClient" should "produce a Client[F] backed by the supplied underlying and not run it eagerly" in {
-    val underlying = mock[Client[IO]]
-    // Acquire the Resource and release it. If the wrapper were pre-running a request on construction, Mockito would
-    // record the interaction; verifyNoInteractions below asserts we stayed hands-off.
-    val wrapperResource = VotesPipelineResources.rateLimitedClient[IO](underlying, 1.millis)
-    val _               = wrapperResource.use(_ => IO.pure(true)).unsafeRunSync() shouldBe true
-    org.mockito.Mockito.verifyNoInteractions(underlying)
-  }
-
-  it should "forward a request to the underlying client and apply the delay between releases" in {
-    import java.util.concurrent.atomic.AtomicInteger
-    import org.http4s.{Request, Response, Status, Uri}
-
-    val underlyingHits = new AtomicInteger(0)
-    // A synchronous stub Client that records every request on the underlyingHits counter and returns 200 OK.
-    val underlying = Client[IO] { _ =>
-      Resource.eval(IO {
-        val _ = underlyingHits.incrementAndGet()
-        Response[IO](status = Status.Ok)
-      })
-    }
-
-    val wrapped = VotesPipelineResources.rateLimitedClient[IO](underlying, 1.millis)
-    val request = Request[IO](uri = Uri.unsafeFromString("http://test/route"))
-
-    // Send the request through the wrapped client. This drives the inner `Client[F] { request => ... }` lambda body
-    // (the one that acquires the semaphore, forwards to the underlying client, and releases after the configured
-    // delay). The outcome is the underlying's response status.
-    val status = wrapped.use(c => c.run(request).use(resp => IO.pure(resp.status))).unsafeRunSync()
-
-    val _ = status shouldBe Status.Ok
-    underlyingHits.get() shouldBe 1
-  }
 
   // =====================================================================================
   // VotesProcessorFactory.build — wiring smoke test
