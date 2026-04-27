@@ -42,7 +42,9 @@ import repcheck.shared.models.congress.dos.bill.{BillTextVersionDO, RawBillTextD
  *      on close.
  *   1. **Extract plain text from the temp file** via the injected `extractText` function (production wiring uses
  *      [[repcheck.ingestion.bills.text.extraction.BillTextExtractor.extract]] which dispatches by format to Jsoup,
- *      scala-xml, PDFBox, or plain UTF-8 read).
+ *      scala-xml, PDFBox, or plain UTF-8 read). The temp-file Resource is **closed immediately after extraction
+ *      returns** — chunking, embedding, and INSERTing run against the in-heap `String` only, so disk pressure windows
+ *      match extraction time (seconds), not full processing time (minutes).
  *   1. **Chunk + embed + INSERT** in a per-batch loop: chunks are grouped into `embedBatchSize` batches (preserves the
  *      Ollama batching throughput win from PR #71), each batch's embeddings are computed, and each chunk is INSERTed
  *      individually inside its own auto-committing transaction. Heap stays bounded by one batch's worth of chunks +
@@ -172,8 +174,18 @@ class BillTextProcessor[F[_]: Async] private[text] (
     TransactionRunner.run(xa)(rawBillTextRepository.deleteByVersionId(versionId))
 
   /**
-   * Streaming-to-disk download → on-disk extraction → chunk → embed-batches → per-chunk INSERT. The Resource ensures
-   * the temp file is deleted regardless of whether extraction or persistence succeeds.
+   * Streaming-to-disk download → on-disk extraction → chunk → embed-batches → per-chunk INSERT.
+   *
+   * Temp-file lifetime is **scoped tightly to the extraction phase only**. The `downloadToTempFile` Resource is closed
+   * (and the temp file deleted) the moment `extractText` returns the parsed `String` — chunking, embedding, and the
+   * per-chunk INSERT loop run afterward against the in-heap `rawText`, never touching disk. This matters because
+   * embedding is by far the slowest phase (5+ s per batch × tens-to-hundreds of batches per large bill), so scoping the
+   * temp file to extraction shrinks its on-disk window from minutes-per-bill down to seconds-per-bill. Disk pressure
+   * across concurrent pipeline workers stays bounded by `parallelism × peak-extraction-time`, not `parallelism ×
+   * full-processing-time`.
+   *
+   * Failure-mode invariants are preserved: the Resource still auto-deletes on extraction failure, and a downstream
+   * embedding/INSERT failure leaves no orphan file (the Resource has already released).
    */
   private[pipeline] def streamDownloadAndIngestChunks(
     event: BillTextAvailableEvent,
@@ -182,19 +194,17 @@ class BillTextProcessor[F[_]: Async] private[text] (
     correlationId: UUID,
     logCtx: LogContext,
   ): F[Unit] =
-    downloader
-      .downloadToTempFile(event.textUrl, event.textFormat, correlationId)
-      .use { tempPath =>
-        for {
-          rawText <- extractText(tempPath, event.textFormat)
-          chunks  <- chunkText(rawText)
-          _ <- logger.info(
-            logCtx,
-            s"Chunked ${rawText.length}-char body into ${chunks.size} chunk(s) (max ${embeddingConfig.maxChunkChars} chars each)",
-          )
-          _ <- streamChunksToDb(dbBillId, versionId, chunks)
-        } yield ()
-      }
+    for {
+      rawText <- downloader
+        .downloadToTempFile(event.textUrl, event.textFormat, correlationId)
+        .use(tempPath => extractText(tempPath, event.textFormat))
+      chunks <- chunkText(rawText)
+      _ <- logger.info(
+        logCtx,
+        s"Chunked ${rawText.length}-char body into ${chunks.size} chunk(s) (max ${embeddingConfig.maxChunkChars} chars each)",
+      )
+      _ <- streamChunksToDb(dbBillId, versionId, chunks)
+    } yield ()
 
   /**
    * Chunk the extracted body via [[BillTextChunker]] inside `Async[F].delay` so any thrown `InvalidChunkSize`

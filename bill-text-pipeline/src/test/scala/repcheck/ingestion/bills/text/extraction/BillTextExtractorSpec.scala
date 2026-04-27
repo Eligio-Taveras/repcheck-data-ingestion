@@ -1,13 +1,18 @@
 package repcheck.ingestion.bills.text.extraction
 
+import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
+import org.apache.pdfbox.pdmodel.common.PDRectangle
+import org.apache.pdfbox.pdmodel.font.{PDType1Font, Standard14Fonts}
+import org.apache.pdfbox.pdmodel.{PDDocument, PDPage, PDPageContentStream}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import repcheck.ingestion.bills.text.errors.PdfExtractionFailed
 
 /**
  * Specs for [[BillTextExtractor]] — covers the format-dispatch + per-format extraction logic that previously lived
@@ -28,6 +33,39 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
     } finally {
       val _ = Files.deleteIfExists(path)
     }
+  }
+
+  /**
+   * Build a one-page PDF in memory and write it to a temp file. Mirrors the helper in [[PDFTextExtractorSpec]] (kept
+   * inline rather than extracted to a shared util because the only reason both tests need it is the BillTextExtractor
+   * `case "PDF"` dispatch verification — duplication is cheaper than a third file just for one helper).
+   */
+  private def writeTinyPdf(text: String): Path = {
+    val document = new PDDocument()
+    try {
+      val page = new PDPage(PDRectangle.LETTER)
+      document.addPage(page)
+
+      val font          = new PDType1Font(Standard14Fonts.FontName.HELVETICA)
+      val contentStream = new PDPageContentStream(document, page)
+      try {
+        contentStream.beginText()
+        contentStream.setFont(font, 12f)
+        contentStream.newLineAtOffset(72, 720)
+        contentStream.showText(text)
+        contentStream.endText()
+      } finally contentStream.close()
+
+      val baos = new ByteArrayOutputStream()
+      try
+        document.save(baos)
+      finally
+        baos.close()
+
+      val path = Files.createTempFile("bill-text-extractor-pdf-", ".pdf")
+      val _    = Files.write(path, baos.toByteArray)
+      path
+    } finally document.close()
   }
 
   "extract" should "extract the <pre> contents from a 'Formatted Text' HTML body" in {
@@ -88,6 +126,31 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
     withTempFile(xml, ".xml") { path =>
       val result = BillTextExtractor.extract[IO](path, "Formatted XML").unsafeRunSync()
       result should include("Old-format content here")
+    }
+  }
+
+  it should "dispatch to PDFTextExtractor for the 'PDF' format and return its extracted text" in {
+    val expectedText = "SECTION 1. PDF dispatch test."
+    val path         = writeTinyPdf(expectedText)
+    try {
+      val result = BillTextExtractor.extract[IO](path, "PDF").unsafeRunSync()
+      result should include(expectedText)
+    } finally {
+      val _ = Files.deleteIfExists(path)
+    }
+  }
+
+  it should "surface PdfExtractionFailed from PDFTextExtractor when the 'PDF' format dispatch hits an invalid PDF" in {
+    val path = Files.createTempFile("bill-text-extractor-bad-pdf-", ".pdf")
+    try {
+      val _       = Files.writeString(path, "this is not a PDF")
+      val attempt = BillTextExtractor.extract[IO](path, "PDF").attempt.unsafeRunSync()
+      attempt match {
+        case Left(_: PdfExtractionFailed) => succeed
+        case other                        => fail(s"Expected PdfExtractionFailed, got $other")
+      }
+    } finally {
+      val _ = Files.deleteIfExists(path)
     }
   }
 

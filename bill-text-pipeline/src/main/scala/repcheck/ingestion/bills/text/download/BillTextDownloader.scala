@@ -38,8 +38,14 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
  *
  * Size validation now runs **inline** during the streaming write via a `Pipe` that accumulates a byte counter and
  * raises [[TextContentTooLarge]] mid-stream once the configured `pipeline.max-content-bytes` ceiling is exceeded.
- * Mid-stream cancellation aborts the http4s response and discards the partially-written temp file. This catches
- * malicious / runaway bodies before they can fill the disk.
+ * Mid-stream cancellation aborts the http4s response and discards the partially-written temp file. With heap protection
+ * now provided by the streaming-to-disk flow itself, the byte cap's role has narrowed: it's a **runaway / malicious URL
+ * guard** sized well above the largest legitimate bill payload (default 200 MiB — the largest STATUTE PDF observed in
+ * production is ~75 MiB), not the per-bill heap protection it was pre-refactor. The check fires at chunk granularity
+ * (~64 KiB), so the running total at error time can exceed `maxBytes` by up to one chunk; that's fine because (a) the
+ * chunk that crosses the boundary is **not** emitted downstream — the raise short-circuits before `Stream.chunk` is
+ * invoked — so `writeAll` never persists the over-the-line bytes, and (b) the cap is a coarse safety rail at this
+ * scale, not a precision byte counter.
  *
  * @param client
  *   the http4s `Client[F]` used for the request. Caller is responsible for any rate-limit wrapping; this downloader
