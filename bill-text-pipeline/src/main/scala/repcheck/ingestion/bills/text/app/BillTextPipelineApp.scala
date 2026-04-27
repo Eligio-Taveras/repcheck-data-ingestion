@@ -1,12 +1,9 @@
 package repcheck.ingestion.bills.text.app
 
-import scala.concurrent.duration.{DurationInt, FiniteDuration}
+import scala.concurrent.duration.DurationInt
 
-import cats.effect.std.Semaphore
-import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Sync, Temporal}
-import cats.syntax.all._
+import cats.effect.{ExitCode, IO, IOApp, Sync}
 
-import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
 
 import pureconfig.ConfigSource
@@ -19,6 +16,7 @@ import com.google.cloud.pubsub.v1.stub.{GrpcSubscriberStub, SubscriberStubSettin
 import io.grpc.ManagedChannelBuilder
 import repcheck.ingestion.bills.text.app.BillTextPipelinePipeline.AppConfig
 import repcheck.ingestion.bills.text.subscription.PubSubSubscriberResource
+import repcheck.ingestion.common.api.RateLimitedHttpClient
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.events.PubSubPublisherResource
 import repcheck.ingestion.common.execution.WorkflowStateUpdater
@@ -36,14 +34,14 @@ object BillTextPipelineApp extends IOApp {
           config,
           logger,
           TransactorResource.make[IO](_),
-          rateLimitedClient[IO](
-            EmberClientBuilder
-              .default[IO]
-              .withTimeout(120.seconds)
-              .withIdleConnectionTime(120.seconds)
-              .build,
-            config.pipeline.pageDelay,
-          ),
+          EmberClientBuilder
+            .default[IO]
+            .withTimeout(120.seconds)
+            .withIdleConnectionTime(120.seconds)
+            .build
+            .flatMap { raw =>
+              RateLimitedHttpClient.make[IO](raw, pageDelay = config.pipeline.pageDelay, permits = 1L)
+            },
           PubSubPublisherResource.make[IO](_),
           (subConfig, log) =>
             PubSubSubscriberResource.make[IO](
@@ -67,18 +65,5 @@ object BillTextPipelineApp extends IOApp {
         (xa, cfg) => sys.env.get("WORKFLOW_RUN_ID").map(_ => new WorkflowStateUpdater[IO](xa, cfg)),
     )
   }
-
-  private def rateLimitedClient[F[_]: Async](
-    underlying: Resource[F, Client[F]],
-    pageDelay: FiniteDuration,
-  ): Resource[F, Client[F]] =
-    underlying.flatMap { raw =>
-      Resource.eval(Semaphore[F](1)).map { sem =>
-        Client[F] { request =>
-          Resource.make(sem.acquire)(_ => Temporal[F].sleep(pageDelay) >> sem.release) >>
-            raw.run(request)
-        }
-      }
-    }
 
 }

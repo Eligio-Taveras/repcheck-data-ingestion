@@ -50,9 +50,10 @@ import repcheck.shared.models.congress.dto.vote.SenateVoteXmlDTO
  *     `cause = XmlParseFailed` so operators see both layers in logs.
  *
  * ==Rate limiting==
- * The constructor receives a pre-wrapped `Client[F]` — the votes-pipeline wires the `rateLimitedClient` helper from the
- * P1.1 scaffold (`VotesPipeline.rateLimitedClient`) to hold a one-permit semaphore with `config.requestDelay` between
- * requests. The client here does NOT construct or re-wrap the HTTP client; pacing is handled upstream.
+ * The constructor receives a pre-wrapped `Client[F]` — the votes-pipeline wires the centralized
+ * `RateLimitedHttpClient.make` (in `VotesPipelineResources.build`) to hold a one-permit semaphore with
+ * `config.requestDelay` between requests. The client here does NOT construct or re-wrap the HTTP client; pacing is
+ * handled upstream.
  */
 class SenateVoteXmlClient[F[_]: Async](
   httpClient: Client[F],

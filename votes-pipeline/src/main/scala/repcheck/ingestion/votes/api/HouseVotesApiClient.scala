@@ -49,9 +49,10 @@ import repcheck.shared.models.congress.dto.vote.{VoteListItemDTO, VoteMembersDTO
  * by `now - lookbackDays`. We do NOT short-circuit via `takeWhile` because the API does not guarantee ordering.
  *
  * ==Constructor contract==
- * The passed-in `Client[F]` must already be wrapped by `VotesPipeline.rateLimitedClient` — this class does NOT apply
- * its own rate limiter. `pageDelay` in the base trait is read from `CongressGovClientConfig` for the sake of the
- * `fetchAll` default implementation, but the real inter-request pacing is enforced by the wrapper's semaphore.
+ * The passed-in `Client[F]` must already be wrapped by `RateLimitedHttpClient.make` (per app-level wiring in
+ * `VotesPipelineResources.build`) — this class does NOT apply its own rate limiter. `pageDelay` in the base trait is
+ * read from `CongressGovClientConfig` for the sake of the `fetchAll` default implementation, but the real inter-request
+ * pacing is enforced by the wrapper's semaphore.
  */
 class HouseVotesApiClient[F[_]](
   config: CongressGovClientConfig,
