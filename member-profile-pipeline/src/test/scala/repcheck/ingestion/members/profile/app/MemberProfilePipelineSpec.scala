@@ -15,8 +15,8 @@ import doobie._
 
 import pureconfig.ConfigSource
 
-import org.mockito.ArgumentMatchers.anyLong
-import org.mockito.Mockito.when
+import org.mockito.ArgumentMatchers.{anyLong, eq => eqTo}
+import org.mockito.Mockito.{times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
@@ -62,7 +62,7 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
       retry = testRetry,
     ),
     pipeline = MemberProfileConfig(
-      congress = 118,
+      congresses = List(118),
       parallelism = 1,
       pageDelay = 0.millis,
       eventPublishRetry = testRetry,
@@ -118,6 +118,10 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
     )
   }
 
+  // Stub resolver shared by tests that don't care about congress resolution (it always returns the test list).
+  private val stubCongressesResolver: (AppConfig, Transactor[IO], PipelineLogger[IO]) => IO[List[Int]] =
+    (_, _, _) => IO.pure(List(118))
+
   "runWithFactories" should "complete successfully with empty stream" in {
     val logger = new StubPipelineLogger
 
@@ -128,7 +132,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
-        streamFactory = (_, _) => Stream.empty,
+        congressesResolver = stubCongressesResolver,
+        streamFactory = (_, _, _) => Stream.empty,
       )
       .unsafeRunSync()
 
@@ -145,7 +150,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
-        streamFactory = (_, _) => Stream.emit(ProcessingResult.Failed("A000001", "api error")),
+        congressesResolver = stubCongressesResolver,
+        streamFactory = (_, _, _) => Stream.emit(ProcessingResult.Failed("A000001", "api error")),
       )
       .unsafeRunSync()
 
@@ -162,7 +168,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
-        streamFactory = (_, _) => Stream.empty,
+        congressesResolver = stubCongressesResolver,
+        streamFactory = (_, _, _) => Stream.empty,
       )
       .attempt
       .unsafeRunSync()
@@ -181,12 +188,36 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
-        streamFactory = (_, _) => Stream.empty,
+        congressesResolver = stubCongressesResolver,
+        streamFactory = (_, _, _) => Stream.empty,
       )
       .unsafeRunSync()
 
     val summaryLogs = logger.messages.filter(_.contains("Pipeline completed"))
     summaryLogs should not be empty
+  }
+
+  it should "thread the resolved congresses list through to the stream factory" in {
+    val logger       = new StubPipelineLogger
+    val capturedList = new java.util.concurrent.atomic.AtomicReference[List[Int]](Nil)
+    val resolverList = List(116, 117, 118, 119)
+
+    val _ = MemberProfilePipeline
+      .runWithFactories[IO](
+        configLoader = IO.pure(testConfig),
+        loggerFactory = (_: String) => IO.pure(logger),
+        resourceBuilder =
+          (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
+        processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
+        congressesResolver = (_, _, _) => IO.pure(resolverList),
+        streamFactory = (_, _, congresses) => {
+          capturedList.set(congresses)
+          Stream.empty
+        },
+      )
+      .unsafeRunSync()
+
+    capturedList.get() shouldBe resolverList
   }
 
   "noOpRetryLogger" should "return F[Unit] regardless of arguments" in {
@@ -213,25 +244,28 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
     processor.toString should not be empty
   }
 
-  "buildStream" should "delegate to processor.streamAll" in {
+  "buildStream" should "delegate to processor.streamAll with the supplied congresses list" in {
     val logger    = new StubPipelineLogger
     val processor = mock[MemberProfileProcessor[IO]]
 
-    when(processor.streamAll(anyLong())).thenReturn(Stream.emit(ProcessingResult.Succeeded("A000001")))
+    when(processor.streamAll(anyLong(), eqTo(List(118, 119))))
+      .thenReturn(Stream.emit(ProcessingResult.Succeeded("A000001")))
 
-    val results = MemberProfilePipeline.buildStream[IO](processor, logger).compile.toList.unsafeRunSync()
+    val results =
+      MemberProfilePipeline.buildStream[IO](processor, logger, List(118, 119)).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 1
-    results.headOption.map(_.entityId) shouldBe Some("A000001")
+    val _ = results.headOption.map(_.entityId) shouldBe Some("A000001")
+    verify(processor, times(1)).streamAll(anyLong(), eqTo(List(118, 119)))
   }
 
   it should "return empty stream when processor produces no results" in {
     val logger    = new StubPipelineLogger
     val processor = mock[MemberProfileProcessor[IO]]
 
-    when(processor.streamAll(anyLong())).thenReturn(Stream.empty)
+    when(processor.streamAll(anyLong(), eqTo(List(118)))).thenReturn(Stream.empty)
 
-    val results = MemberProfilePipeline.buildStream[IO](processor, logger).compile.toList.unsafeRunSync()
+    val results = MemberProfilePipeline.buildStream[IO](processor, logger, List(118)).compile.toList.unsafeRunSync()
 
     results shouldBe empty
   }

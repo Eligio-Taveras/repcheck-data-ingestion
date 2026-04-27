@@ -57,30 +57,50 @@ class MemberProfileProcessor[F[_]: Async](
 
   private val stepName: String = "member-profile-processing"
 
-  def streamAll(runId: Long): Stream[F, ProcessingResult] = {
-    val params = FetchParams(congress = Some(config.congress))
+  /**
+   * Iterate every requested congress sequentially, fan out per-member processing within each congress with
+   * `parEvalMap`.
+   *
+   * Congresses run sequentially (not interleaved) so the streaming Monoid summary downstream can reason about per-
+   * congress progress, and so a fatal failure inside one congress's stream surfaces a single chamber-level
+   * `ProcessingResult.Failed` rather than corrupting the others. Per-congress page-fetch errors are absorbed locally
+   * (logged + the congress yields an empty stream) — same pattern as votes-pipeline's per-chamber handler.
+   */
+  def streamAll(runId: Long, congresses: List[Int]): Stream[F, ProcessingResult] = {
+    val rootCtx = LogContext(runId.toString, stepName)
+    Stream.eval(logger.info(rootCtx, s"Iterating ${congresses.size} congresses: ${congresses.mkString(",")}")) *>
+      Stream.emits(congresses).flatMap(streamOneCongress(_, runId))
+  }
+
+  private def streamOneCongress(congress: Int, runId: Long): Stream[F, ProcessingResult] = {
+    val params = FetchParams(congress = Some(congress))
     val logCtx = LogContext(runId.toString, stepName)
 
-    apiClient
-      .fetchAll(params)
-      .handleErrorWith { e =>
-        Stream.eval(
-          logger.error(logCtx, s"Page fetch failed, completing with partial results: ${e.getMessage}", Some(e))
-        ) *> Stream.empty
-      }
-      // NOTE: `parEvalMap(config.parallelism)` controls how many `processMember` fibers can run concurrently. It does NOT
-      // throttle outbound HTTP calls — Congress.gov rate limits are tied to the API key (shared across bills/members/
-      // votes/etc.), so the throttle has to live at the http4s `Client[F]` layer. The IOApp wiring (Phase 5A) wraps the
-      // raw EmberClient with the centralized `RateLimitedHttpClient.make` (ingestion-common) before constructing
-      // `MembersApiClient`, so the call sites here remain unchanged.
-      .parEvalMap(config.parallelism) { listItem =>
-        val correlationId = UUID.randomUUID()
-        val itemCtx       = LogContext(runId.toString, stepName, Some(correlationId), Some(listItem.bioguideId))
-        processMember(listItem, correlationId, runId).handleErrorWith { e =>
-          logger.error(itemCtx, s"Failed to process ${listItem.bioguideId}: ${e.getMessage}", Some(e)) *>
-            Async[F].pure(ProcessingResult.Failed(listItem.bioguideId, e.getMessage, e.getClass.getSimpleName))
+    Stream.eval(logger.info(logCtx, s"Starting member fetch for congress $congress")) *>
+      apiClient
+        .fetchAll(params)
+        .handleErrorWith { e =>
+          Stream.eval(
+            logger.error(
+              logCtx,
+              s"Page fetch failed for congress $congress, completing with partial results: ${e.getMessage}",
+              Some(e),
+            )
+          ) *> Stream.empty
         }
-      }
+        // NOTE: `parEvalMap(config.parallelism)` controls how many `processMember` fibers can run concurrently. It does
+        // NOT throttle outbound HTTP calls — Congress.gov rate limits are tied to the API key (shared across bills/
+        // members/votes/etc.), so the throttle has to live at the http4s `Client[F]` layer. The IOApp wiring wraps the
+        // raw EmberClient with the centralized `RateLimitedHttpClient.make` (ingestion-common) before constructing
+        // `MembersApiClient`, so the call sites here remain unchanged.
+        .parEvalMap(config.parallelism) { listItem =>
+          val correlationId = UUID.randomUUID()
+          val itemCtx       = LogContext(runId.toString, stepName, Some(correlationId), Some(listItem.bioguideId))
+          processMember(listItem, correlationId, runId).handleErrorWith { e =>
+            logger.error(itemCtx, s"Failed to process ${listItem.bioguideId}: ${e.getMessage}", Some(e)) *>
+              Async[F].pure(ProcessingResult.Failed(listItem.bioguideId, e.getMessage, e.getClass.getSimpleName))
+          }
+        }
   }
 
   def processMember(listItem: MemberListItemDTO, correlationId: UUID, runId: Long = 0L): F[ProcessingResult] = {
