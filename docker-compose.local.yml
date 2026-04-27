@@ -224,9 +224,9 @@ services:
       # delta since the prior run's completed_at minus watermark-buffer.
       PIPELINE_INITIAL_LOOKBACK_DAYS: ${PIPELINE_INITIAL_LOOKBACK_DAYS:-3650}
       PIPELINE_WATERMARK_BUFFER: ${PIPELINE_WATERMARK_BUFFER:-5m}
-      # Congress list defaults to the active session [119]. Override via env var for backfill,
-      # e.g. PIPELINE_CONGRESSES='[114, 115, 116, 117, 118, 119]'.
-      PIPELINE_CONGRESSES: ${PIPELINE_CONGRESSES:-[119]}
+      # Congress list defaults to the active session [119] from application.conf. PureConfig's HOCON
+      # reader cannot reify a string env-var into List[Int], so for backfill edit application.conf
+      # directly (or add a Scala-level env-var parser like votes-pipeline's resolveCongresses).
     restart: "no"
 
   bill-text-availability-checker:

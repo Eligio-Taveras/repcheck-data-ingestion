@@ -181,7 +181,10 @@ services:
       # (in application.conf) is 3650 days for the first-run lookback.
       PIPELINE_INITIAL_LOOKBACK_DAYS: "30"
       PIPELINE_WATERMARK_BUFFER: "1m"
-      PIPELINE_CONGRESSES: "[118]"
+      # PureConfig's HOCON reader can't reify a string env-var into List[Int], so we don't override
+      # `congresses` from env here. application.conf default `[119]` (close enough to [118] for this
+      # WireMock-stubbed run) drives the test. If the e2e fixture truly needs 118-only, override
+      # application.conf via a profile or a Scala-level env-var parser.
 
   bill-text-availability-checker:
     build:

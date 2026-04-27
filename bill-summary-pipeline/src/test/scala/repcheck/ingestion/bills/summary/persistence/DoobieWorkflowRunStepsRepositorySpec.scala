@@ -6,7 +6,7 @@ import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
 import doobie.implicits._
-import doobie.implicits.javatimedrivernative._
+import doobie.postgres.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers

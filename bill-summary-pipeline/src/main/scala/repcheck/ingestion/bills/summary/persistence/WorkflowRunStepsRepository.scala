@@ -4,7 +4,7 @@ import java.time.Instant
 
 import doobie._
 import doobie.implicits._
-import doobie.implicits.javatimedrivernative._
+import doobie.postgres.implicits._
 
 import repcheck.pipeline.models.constants.Tables
 
