@@ -1,7 +1,6 @@
 package repcheck.ingestion.bills.summary.app
 
-import cats.effect.std.Semaphore
-import cats.effect.{Async, ExitCode, Resource, Sync, Temporal}
+import cats.effect.{Async, ExitCode, Resource, Sync}
 import cats.syntax.all._
 
 import org.http4s.client.Client
@@ -19,7 +18,7 @@ import repcheck.ingestion.bills.summary.config.BillSummaryConfig
 import repcheck.ingestion.bills.summary.errors.StepRunIdInvalid
 import repcheck.ingestion.bills.summary.persistence.DoobieWorkflowRunStepsRepository
 import repcheck.ingestion.bills.summary.pipeline.BillSummaryProcessor
-import repcheck.ingestion.common.api.CongressGovClientConfig
+import repcheck.ingestion.common.api.{CongressGovClientConfig, RateLimitedHttpClient}
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
 import repcheck.ingestion.common.execution.PipelineBootstrap
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
@@ -76,35 +75,17 @@ private[app] object BillSummaryPipeline {
       }
     } yield exitCode
 
-  /**
-   * Wraps an HTTP client with a per-pipeline rate limiter. A semaphore caps in-flight requests at
-   * `config.pipeline.httpConcurrency` (configurable so we can raise it later without redeploying — even though we
-   * expect to keep the value at 1 for steady-state) and `pageDelay` is enforced after each request completes — keeps
-   * this pipeline's call rate independent of the other Congress.gov-consuming pipelines that share the same API key.
-   *
-   * NOTE: this helper exists in copy form across every pipeline (bill-metadata, bill-summary, bill-text,
-   * bill-text-availability-checker, member-profile, votes). A planned follow-up promotes it to ingestion-common as a
-   * single shared `RateLimitedHttpClient` so all pipelines pull the same implementation.
-   */
-  private[app] def rateLimitedClient[F[_]: Async](
-    underlying: Client[F],
-    apiConfig: CongressGovClientConfig,
-    permits: Long,
-  ): Resource[F, Client[F]] =
-    Resource.eval(Semaphore[F](permits)).map { sem =>
-      Client[F] { request =>
-        Resource.make(sem.acquire)(_ => Temporal[F].sleep(apiConfig.pageDelay) >> sem.release) >>
-          underlying.run(request)
-      }
-    }
-
   private def buildResources[F[_]: Async: Network](
     config: AppConfig
   ): Resource[F, (Transactor[F], Client[F])] =
     for {
-      xa              <- TransactorResource.make[F](config.database)
-      rawClient       <- EmberClientBuilder.default[F].build
-      throttledClient <- rateLimitedClient(rawClient, config.congressApi, config.pipeline.httpConcurrency.toLong)
+      xa        <- TransactorResource.make[F](config.database)
+      rawClient <- EmberClientBuilder.default[F].build
+      throttledClient <- RateLimitedHttpClient.make[F](
+        rawClient,
+        pageDelay = config.congressApi.pageDelay,
+        permits = config.pipeline.httpConcurrency.toLong,
+      )
     } yield (xa, throttledClient)
 
   /**
