@@ -13,6 +13,7 @@ import doobie._
 import repcheck.ingestion.bills.common.persistence.{BillRepository, TransactionRunner}
 import repcheck.ingestion.bills.summary.api.BillSummariesApiClient
 import repcheck.ingestion.bills.summary.config.BillSummaryConfig
+import repcheck.ingestion.bills.summary.errors.BillSummariesApiErrorClassifier
 import repcheck.ingestion.bills.summary.persistence.WorkflowRunStepsRepository
 import repcheck.ingestion.common.api.FetchParams
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
@@ -72,7 +73,28 @@ class BillSummaryProcessor[F[_]: Async](
       case (from, to) =>
         Stream
           .emits(config.congresses)
-          .flatMap(congress => streamForCongress(congress, from, to, logCtx))
+          .flatMap { congress =>
+            // Isolate per-congress failures: if a sustained network/API error in one congress
+            // exhausts retries, we surface it as a single ProcessingResult.Failed and continue
+            // with the next congress instead of killing the whole multi-congress run. Per-bill
+            // failures are already isolated inside `processOneBill.handleErrorWith`; this layer
+            // catches errors that escape the per-bill boundary (e.g. fetch failures from
+            // `apiClient.fetchAll` or DB errors at the chunk level).
+            streamForCongress(congress, from, to, logCtx).handleErrorWith { error =>
+              Stream.eval(
+                logger
+                  .error(
+                    logCtx,
+                    s"Congress $congress failed at the stream level (continuing with remaining congresses): ${error.getMessage}",
+                    Some(error),
+                  )
+                  .as(
+                    ProcessingResult
+                      .Failed(s"congress-$congress", error.getMessage, classifyError(error))
+                  )
+              )
+            }
+          }
     }
   }
 
@@ -193,14 +215,17 @@ class BillSummaryProcessor[F[_]: Async](
       }
   }
 
+  /**
+   * Map `Throwable` → ErrorClass label string for `ProcessingResult.Failed`. Defers to
+   * [[BillSummariesApiErrorClassifier]] for HTTP + network-level transient detection (it walks the cause chain), with
+   * two locally-relevant exceptions handled here: unrecognized summary version codes are `Systemic` (fail-fast — the
+   * operator must add the missing entry to the catalog) and `SQLTransientException` is `Transient`.
+   */
   private[pipeline] def classifyError(error: Throwable): String =
     error match {
-      case _: UnrecognizedSummaryVersionCode  => "Systemic"
-      case _: java.net.SocketTimeoutException => "Transient"
-      case _: java.net.ConnectException       => "Transient"
-      case _: java.io.IOException             => "Transient"
-      case _: java.sql.SQLTransientException  => "Transient"
-      case _                                  => "Systemic"
+      case _: UnrecognizedSummaryVersionCode => "Systemic"
+      case _: java.sql.SQLTransientException => "Transient"
+      case other                             => BillSummariesApiErrorClassifier.classify(other).toString
     }
 
 }
