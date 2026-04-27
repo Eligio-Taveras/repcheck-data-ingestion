@@ -18,12 +18,14 @@ class VotesPipelineConfigSpec extends AnyFlatSpec with Matchers {
       |pipeline {
       |  house {
       |    parallelism = 2
+      |    permits = 4
       |    page-delay = 3s
       |    lookback-days = 14
       |  }
       |  senate {
       |    base-url = "http://senate.example/LIS"
       |    parallelism = 1
+      |    permits = 2
       |    request-delay = 3s
       |    retry {
       |      max-retries = 3
@@ -39,10 +41,12 @@ class VotesPipelineConfigSpec extends AnyFlatSpec with Matchers {
     val cfg =
       ConfigSource.fromConfig(ConfigFactory.parseString(raw)).at("pipeline").loadOrThrow[VotesPipelineConfig]
     val _ = cfg.house.parallelism shouldBe 2
+    val _ = cfg.house.permits shouldBe 4
     val _ = cfg.house.pageDelay shouldBe 3.seconds
     val _ = cfg.house.lookbackDays shouldBe 14
     val _ = cfg.senate.baseUrl shouldBe "http://senate.example/LIS"
     val _ = cfg.senate.parallelism shouldBe 1
+    val _ = cfg.senate.permits shouldBe 2
     val _ = cfg.senate.requestDelay shouldBe 3.seconds
     cfg.congresses shouldBe List(117, 118, 119)
   }
@@ -54,12 +58,14 @@ class VotesPipelineConfigSpec extends AnyFlatSpec with Matchers {
       |pipeline {
       |  house {
       |    parallelism = 1
+      |    permits = 1
       |    page-delay = 2s
       |    lookback-days = 7
       |  }
       |  senate {
       |    base-url = "https://www.senate.gov/legislative/LIS"
       |    parallelism = 1
+      |    permits = 1
       |    request-delay = 3s
       |    retry {
       |      max-retries = 3
@@ -87,6 +93,7 @@ class VotesPipelineConfigSpec extends AnyFlatSpec with Matchers {
       |  senate {
       |    base-url = "https://www.senate.gov/legislative/LIS"
       |    parallelism = 1
+      |    permits = 1
       |    request-delay = 3s
       |    retry {
       |      max-retries = 3

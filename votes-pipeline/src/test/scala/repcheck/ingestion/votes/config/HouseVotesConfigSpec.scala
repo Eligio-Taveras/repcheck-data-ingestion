@@ -16,6 +16,7 @@ class HouseVotesConfigSpec extends AnyFlatSpec with Matchers {
     val raw = """
       |house {
       |  parallelism = 2
+      |  permits = 4
       |  page-delay = 3s
       |  lookback-days = 14
       |}
@@ -23,6 +24,7 @@ class HouseVotesConfigSpec extends AnyFlatSpec with Matchers {
 
     val cfg = ConfigSource.fromConfig(ConfigFactory.parseString(raw)).at("house").loadOrThrow[HouseVotesConfig]
     val _   = cfg.parallelism shouldBe 2
+    val _   = cfg.permits shouldBe 4
     val _   = cfg.pageDelay shouldBe 3.seconds
     cfg.lookbackDays shouldBe 14
   }
@@ -45,6 +47,7 @@ class HouseVotesConfigSpec extends AnyFlatSpec with Matchers {
   it should "expose all fields via the case class accessors for downstream use" in {
     val cfg = HouseVotesConfig()
     val _   = cfg.parallelism shouldBe 1
+    val _   = cfg.permits shouldBe 1
     val _   = cfg.pageDelay shouldBe 2.seconds
     cfg.lookbackDays shouldBe 7
   }
