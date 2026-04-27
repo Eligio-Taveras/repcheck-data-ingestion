@@ -99,24 +99,28 @@ private[app] object MemberProfilePipeline {
   /**
    * Resolve the list of congresses to ingest. Three layers, in priority order:
    *
-   *   1. `MEMBERS_CONGRESSES` env var (comma-separated, e.g. `"117,118,119"`). Highest priority — read directly via
-   *      `sys.env` because HOCON cannot parse a string into `List[Int]`. Trimmed entries; non-numeric tokens raise.
+   *   1. `MEMBERS_CONGRESSES` env var (comma-separated, e.g. `"117,118,119"`). Highest priority — read via the
+   *      `envGetter` parameter (production: `sys.env.get`; tests: a stub) because HOCON cannot parse a string into
+   *      `List[Int]`. Trimmed entries; non-numeric tokens raise.
    *   1. `config.pipeline.congresses` from `application.conf` / test profiles. Useful for forcing a specific
    *      multi-congress list without touching env vars.
    *   1. `SELECT DISTINCT congress FROM bills` from the live DB. Default — lets members-pipeline naturally follow
    *      whatever congresses the bills pipeline has covered.
    *
-   * This is the production wiring; the unit spec replaces the whole resolver with a stub so it never touches env or DB.
-   * Mirrors `repcheck.ingestion.votes.app.VotesPipeline.resolveCongresses`.
+   * The injectable `envGetter` lets tests exercise the env-path deterministically without mutating the JVM environment.
+   * Production callers pass `sys.env.get` (see [[MemberProfilePipelineApp]]). Mirrors
+   * `repcheck.ingestion.votes.app.VotesPipeline.resolveCongresses` (which inlines the env lookup; we made it injectable
+   * here to keep coverage honest).
    */
   private[app] def resolveCongresses[F[_]: Async](
     config: AppConfig,
     xa: Transactor[F],
     logger: PipelineLogger[F],
+    envGetter: String => Option[String],
   ): F[List[Int]] = {
     val ctx = LogContext("startup", "members-pipeline:resolve-congresses")
 
-    Sync[F].delay(sys.env.get("MEMBERS_CONGRESSES").map(_.trim).filter(_.nonEmpty)).flatMap {
+    Sync[F].delay(envGetter("MEMBERS_CONGRESSES").map(_.trim).filter(_.nonEmpty)).flatMap {
       case Some(raw) =>
         Sync[F]
           .delay(raw.split(",").iterator.map(_.trim).filter(_.nonEmpty).map(_.toInt).toList)
