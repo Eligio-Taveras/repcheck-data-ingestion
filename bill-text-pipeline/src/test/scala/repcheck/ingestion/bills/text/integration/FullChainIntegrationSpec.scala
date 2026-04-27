@@ -34,6 +34,7 @@ import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, GoogleP
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
+import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.BillDO
 
@@ -197,7 +198,14 @@ class FullChainIntegrationSpec
       updatedAt = None,
       latestTextVersionId = None,
     )
-    billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    val billId = billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    // PR #77 introduced a stage-aware sweep filter:
+    //   WHERE expected_text_version_code IS NOT NULL
+    //     AND text_version_type IS DISTINCT FROM expected_text_version_code
+    // For these tests to exercise the checker → pipeline chain we need an expected stage set; bills
+    // that get to this fixture are introduced (latestActionDate = None) so IH is the right floor.
+    val _ = billRepo.updateExpectedVersion(naturalKey, TextVersionCode.IH).transact(xa).unsafeRunSync()
+    billId
   }
 
   private val billTextHtml: String =
