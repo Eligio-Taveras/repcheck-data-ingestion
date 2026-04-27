@@ -326,7 +326,11 @@ services:
       # `members-abridge.py` to point at `http://wiremock:8080/v3/member/{bioguide}`.
       CONGRESS_API_BASE_URL: http://wiremock:8080/v3
       CONGRESS_GOV_API_KEY: e2e-test-key
-      PIPELINE_CONGRESS: "119"
+      # Multi-congress resolver: MEMBERS_CONGRESSES (comma-separated) replaced the
+      # legacy PIPELINE_CONGRESS scalar in PR #80's refactor. Pinning to a single
+      # congress here keeps the e2e WireMock stubs aligned (which only have data
+      # for /v3/member/congress/119).
+      MEMBERS_CONGRESSES: "119"
       PIPELINE_PARALLELISM: "1"
       PIPELINE_PAGE_DELAY: 10ms
       # Pub/Sub — publishes MemberUpdatedEvent on `member-updated` topic for
