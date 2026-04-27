@@ -18,7 +18,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
-import repcheck.ingestion.bills.text.errors.{InvalidTextUrl, TextContentTooLarge, TextDownloadFailed}
+import repcheck.ingestion.bills.text.errors.{InvalidTextUrl, TextDownloadFailed}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 /**
@@ -28,7 +28,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
  *
  * Test pattern is unchanged from the pre-Phase-2 spec: a WireMock server bound to `127.0.0.1` with a dynamic port (per
  * memory `feedback_wiremock_localhost`) serves canned responses; tests assert the downloader's behaviour against the
- * streamed bytes, the temp-file lifecycle, and the size-cap enforcement Pipe.
+ * streamed bytes and the temp-file lifecycle.
  */
 class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
@@ -42,7 +42,6 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
   private val testConfig = BillTextPipelineConfig(
     parallelism = 1,
     downloadTimeoutSeconds = 5,
-    maxContentBytes = 10485760L,
     pageDelay = 100.millis,
   )
 
@@ -144,28 +143,6 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     }
   }
 
-  it should "raise TextContentTooLarge when the body exceeds maxContentBytes" in {
-    val tiny = testConfig.copy(maxContentBytes = 5L)
-    wireMock.stubFor(
-      get(urlPathEqualTo("/bill"))
-        .willReturn(aResponse().withStatus(200).withBody("this is much longer than five bytes"))
-    )
-
-    val attempt = downloaderResource(tiny)
-      .use { downloader =>
-        downloader
-          .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
-          .use(_ => IO.unit)
-          .attempt
-      }
-      .unsafeRunSync()
-
-    attempt match {
-      case Left(_: TextContentTooLarge) => succeed
-      case other                        => fail(s"Expected TextContentTooLarge, got $other")
-    }
-  }
-
   "parseUrl" should "raise InvalidTextUrl for malformed URLs" in {
     val program = downloaderResource().use(downloader => downloader.parseUrl("not a url at all").attempt)
     val attempt = program.unsafeRunSync()
@@ -180,47 +157,21 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     program.unsafeRunSync().toString shouldBe "https://example.com/text"
   }
 
-  "enforceSizeLimit" should "pass bytes through unchanged when under the size limit" in {
-    val program = downloaderResource().use { downloader =>
-      val input = fs2.Stream.emits("hello world".getBytes(StandardCharsets.UTF_8)).covary[IO]
-      input.through(downloader.enforceSizeLimit("https://example.com/x", maxBytes = 1024L)).compile.toList
-    }
-    val output = program.unsafeRunSync()
-    new String(output.toArray, StandardCharsets.UTF_8) shouldBe "hello world"
-  }
+  it should "stream a body of arbitrary size to disk without imposing a configured cap" in {
+    // Sanity check that the no-cap design works for bodies larger than the previous (now-removed)
+    // maxContentBytes default. 1 MiB body exceeds the prior 10 MiB / 200 MiB cap noise; it would
+    // have tripped any in-pipe size check. With no cap, all bytes flow through to the temp file.
+    val largeBody = "X".repeat(1024 * 1024)
+    wireMock.stubFor(
+      get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(200).withBody(largeBody))
+    )
 
-  it should "raise TextContentTooLarge mid-stream once the cumulative byte count exceeds maxBytes" in {
     val program = downloaderResource().use { downloader =>
-      val chunk1 = fs2.Chunk.array("hello".getBytes(StandardCharsets.UTF_8))
-      val chunk2 = fs2.Chunk.array(" world".getBytes(StandardCharsets.UTF_8))
-      val input  = (fs2.Stream.chunk(chunk1) ++ fs2.Stream.chunk(chunk2)).covary[IO]
-      input
-        .through(downloader.enforceSizeLimit("https://example.com/oversized", maxBytes = 5L))
-        .compile
-        .toList
-        .attempt
+      downloader
+        .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
+        .use(path => IO.delay(Files.size(path)))
     }
-    val attempt = program.unsafeRunSync()
-    attempt match {
-      case Left(_: TextContentTooLarge) => succeed
-      case other                        => fail(s"Expected TextContentTooLarge, got $other")
-    }
-  }
-
-  it should "raise TextContentTooLarge on the very first oversized chunk" in {
-    val program = downloaderResource().use { downloader =>
-      val input = fs2.Stream.emits(Array.fill(100)("a".getBytes(StandardCharsets.UTF_8).head)).covary[IO]
-      input
-        .through(downloader.enforceSizeLimit("https://example.com/big", maxBytes = 10L))
-        .compile
-        .toList
-        .attempt
-    }
-    val attempt = program.unsafeRunSync()
-    attempt match {
-      case Left(_: TextContentTooLarge) => succeed
-      case other                        => fail(s"Expected TextContentTooLarge, got $other")
-    }
+    program.unsafeRunSync() shouldBe largeBody.length.toLong
   }
 
 }

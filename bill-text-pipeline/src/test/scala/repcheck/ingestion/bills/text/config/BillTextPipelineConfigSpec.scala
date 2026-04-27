@@ -12,7 +12,6 @@ class BillTextPipelineConfigSpec extends AnyFlatSpec with Matchers {
       BillTextPipelineConfig(
         parallelism = 4,
         downloadTimeoutSeconds = 60,
-        maxContentBytes = 10485760L,
         pageDelay = 100.millis,
       )
     config.parallelism shouldBe 4
@@ -23,21 +22,19 @@ class BillTextPipelineConfigSpec extends AnyFlatSpec with Matchers {
       BillTextPipelineConfig(
         parallelism = 1,
         downloadTimeoutSeconds = 30,
-        maxContentBytes = 10485760L,
         pageDelay = 100.millis,
       )
     config.downloadTimeoutSeconds shouldBe 30
   }
 
-  it should "hold max content bytes" in {
+  it should "hold page delay" in {
     val config =
       BillTextPipelineConfig(
         parallelism = 1,
         downloadTimeoutSeconds = 60,
-        maxContentBytes = 5242880L,
-        pageDelay = 100.millis,
+        pageDelay = 250.millis,
       )
-    config.maxContentBytes shouldBe 5242880L
+    config.pageDelay shouldBe 250.millis
   }
 
 }

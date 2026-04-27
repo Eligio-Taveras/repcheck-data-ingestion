@@ -24,7 +24,7 @@ import repcheck.ingestion.bills.text.embedding.{
   EmbeddingGenerationFailed,
   EmbeddingService,
 }
-import repcheck.ingestion.bills.text.errors.{BillTextProcessingFailed, TextContentTooLarge, TextDownloadFailed}
+import repcheck.ingestion.bills.text.errors.{BillTextProcessingFailed, TextDownloadFailed}
 import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
@@ -388,22 +388,6 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val event = makeEvent()
     stubBillLookup(f)
     f.stubDownloadFailure(BillTextProcessingFailed("118-HR-1", "invalid format"))
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
-
-    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
-
-    val _ = result.isFailed shouldBe true
-    result match {
-      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Systemic"
-      case other                                     => fail(s"Expected Failed but got $other")
-    }
-  }
-
-  it should "classify TextContentTooLarge as Systemic (so processAndAck can ACK and stop the redelivery loop)" in {
-    val f     = createFixture()
-    val event = makeEvent()
-    stubBillLookup(f)
-    f.stubDownloadFailure(TextContentTooLarge("https://example.com/large.pdf", 25000000L, 10485760L))
     when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()

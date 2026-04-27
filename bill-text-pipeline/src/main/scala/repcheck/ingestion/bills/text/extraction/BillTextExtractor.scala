@@ -101,7 +101,8 @@ object BillTextExtractor {
 
   /**
    * Read the entire file as a UTF-8 String. Used for the `text/plain` catch-all branch and any unknown format. Loads
-   * fully into heap; bounded by the configured `pipeline.max-content-bytes` ceiling at the download phase.
+   * fully into heap — the extraction layer's heap budget is the architectural ceiling on body size for this pipeline
+   * (PDFBox / Jsoup / scala-xml all fully buffer their inputs as well). Streaming this layer is Phase 3 work.
    */
   private def extractPlainText[F[_]: Async](path: Path): F[String] =
     Async[F].blocking(Files.readString(path, StandardCharsets.UTF_8))

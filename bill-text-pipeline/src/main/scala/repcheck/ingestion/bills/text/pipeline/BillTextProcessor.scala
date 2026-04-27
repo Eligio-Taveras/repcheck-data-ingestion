@@ -18,7 +18,7 @@ import repcheck.ingestion.bills.text.embedding.{
   EmbeddingGenerationFailed,
   EmbeddingService,
 }
-import repcheck.ingestion.bills.text.errors.{BillNotFoundForText, BillTextProcessingFailed, TextContentTooLarge}
+import repcheck.ingestion.bills.text.errors.{BillNotFoundForText, BillTextProcessingFailed}
 import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
@@ -322,11 +322,7 @@ class BillTextProcessor[F[_]: Async] private[text] (
       // Context-length errors are deterministic for a given (chunk-size, model num_ctx) pair — retrying the same
       // oversized chunk always fails the same way. Mark Systemic so the bill is skipped instead of looping forever.
       // Operator fix is to lower OLLAMA_MAX_CHUNK_CHARS or raise the model's num_ctx in the Modelfile.
-      case _: EmbeddingContextLengthExceeded => "Systemic"
-      // Body exceeded `pipeline.max-content-bytes` mid-stream. The remote URL is fixed and the ceiling is config-driven,
-      // so retrying the same URL with the same config always fails the same way. Systemic so processAndAck ACKs the
-      // Pub/Sub message and stops the redelivery loop.
-      case _: TextContentTooLarge             => "Systemic"
+      case _: EmbeddingContextLengthExceeded  => "Systemic"
       case _: EmbeddingGenerationFailed       => "Transient"
       case _: java.net.SocketTimeoutException => "Transient"
       case _: java.net.ConnectException       => "Transient"

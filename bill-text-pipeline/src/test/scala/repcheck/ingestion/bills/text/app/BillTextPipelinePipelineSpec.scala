@@ -53,7 +53,6 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     pipeline = BillTextPipelineConfig(
       parallelism = 1,
       downloadTimeoutSeconds = 5,
-      maxContentBytes = 1048576L,
       pageDelay = 100.millis,
     ),
     eventPublisher = EventPublisherConfig(

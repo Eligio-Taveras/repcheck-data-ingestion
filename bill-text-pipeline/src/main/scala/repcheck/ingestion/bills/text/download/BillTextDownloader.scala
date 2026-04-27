@@ -5,22 +5,16 @@ import java.util.UUID
 
 import scala.concurrent.duration._
 
-import cats.effect.{Async, Ref, Resource}
+import cats.effect.{Async, Resource}
 import cats.syntax.all._
 
 import org.http4s.client.Client
 import org.http4s.{Request, Status, Uri}
 
 import fs2.io.file.{Files, Flags, Path => FsPath}
-import fs2.{Chunk, Pipe, Stream}
 
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
-import repcheck.ingestion.bills.text.errors.{
-  InvalidTextUrl,
-  TextContentTooLarge,
-  TextDownloadFailed,
-  TextDownloadTimedOut,
-}
+import repcheck.ingestion.bills.text.errors.{InvalidTextUrl, TextDownloadFailed, TextDownloadTimedOut}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 /**
@@ -31,27 +25,32 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
  * ==Why streaming-to-temp-file==
  *
  * The pre-revision flow (`response.as[String]`) materialized the entire body into heap before any extraction or
- * chunking could begin. That set a hard 10-MiB ceiling enforced by `validateSize` that 32 STATUTE PDFs in production
- * promptly exceeded; raising the ceiling moves the heap pressure peak but doesn't fix the architectural issue. The new
- * flow pipes `response.body: Stream[F, Byte]` straight to `Files[F].writeAll(tempPath)` so bytes flow through the OS
- * page cache in ~64 KB chunks; in-heap allocation per request is bounded by fs2's chunk size, not the body size.
+ * chunking could begin. That set a hard 10-MiB ceiling enforced by an in-memory byte counter, which 32 STATUTE PDFs in
+ * production promptly exceeded. The new flow pipes `response.body: Stream[F, Byte]` straight to
+ * `Files[F].writeAll(tempPath)` so bytes flow through the OS page cache in ~64 KB chunks; in-heap allocation per
+ * request is bounded by fs2's chunk size, not the body size.
  *
- * Size validation now runs **inline** during the streaming write via a `Pipe` that accumulates a byte counter and
- * raises [[TextContentTooLarge]] mid-stream once the configured `pipeline.max-content-bytes` ceiling is exceeded.
- * Mid-stream cancellation aborts the http4s response and discards the partially-written temp file. With heap protection
- * now provided by the streaming-to-disk flow itself, the byte cap's role has narrowed: it's a **runaway / malicious URL
- * guard** sized well above the largest legitimate bill payload (default 200 MiB — the largest STATUTE PDF observed in
- * production is ~75 MiB), not the per-bill heap protection it was pre-refactor. The check fires at chunk granularity
- * (~64 KiB), so the running total at error time can exceed `maxBytes` by up to one chunk; that's fine because (a) the
- * chunk that crosses the boundary is **not** emitted downstream — the raise short-circuits before `Stream.chunk` is
- * invoked — so `writeAll` never persists the over-the-line bytes, and (b) the cap is a coarse safety rail at this
- * scale, not a precision byte counter.
+ * ==No body-size cap==
+ *
+ * The downloader itself imposes no upper bound on body size. The pre-revision `max-content-bytes` cap was a vestige of
+ * the buffered-`String` heap protection — once heap is bounded by chunk size regardless of body size, the cap protects
+ * nothing the streaming flow doesn't already cover. Runaway-body protection is a layered concern handled elsewhere:
+ *
+ *   - `downloadTimeoutSeconds` aborts a stream that's running too long (slow loris, infinite body).
+ *   - `Files.writeAll` raises `IOException("No space left on device")` if the temp partition fills, classified
+ *     Transient by [[repcheck.ingestion.bills.text.pipeline.BillTextProcessor.classifyError]].
+ *   - The Resource release deletes whatever was written before the failure, so a partial-write on disk-full doesn't
+ *     leak.
+ *
+ * The current real upper bound on body size is the **extraction layer's** heap budget — Jsoup/scala-xml/PDFBox parse
+ * the file fully into memory. That's the architectural ceiling and the place to address if we ever need to process
+ * truly arbitrary-size bodies (Phase 3 streaming-extraction work).
  *
  * @param client
  *   the http4s `Client[F]` used for the request. Caller is responsible for any rate-limit wrapping; this downloader
  *   doesn't paginate or retry.
  * @param config
- *   pipeline config supplying `maxContentBytes` and `downloadTimeoutSeconds`.
+ *   pipeline config supplying `downloadTimeoutSeconds`.
  * @param logger
  *   structured logger; download lifecycle events are emitted with the supplied correlation ID.
  */
@@ -112,10 +111,10 @@ class BillTextDownloader[F[_]: Async](
     )
 
   /**
-   * Run the HTTP request and pipe the response body through `enforceSizeLimit` into the supplied temp file. The timeout
-   * wraps the entire body-reading effect, including the inline size check; an over-long download fails fast with
-   * [[TextDownloadTimedOut]]. Status-code handling preserves the prior contract: 404 → [[TextDownloadFailed]], other
-   * non-success → [[TextDownloadFailed]] with the body text included for debugging.
+   * Run the HTTP request and pipe the response body straight to the supplied temp file. The timeout wraps the entire
+   * body-reading effect; an over-long download fails fast with [[TextDownloadTimedOut]]. Status-code handling preserves
+   * the prior contract: 404 → [[TextDownloadFailed]], other non-success → [[TextDownloadFailed]] with the body text
+   * included for debugging.
    */
   private[download] def streamBodyToFile(
     uri: Uri,
@@ -134,7 +133,6 @@ class BillTextDownloader[F[_]: Async](
             Async[F].raiseError[Unit](TextDownloadFailed(textUrl, textFormat, "HTTP 404 - bill text not found"))
           case status if status.isSuccess =>
             response.body
-              .through(enforceSizeLimit(textUrl, config.maxContentBytes))
               .through(Files.forAsync[F].writeAll(tempPath, Flags.Write))
               .compile
               .drain
@@ -147,32 +145,6 @@ class BillTextDownloader[F[_]: Async](
       duration = timeout,
       fallback = Async[F].raiseError(TextDownloadTimedOut(textUrl, config.downloadTimeoutSeconds)),
     )
-  }
-
-  /**
-   * fs2 Pipe that passes bytes through unchanged but accumulates a running total in an effectful `Ref` and raises
-   * [[TextContentTooLarge]] mid-stream once the cumulative byte count exceeds `maxBytes`. Implementing as a Pipe
-   * (instead of a post-write file size check) means we abort the HTTP request as early as possible — useful when an
-   * upstream serves a huge body the pipeline doesn't want.
-   *
-   * Uses `Ref[F]` rather than a local `var` because fs2's `evalMap` runs the inner effect on the F effect context;
-   * sharing mutable state across chunks via Ref keeps the read/update atomic from F's point of view. Each chunk passes
-   * through a single `updateAndGet → check → either raise or emit` flow.
-   */
-  private[download] def enforceSizeLimit(textUrl: String, maxBytes: Long): Pipe[F, Byte, Byte] = { in =>
-    Stream.eval(Ref.of[F, Long](0L)).flatMap { runningRef =>
-      in.chunks
-        .evalMap { chunk =>
-          runningRef.updateAndGet(_ + chunk.size).flatMap { newTotal =>
-            if (newTotal > maxBytes) {
-              Async[F].raiseError[Chunk[Byte]](TextContentTooLarge(textUrl, newTotal, maxBytes))
-            } else {
-              Async[F].pure(chunk)
-            }
-          }
-        }
-        .flatMap(Stream.chunk)
-    }
   }
 
 }

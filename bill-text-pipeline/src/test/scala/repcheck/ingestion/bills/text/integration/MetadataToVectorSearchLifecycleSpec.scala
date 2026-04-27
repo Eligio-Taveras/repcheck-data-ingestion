@@ -210,7 +210,7 @@ class MetadataToVectorSearchLifecycleSpec
   }
 
   private def buildProcessor(withEmbedding: Boolean): BillTextProcessor[IO] = {
-    val pipelineConfig = BillTextPipelineConfig(1, 10, 10485760L, 100.millis)
+    val pipelineConfig = BillTextPipelineConfig(1, 10, 100.millis)
     val downloader     = new BillTextDownloader[IO](httpClient, pipelineConfig, testLogger)
     val (embeddingService, embeddingConfig) =
       if (withEmbedding) {
