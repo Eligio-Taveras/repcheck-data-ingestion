@@ -5,7 +5,7 @@ import java.nio.file.{Path => NioPath}
 import cats.effect.Async
 
 import fs2.io.file.{Files, Path => FsPath}
-import fs2.{text, Stream}
+import fs2.{Stream, text}
 
 /**
  * Streaming plain-text extractor. Reads the temp file as a UTF-8 byte stream, decodes to text fragments, normalizes
