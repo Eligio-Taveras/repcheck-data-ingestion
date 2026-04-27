@@ -19,12 +19,19 @@ import pureconfig.ConfigReader
  * whose `updateDate >= now - lookbackDays`.
  *
  * @param parallelism
- *   `parEvalMap` parallelism for detail-endpoint calls made from this one client. Per-request pacing is enforced by the
- *   `rateLimitedClient` wrapper in `VotesPipeline.scala` (`Semaphore(1)` + `pageDelay`), not by `parallelism` alone, so
- *   setting `parallelism > 1` still honors the request interval.
+ *   `parEvalMap` parallelism for detail-endpoint calls made from this one client. Pairs with `permits` below —
+ *   `permits` sets the maximum number of in-flight HTTP requests, while `parallelism` sets the upstream fan-out
+ *   queueing into the semaphore. Setting `parallelism > permits` just buffers callers behind the gate; setting
+ *   `parallelism = permits` keeps the gate saturated.
+ * @param permits
+ *   maximum number of concurrent in-flight HTTP requests on the House client. Wired into the
+ *   `RateLimitedHttpClient.make` semaphore. Default `1` preserves the original strictly-serial behaviour; raise (with
+ *   care for the shared Congress.gov 5K/hr budget) to fan out detail-endpoint calls. Steady-state Ofelia ticks are
+ *   bursty for a few minutes per cadence; backfills benefit from `4`–`8`.
  * @param pageDelay
- *   minimum interval between successive requests on the House client. Wired into the `rateLimitedClient` semaphore
- *   release so every request waits at least this long after the previous one completes.
+ *   minimum interval each in-flight permit waits before being released back to the semaphore. With `permits = 1` this
+ *   is effectively the gap between successive requests; with `permits > 1` it is the per-permit cooldown, so the
+ *   sustained outbound rate is roughly `permits / pageDelay`.
  * @param lookbackDays
  *   client-side filter window. Items whose `updateDate` is older than `now - lookbackDays` are dropped after all pages
  *   for the (congress, session) have been fetched. 0 or negative disables the filter (keeps everything).
@@ -39,6 +46,7 @@ import pureconfig.ConfigReader
  */
 final case class HouseVotesConfig(
   parallelism: Int = 1,
+  permits: Int = 1,
   pageDelay: FiniteDuration = 2.seconds,
   lookbackDays: Int = 7,
 ) derives ConfigReader

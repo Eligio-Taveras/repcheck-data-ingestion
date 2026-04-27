@@ -372,6 +372,18 @@ services:
       HOUSE_LOOKBACK_DAYS: ${HOUSE_LOOKBACK_DAYS:-0}
       HOUSE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
       SENATE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
+      # Concurrent in-flight HTTP requests per client (Semaphore permits inside
+      # RateLimitedHttpClient). House shares the Congress.gov 5K/hr API-key budget with the
+      # other Congress.gov pipelines — keep modest. Senate hits senate.gov which is a separate
+      # host with no shared budget — can be higher. Override with HOUSE_PERMITS / SENATE_PERMITS.
+      HOUSE_PERMITS: ${HOUSE_PERMITS:-4}
+      SENATE_PERMITS: ${SENATE_PERMITS:-8}
+      # Per-permit cooldown. Sustained outbound rate ≈ permits / delay. With permits=4 and
+      # page-delay=250ms, House peaks at ~16 req/sec — practically capped by ~7s API response
+      # per /members call. Keep watching the shared 5K/hr Congress.gov budget when other
+      # pipelines (bill-metadata, bill-text-availability, members) are also running.
+      HOUSE_PAGE_DELAY: ${HOUSE_PAGE_DELAY:-250ms}
+      SENATE_REQUEST_DELAY: ${SENATE_REQUEST_DELAY:-200ms}
       # Pub/Sub — GCP_PROJECT_ID + VOTE_EVENTS_TOPIC match the application.conf keys.
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: repcheck-local

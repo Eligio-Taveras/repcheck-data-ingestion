@@ -70,12 +70,12 @@ private[votes] object VotesPipelineResources {
       houseClient <- RateLimitedHttpClient.make[F](
         rawClient,
         pageDelay = config.pipeline.house.pageDelay,
-        permits = 1L,
+        permits = config.pipeline.house.permits.toLong,
       )
       senateClient <- RateLimitedHttpClient.make[F](
         rawClient,
         pageDelay = config.pipeline.senate.requestDelay,
-        permits = 1L,
+        permits = config.pipeline.senate.permits.toLong,
       )
       pubSubPublisher <- pubSubPublisherFactory(config.eventPublisher)
       retryWrapper = noOpRetryWrapper[F]

@@ -17,6 +17,11 @@ class SenateVoteXmlConfigSpec extends AnyFlatSpec with Matchers {
     config.parallelism shouldBe 1
   }
 
+  it should "default permits to 1 (Semaphore concurrency for in-flight requests)" in {
+    val config = SenateVoteXmlConfig()
+    config.permits shouldBe 1
+  }
+
   it should "default requestDelay to 3 seconds" in {
     val config = SenateVoteXmlConfig()
     config.requestDelay shouldBe 3.seconds
@@ -26,10 +31,12 @@ class SenateVoteXmlConfigSpec extends AnyFlatSpec with Matchers {
     val config = SenateVoteXmlConfig(
       baseUrl = "http://example",
       parallelism = 4,
+      permits = 8,
       requestDelay = 500.millis,
     )
     val _ = config.baseUrl shouldBe "http://example"
     val _ = config.parallelism shouldBe 4
+    val _ = config.permits shouldBe 8
     config.requestDelay shouldBe 500.millis
   }
 
