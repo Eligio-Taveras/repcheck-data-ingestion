@@ -380,14 +380,19 @@ services:
       # RateLimitedHttpClient). House shares the Congress.gov 5K/hr API-key budget with the
       # other Congress.gov pipelines — keep modest. Senate hits senate.gov which is a separate
       # host with no shared budget — can be higher. Override with HOUSE_PERMITS / SENATE_PERMITS.
-      HOUSE_PERMITS: ${HOUSE_PERMITS:-4}
+      HOUSE_PERMITS: ${HOUSE_PERMITS:-20}
       SENATE_PERMITS: ${SENATE_PERMITS:-8}
-      # Per-permit cooldown. Sustained outbound rate ≈ permits / delay. With permits=4 and
-      # page-delay=250ms, House peaks at ~16 req/sec — practically capped by ~7s API response
-      # per /members call. Keep watching the shared 5K/hr Congress.gov budget when other
-      # pipelines (bill-metadata, bill-text-availability, members) are also running.
+      # Per-permit cooldown. Sustained outbound rate ≈ permits / (delay + API response time).
+      # With permits=20, page-delay=250ms, and the ~7s Congress.gov /members response time,
+      # House peaks at ~2.7 req/sec ≈ 9.7K req/hr — over the 5K/hr free-tier budget shared
+      # across pipelines. The retry classifier handles 429s via Retry-After, so the actual
+      # sustained rate gets throttled back near the rate limit. For backfill scenarios this
+      # tradeoff is fine; for steady-state production lower this back to ~4.
       HOUSE_PAGE_DELAY: ${HOUSE_PAGE_DELAY:-250ms}
       SENATE_REQUEST_DELAY: ${SENATE_REQUEST_DELAY:-200ms}
+      # Ember HTTP connection pool size — must be >= sum of HOUSE_PERMITS + SENATE_PERMITS or
+      # the conn pool becomes the real bottleneck instead of the per-client semaphores.
+      CONGRESS_API_MAX_CONNECTIONS: ${CONGRESS_API_MAX_CONNECTIONS:-30}
       # Pub/Sub — GCP_PROJECT_ID + VOTE_EVENTS_TOPIC match the application.conf keys.
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: repcheck-local
