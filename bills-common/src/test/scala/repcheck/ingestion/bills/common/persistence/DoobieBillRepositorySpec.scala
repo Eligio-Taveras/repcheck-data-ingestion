@@ -171,31 +171,134 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     found shouldBe empty
   }
 
-  "findBillsNeedingTextCheck" should "return bills without text" taggedAs DockerRequired in {
+  "findBillsNeedingTextCheck" should "exclude bills with expected_text_version_code IS NULL (no stage signal yet)" taggedAs DockerRequired in {
+    // Post-migration-032 filter is `WHERE expected_text_version_code IS NOT NULL AND
+    // text_version_type IS DISTINCT FROM expected_text_version_code`. A bill with NULL expected
+    // hasn't been touched by either bill-metadata-pipeline (introduced floor) or bill-summary-pipeline
+    // (advancing writer) yet — fail-safe: don't sweep it.
     val _     = repo.upsert(makeBill(number = "1")).transact(xa).unsafeRunSync()
     val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
-    found.map(_.naturalKey) should contain("118-HR-1")
+    found.map(_.naturalKey) should not contain "118-HR-1"
   }
 
-  it should "exclude bills that already have a text URL captured" taggedAs DockerRequired in {
-    // Regression guard for the post-PR-#76 filter `WHERE text_url IS NULL`. Once a bill has
-    // text_url set (by `updateTextFields` after a successful /text API call), it stays out
-    // of the sweep until the gating column is reset. The follow-up summary-based design
-    // (PR for `expected_text_version_code`) will replace this filter with stage-aware
-    // logic; this test will be updated then.
-    val bill = makeBill(number = "2")
-    val _    = repo.upsert(bill).transact(xa).unsafeRunSync()
+  it should "include bills where expected_text_version_code is set and text_version_type is NULL" taggedAs DockerRequired in {
+    // Most common case: bill-metadata-pipeline floored the bill to IH/IS, bill-text-pipeline
+    // hasn't downloaded yet → text_version_type is NULL → IS DISTINCT FROM IH is true → sweep.
+    val _ = repo.upsert(makeBill(number = "10")).transact(xa).unsafeRunSync()
+    val _ = repo.updateExpectedVersion("118-HR-10", TextVersionCode.IH).transact(xa).unsafeRunSync()
+
+    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    found.map(_.naturalKey) should contain("118-HR-10")
+  }
+
+  it should "exclude bills where text_version_type matches expected_text_version_code" taggedAs DockerRequired in {
+    // Steady state: bill-text-pipeline downloaded the matching version and bumped text_version_type.
+    // expected = stored → IS DISTINCT FROM is false → bill exits the sweep.
+    val _ = repo.upsert(makeBill(number = "20")).transact(xa).unsafeRunSync()
     val billId =
-      repo.findByBillId("118-HR-2").transact(xa).unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
+      repo.findByBillId("118-HR-20").transact(xa).unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
     val versionId = insertTextVersion(billId)
 
-    repo
-      .updateTextFields("118-HR-2", "http://text", "Formatted Text", "IH", "2024-01-15T00:00:00Z", versionId)
+    val _ = repo.updateExpectedVersion("118-HR-20", TextVersionCode.IH).transact(xa).unsafeRunSync()
+    val _ = repo
+      .updateTextFields("118-HR-20", "http://text", "Formatted Text", "IH", "2024-01-15T00:00:00Z", versionId)
       .transact(xa)
       .unsafeRunSync()
 
     val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
-    found.map(_.naturalKey) should not contain "118-HR-2"
+    found.map(_.naturalKey) should not contain "118-HR-20"
+  }
+
+  it should "include bills where expected has advanced past stored (re-version detection)" taggedAs DockerRequired in {
+    // The whole point of the stage-aware filter: bill-summary-pipeline advanced expected from IH
+    // to RH, but bill-text-pipeline still has IH stored. The bill must enter the sweep so
+    // bill-text-availability-checker can fetch the new RH version.
+    val _ = repo.upsert(makeBill(number = "30")).transact(xa).unsafeRunSync()
+    val billId =
+      repo.findByBillId("118-HR-30").transact(xa).unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
+    val versionId = insertTextVersion(billId)
+
+    val _ = repo.updateExpectedVersion("118-HR-30", TextVersionCode.RH).transact(xa).unsafeRunSync()
+    val _ = repo
+      .updateTextFields("118-HR-30", "http://text", "Formatted Text", "IH", "2024-01-15T00:00:00Z", versionId)
+      .transact(xa)
+      .unsafeRunSync()
+
+    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    found.map(_.naturalKey) should contain("118-HR-30")
+  }
+
+  it should "exclude terminal-stage bills (PL stored matches PL expected)" taggedAs DockerRequired in {
+    // Bills that became law: text_version_type = PL, expected = PL → permanent exit from the sweep.
+    val _ = repo.upsert(makeBill(number = "40")).transact(xa).unsafeRunSync()
+    val billId =
+      repo.findByBillId("118-HR-40").transact(xa).unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
+    val versionId = insertTextVersion(billId)
+
+    val _ = repo.updateExpectedVersion("118-HR-40", TextVersionCode.PL).transact(xa).unsafeRunSync()
+    val _ = repo
+      .updateTextFields("118-HR-40", "http://text", "Formatted Text", "PL", "2024-06-01T00:00:00Z", versionId)
+      .transact(xa)
+      .unsafeRunSync()
+
+    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    found.map(_.naturalKey) should not contain "118-HR-40"
+  }
+
+  "findExpectedVersion" should "return None for bills not yet in the table" taggedAs DockerRequired in {
+    repo.findExpectedVersion("118-HR-9999").transact(xa).unsafeRunSync() shouldBe None
+  }
+
+  it should "return None for bills with NULL expected_text_version_code (default after upsert)" taggedAs DockerRequired in {
+    val _ = repo.upsert(makeBill(number = "50")).transact(xa).unsafeRunSync()
+    repo.findExpectedVersion("118-HR-50").transact(xa).unsafeRunSync() shouldBe None
+  }
+
+  it should "round-trip every TextVersionCode via the typed enum mapping" taggedAs DockerRequired in {
+    // Sanity check that the Doobie Get[TextVersionCode] resolves the column correctly. Sample a few
+    // codes spanning the progressionOrder tiers so we'd catch a mismatch on any of them.
+    val cases = List(
+      "60" -> TextVersionCode.IH,
+      "61" -> TextVersionCode.RH,
+      "62" -> TextVersionCode.EH,
+      "63" -> TextVersionCode.EAH,
+      "64" -> TextVersionCode.ENR,
+      "65" -> TextVersionCode.PL,
+    )
+    cases.foreach {
+      case (number, code) =>
+        val _    = repo.upsert(makeBill(number = number)).transact(xa).unsafeRunSync()
+        val _    = repo.updateExpectedVersion(s"118-HR-$number", code).transact(xa).unsafeRunSync()
+        val read = repo.findExpectedVersion(s"118-HR-$number").transact(xa).unsafeRunSync()
+        val _    = read shouldBe Some(code)
+    }
+  }
+
+  "updateExpectedVersion" should "set the column on an existing bill" taggedAs DockerRequired in {
+    val _ = repo.upsert(makeBill(number = "70")).transact(xa).unsafeRunSync()
+    val _ = repo.updateExpectedVersion("118-HR-70", TextVersionCode.RH).transact(xa).unsafeRunSync()
+    repo.findExpectedVersion("118-HR-70").transact(xa).unsafeRunSync() shouldBe Some(TextVersionCode.RH)
+  }
+
+  it should "be unconditional: it does not enforce the progressionOrder regression guard at the SQL level" taggedAs DockerRequired in {
+    // The regression guard lives at the caller (Scala read-then-write). The SQL UPDATE writes
+    // whatever it's told. This test guards against a future "helpful" SQL-level WHERE clause
+    // sneaking in that would silently swallow caller mistakes.
+    val _ = repo.upsert(makeBill(number = "80")).transact(xa).unsafeRunSync()
+    val _ = repo.updateExpectedVersion("118-HR-80", TextVersionCode.PL).transact(xa).unsafeRunSync()
+    val _ = repo.updateExpectedVersion("118-HR-80", TextVersionCode.IH).transact(xa).unsafeRunSync()
+    repo.findExpectedVersion("118-HR-80").transact(xa).unsafeRunSync() shouldBe Some(TextVersionCode.IH)
+  }
+
+  it should "bump updated_at on the bills row" taggedAs DockerRequired in {
+    val _     = repo.upsert(makeBill(number = "90")).transact(xa).unsafeRunSync()
+    val first = repo.findByBillId("118-HR-90").transact(xa).unsafeRunSync().flatMap(_.updatedAt)
+
+    Thread.sleep(50)
+    val _      = repo.updateExpectedVersion("118-HR-90", TextVersionCode.IH).transact(xa).unsafeRunSync()
+    val second = repo.findByBillId("118-HR-90").transact(xa).unsafeRunSync().flatMap(_.updatedAt)
+
+    second should not be first
   }
 
   "updateTextFields" should "set text columns without touching metadata" taggedAs DockerRequired in {

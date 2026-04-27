@@ -1,5 +1,6 @@
 package repcheck.ingestion.bills.common.persistence
 
+import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.dos.bill.BillDO
 
 trait BillRepository[F[_]] {
@@ -31,5 +32,26 @@ trait BillRepository[F[_]] {
    *   e.g. `"119-HR-30"`.
    */
   def upsertPlaceholder(naturalKey: String): F[Unit]
+
+  /**
+   * Read the `expected_text_version_code` column for a single bill. Used by both `bill-metadata-pipeline` (to decide
+   * whether to advance the introduced floor) and `bill-summary-pipeline` (to decide whether to advance from a CRS
+   * summary's versionCode). The cooperative-write contract uses [[TextVersionCode.progressionOrder]] to gate updates —
+   * see [[updateExpectedVersion]] — so the caller compares against the returned value.
+   *
+   * @return
+   *   `None` if the bill doesn't exist or the column is NULL.
+   */
+  def findExpectedVersion(naturalKey: String): F[Option[TextVersionCode]]
+
+  /**
+   * Set `expected_text_version_code` on a single bill. The repository writes unconditionally — the `progressionOrder`
+   * regression guard lives at the caller (bill-metadata-pipeline floor or bill-summary-pipeline advance) so the caller
+   * decides whether to invoke this method based on `findExpectedVersion`'s return value. Keeps the SQL simple (one
+   * UPDATE) and the cooperation logic explicit in Scala.
+   *
+   * Bumps `updated_at = NOW()` so downstream readers can see the row was touched.
+   */
+  def updateExpectedVersion(naturalKey: String, code: TextVersionCode): F[Unit]
 
 }

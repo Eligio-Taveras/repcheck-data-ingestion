@@ -74,7 +74,7 @@ services:
 
   # Run database migrations before any pipeline starts
   db-migrations:
-    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.28
+    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.29
     entrypoint: ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "/opt/docker/lib/*", "repcheck.db.migrations.MigrationApp"]
     depends_on:
       alloydb:
@@ -191,6 +191,42 @@ services:
       CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
       PIPELINE_LOOKBACK_DAYS: ${PIPELINE_LOOKBACK_DAYS:-30}
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
+    restart: "no"
+
+  # Maps Congress.gov /summaries[/{congress}] feed to bills.expected_text_version_code via
+  # SummaryVersionCodeMapper. Acts as the advancing writer alongside bill-metadata-pipeline's
+  # introduced floor — the cooperative-write contract via TextVersionCode.progressionOrder
+  # guarantees neither pipeline can downgrade the other's writes. Reads watermark from
+  # workflow_run_steps; first-run fallback is initial-lookback-days (10y default).
+  bill-summary-pipeline:
+    container_name: bill-summary-pipeline
+    build:
+      context: .
+      dockerfile: bill-summary-pipeline/Dockerfile
+    # Launcher contract: args(0) = config (unused — PureConfig reads env),
+    # args(1) = runId, args(2) = stepRunId. extractStepRunId raises
+    # StepRunIdInvalid without args(2). For local-stack runs we pass `"0"`
+    # placeholders since the launcher / workflow_run_steps integration isn't
+    # wired up in docker-compose yet.
+    command: ["cfg-unused", "local-bill-summary-run", "0"]
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
+      # 10-year first-run lookback per cross-pipeline policy. After the first successful run
+      # the watermark from workflow_run_steps takes over and incremental ticks fetch only the
+      # delta since the prior run's completed_at minus watermark-buffer.
+      PIPELINE_INITIAL_LOOKBACK_DAYS: ${PIPELINE_INITIAL_LOOKBACK_DAYS:-3650}
+      PIPELINE_WATERMARK_BUFFER: ${PIPELINE_WATERMARK_BUFFER:-5m}
+      # Congress list defaults to the active session [119] from application.conf. PureConfig's HOCON
+      # reader cannot reify a string env-var into List[Int], so for backfill edit application.conf
+      # directly (or add a Scala-level env-var parser like votes-pipeline's resolveCongresses).
     restart: "no"
 
   bill-text-availability-checker:

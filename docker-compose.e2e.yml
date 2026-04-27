@@ -72,7 +72,7 @@ services:
   # Run Liquibase migrations before any pipeline starts. Init container — exits
   # after completion; pipelines gate on service_completed_successfully.
   db-migrations:
-    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.28
+    image: ghcr.io/eligio-taveras/repcheck-db-migrations-runner:0.1.29
     entrypoint: ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "/opt/docker/lib/*", "repcheck.db.migrations.MigrationApp"]
     depends_on:
       alloydb:
@@ -154,6 +154,37 @@ services:
       CONGRESS_GOV_API_KEY: e2e-test-key
       PIPELINE_PARALLELISM: "1"
       PIPELINE_LOOKBACK_DAYS: "30"
+
+  bill-summary-pipeline:
+    build:
+      context: .
+      dockerfile: bill-summary-pipeline/Dockerfile
+    # Launcher contract: args(0) = config (unused), args(1) = runId, args(2) = stepRunId.
+    # See docker-compose.local.yml for the full justification — same pattern.
+    command: ["cfg-unused", "e2e-bill-summary-run", "0"]
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
+      wiremock:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_API_BASE_URL: http://wiremock:8080/v3
+      CONGRESS_GOV_API_KEY: e2e-test-key
+      # E2E uses a tight 30-day window so WireMock fixtures stay manageable. Production default
+      # (in application.conf) is 3650 days for the first-run lookback.
+      PIPELINE_INITIAL_LOOKBACK_DAYS: "30"
+      PIPELINE_WATERMARK_BUFFER: "1m"
+      # PureConfig's HOCON reader can't reify a string env-var into List[Int], so we don't override
+      # `congresses` from env here. application.conf default `[119]` (close enough to [118] for this
+      # WireMock-stubbed run) drives the test. If the e2e fixture truly needs 118-only, override
+      # application.conf via a profile or a Scala-level env-var parser.
 
   bill-text-availability-checker:
     build:

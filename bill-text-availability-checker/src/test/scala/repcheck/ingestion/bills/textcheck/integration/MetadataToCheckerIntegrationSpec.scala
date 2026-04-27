@@ -128,6 +128,7 @@ class MetadataToCheckerIntegrationSpec
     number: String,
     textUrl: Option[String] = None,
     textVersionType: Option[TextVersionCode] = None,
+    expectedVersion: TextVersionCode = TextVersionCode.IH,
   ): Long = {
     val bill = BillDO(
       billId = 0L,
@@ -161,7 +162,14 @@ class MetadataToCheckerIntegrationSpec
       latestTextVersionId = None,
     )
     import doobie.implicits._
-    billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    val billId = billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    // Post-#77 the sweep filter requires `expected_text_version_code IS NOT NULL AND
+    // text_version_type IS DISTINCT FROM expected_text_version_code`. Default expected to IH (the
+    // House-introduced floor that bill-metadata-pipeline writes for every new bill in production)
+    // so bills with no stored text enter the sweep. Tests that pre-stage a textVersionType = IH
+    // need an `expectedVersion = RH` override to bring the bill into the sweep (stored IH ≠ RH).
+    val _ = billRepo.updateExpectedVersion(naturalKey, expectedVersion).transact(xa).unsafeRunSync()
+    billId
   }
 
   private def stubTextVersions(congress: Int, billType: String, number: String, json: String): Unit = {
@@ -247,17 +255,15 @@ class MetadataToCheckerIntegrationSpec
   }
 
   it should "skip bill when text version is unchanged" taggedAs DockerRequired in {
-    // Post-#76 the bill-text-availability-checker filter is `WHERE text_url IS NULL`, so we leave
-    // textUrl = None even though textVersionType is set to IH. This is artificial state (in
-    // production, text_url and text_version_type are populated together by upstream pipelines)
-    // but it exercises the per-bill "stored matches new" branch where the checker emits Skipped.
-    // The artificial-state setup will become unnecessary when the summary-based stage filter
-    // lands and the per-bill check no longer requires text_url IS NULL to enter the sweep.
+    // Post-#77 the sweep filter requires `text_version_type IS DISTINCT FROM
+    // expected_text_version_code`. With stored IH and expected RH, the bill enters the sweep; the
+    // per-bill "API returned the same version we already have" branch then classifies as Skipped.
     val _ = seedBill(
       naturalKey = "118-HR-2",
       number = "2",
       textUrl = None,
       textVersionType = Some(TextVersionCode.IH),
+      expectedVersion = TextVersionCode.RH,
     )
     stubTextVersions(118, "hr", "2", textVersionJson("IH", "https://congress.gov/text/ih/formatted"))
 
@@ -272,14 +278,15 @@ class MetadataToCheckerIntegrationSpec
   }
 
   it should "emit event with previousVersionCode when text version is upgraded" taggedAs DockerRequired in {
-    // Same artificial-state reasoning as the "skip bill when text version is unchanged" test
-    // above — textUrl = None to satisfy the post-#76 filter while textVersionType = IH preserves
-    // the prior-version signal that previousVersionCode propagation depends on.
+    // Stored = IH (the prior text version we have), expected = RH (CRS already announced RH should
+    // exist via bill-summary-pipeline). The sweep filter `IH ≠ RH` includes the bill; the API
+    // returns RH (now formatted text is up); the checker emits with previousVersionCode = IH.
     val _ = seedBill(
       naturalKey = "118-HR-3",
       number = "3",
       textUrl = None,
       textVersionType = Some(TextVersionCode.IH),
+      expectedVersion = TextVersionCode.RH,
     )
     stubTextVersions(118, "hr", "3", textVersionJson("RH", "https://congress.gov/text/rh/formatted"))
 

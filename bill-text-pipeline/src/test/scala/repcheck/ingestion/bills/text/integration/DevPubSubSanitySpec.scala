@@ -45,6 +45,7 @@ import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, GoogleP
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
+import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.BillDO
 
@@ -343,7 +344,11 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       updatedAt = None,
       latestTextVersionId = None,
     )
-    billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    val billId = billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    // Stage-aware sweep filter (PR #77) requires expected_text_version_code IS NOT NULL.
+    // Bills used by these E2E sanity tests are introduced; House → IH floor.
+    val _ = billRepo.updateExpectedVersion(naturalKey, TextVersionCode.IH).transact(xa).unsafeRunSync()
+    billId
   }
 
   private val billTextHtml: String =

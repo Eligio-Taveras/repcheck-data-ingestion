@@ -5,6 +5,7 @@ import cats.effect.unsafe.implicits.global
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.common.BillType
 import repcheck.shared.models.congress.dos.bill.BillDO
 
@@ -30,6 +31,10 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
     ): IO[Unit] = IO.unit
 
     override def upsertPlaceholder(naturalKey: String): IO[Unit] = IO.unit
+
+    override def findExpectedVersion(naturalKey: String): IO[Option[TextVersionCode]] = IO.pure(None)
+
+    override def updateExpectedVersion(naturalKey: String, code: TextVersionCode): IO[Unit] = IO.unit
   }
 
   "BillRepository" should "compile with a stub implementation" in {
@@ -91,6 +96,14 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
 
   it should "return Unit from upsertPlaceholder for a stub" in {
     stubRepo.upsertPlaceholder("119-HR-30").unsafeRunSync() shouldBe (())
+  }
+
+  it should "return None from findExpectedVersion for a stub" in {
+    stubRepo.findExpectedVersion("119-HR-30").unsafeRunSync() shouldBe None
+  }
+
+  it should "return Unit from updateExpectedVersion for a stub" in {
+    stubRepo.updateExpectedVersion("119-HR-30", TextVersionCode.IH).unsafeRunSync() shouldBe (())
   }
 
 }

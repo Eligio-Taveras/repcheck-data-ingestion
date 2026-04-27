@@ -8,6 +8,7 @@ import doobie.postgres.implicits._
 
 import repcheck.ingestion.bills.common.errors.InvalidBillNaturalKey
 import repcheck.pipeline.models.constants.Tables
+import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.common.BillType
 import repcheck.shared.models.congress.common.DoobieEnumInstances._
 import repcheck.shared.models.congress.dos.bill.BillDO
@@ -127,17 +128,21 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     }
 
   override def findBillsNeedingTextCheck(): ConnectionIO[List[BillDO]] =
-    // Only return bills that have NEVER had a text URL successfully captured. Once `text_url` is set
-    // (by `updateTextFields` after a successful `/text` API call), the bill is considered processed and
-    // skipped on subsequent sweeps. Without this filter, every sweep iterated all 13K+ bills hitting the
-    // Congress.gov API for each — a single sweep took ~2 hours and burned the per-key 5K/hr rate limit.
+    // Stage-aware filter (post-migration 032). Returns bills whose stage has moved past the version we
+    // already have stored — i.e. `expected_text_version_code` (set by bill-metadata-pipeline as the
+    // introduced floor and/or bill-summary-pipeline as it advances from CRS summary versionCodes) does
+    // not match `text_version_type` (set by bill-text-pipeline after a successful download).
     //
-    // Trade-off: bills that get re-versioned (IH → RH → ENR) WITHOUT also resetting `text_url` to NULL
-    // won't be re-checked. In practice ~5% of bills progress beyond their initial introduced version.
-    // Catching those re-versions properly requires a `last_check_at` column + an `update_date_including_text >
-    // last_check_at` predicate — out of scope for this PR; tracked as a follow-up.
+    //   * `expected_text_version_code IS NOT NULL` — fail-safe: bills with no stage signal yet stay out
+    //     of the sweep. This keeps the query bounded as bill-metadata-pipeline's first 10-year backfill
+    //     populates floors.
+    //   * `text_version_type IS DISTINCT FROM expected_text_version_code` — handles both "stored is
+    //     NULL" and "stored != expected" with one operator. Bill enters the sweep, /text gets called,
+    //     bill-text-pipeline downloads the matching version, `text_version_type` is bumped, and the
+    //     bill exits the sweep until the next stage transition.
     (fr"SELECT" ++ selectColumns ++ fr"""FROM $table
-      WHERE text_url IS NULL""")
+      WHERE expected_text_version_code IS NOT NULL
+        AND text_version_type IS DISTINCT FROM expected_text_version_code""")
       .query[BillDO]
       .to[List]
 
@@ -206,5 +211,23 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
       case Left(err) =>
         doobie.free.connection.raiseError[Unit](err)
     }
+
+  override def findExpectedVersion(naturalKey: String): ConnectionIO[Option[TextVersionCode]] = {
+    val (congress, billType, number) = parseNaturalKey(naturalKey)
+    sql"""SELECT expected_text_version_code
+          FROM $table
+          WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int"""
+      .query[Option[TextVersionCode]]
+      .option
+      .map(_.flatten)
+  }
+
+  override def updateExpectedVersion(naturalKey: String, code: TextVersionCode): ConnectionIO[Unit] = {
+    val (congress, billType, number) = parseNaturalKey(naturalKey)
+    sql"""UPDATE $table SET
+            expected_text_version_code = $code,
+            updated_at = NOW()
+          WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int""".update.run.void
+  }
 
 }
