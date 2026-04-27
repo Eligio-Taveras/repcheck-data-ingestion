@@ -247,7 +247,7 @@ class MetadataToVectorSearchLifecycleSpec
       xa = xa,
       logger = testLogger,
       extractText = (path, format) =>
-        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extract[IO](path, format),
+        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](path, format),
     )
   }
 

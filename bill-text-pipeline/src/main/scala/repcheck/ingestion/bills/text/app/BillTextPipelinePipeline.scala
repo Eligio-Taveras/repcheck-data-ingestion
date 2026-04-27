@@ -120,7 +120,7 @@ private[app] object BillTextPipelinePipeline {
       eventPublisher = eventPublisher,
       xa = xa,
       logger = logger,
-      extractText = (path, format) => BillTextExtractor.extract[F](path, format),
+      extractText = (path, format) => BillTextExtractor.extractStream[F](path, format),
     )
   }
 

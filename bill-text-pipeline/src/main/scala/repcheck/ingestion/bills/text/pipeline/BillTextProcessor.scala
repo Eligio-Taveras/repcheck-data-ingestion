@@ -7,6 +7,8 @@ import java.util.UUID
 import cats.effect.Async
 import cats.syntax.all._
 
+import fs2.Stream
+
 import doobie._
 
 import repcheck.ingestion.bills.common.persistence.{BillRepository, BillTextVersionRepository, TransactionRunner}
@@ -28,8 +30,9 @@ import repcheck.shared.models.congress.common.FormatType
 import repcheck.shared.models.congress.dos.bill.{BillTextVersionDO, RawBillTextDO}
 
 /**
- * Processes one `BillTextAvailableEvent` end-to-end. Phase 2 of the bill-text streaming refactor (see plan
- * `bill-text-10mb-streaming.md`) replaces the pre-existing buffered-`String` flow with a streaming-to-temp-file flow:
+ * Processes one `BillTextAvailableEvent` end-to-end. Phase 3 of the bill-text streaming refactor (see plan
+ * `bill-text-10mb-streaming.md`) makes the entire pipeline streaming — extraction, chunking, embedding, and persistence
+ * are now one fs2 `Stream` so heap stays bounded by the per-batch working set regardless of body size.
  *
  *   1. **Insert version row first**, with `fetched_at = NULL`. The skip-check ([[isAlreadyProcessed]]) treats
  *      `fetched_at IS NOT NULL` as the completion marker, so a row with `fetched_at = NULL` indicates "in flight or
@@ -37,28 +40,27 @@ import repcheck.shared.models.congress.dos.bill.{BillTextVersionDO, RawBillTextD
  *   1. **Clear orphan chunks** for that `version_id` — DELETE any rows left by a previous failed run before
  *      re-streaming. This makes the per-chunk INSERTs idempotent against `(version_id, chunk_index)` unique constraint
  *      conflicts.
- *   1. **Stream-download the body to a temp file** via [[BillTextDownloader.downloadToTempFile]] — bytes flow through
- *      `fs2.io.file.Files.writeAll` rather than into a heap-buffered `String`. The Resource auto-deletes the temp file
- *      on close.
- *   1. **Extract plain text from the temp file** via the injected `extractText` function (production wiring uses
- *      [[repcheck.ingestion.bills.text.extraction.BillTextExtractor.extract]] which dispatches by format to Jsoup,
- *      scala-xml, PDFBox, or plain UTF-8 read). The temp-file Resource is **closed immediately after extraction
- *      returns** — chunking, embedding, and INSERTing run against the in-heap `String` only, so disk pressure windows
- *      match extraction time (seconds), not full processing time (minutes).
- *   1. **Chunk + embed + INSERT** in a per-batch loop: chunks are grouped into `embedBatchSize` batches (preserves the
- *      Ollama batching throughput win from PR #71), each batch's embeddings are computed, and each chunk is INSERTed
- *      individually inside its own auto-committing transaction. Heap stays bounded by one batch's worth of chunks +
- *      embeddings (~800 KB at default config) instead of the old all-chunks-then-all-embeddings buffer (50+ MB on a
- *      large STATUTE PDF).
+ *   1. **Open the streaming pipeline**: download → temp file (Phase 2) → streaming extractor (Phase 3, per-format) →
+ *      streaming chunker → batched embed → per-chunk INSERT. The temp file Resource stays open for the duration of the
+ *      stream because extraction is interleaved with embedding/INSERT under fs2 backpressure — the parser only pulls
+ *      more bytes when the consumer is ready.
  *   1. **Mark the version complete** via UPDATE `bill_text_versions SET fetched_at = NOW()`. After this, the next
  *      pipeline tick's skip-check will short-circuit re-processing.
  *   1. **Publish the ingested event** for downstream consumers (LLM analysis pipeline).
  *
- * Crash semantics: any failure between the version-row INSERT and the `markFetched` UPDATE leaves the row with
- * `fetched_at = NULL` and possibly a partial chunk list. The next pipeline tick treats it as "not yet processed",
- * clears partial chunks, and re-streams from scratch. This trades single-transaction atomicity for unbounded heap usage
- * — acceptable because the embedding model already takes 5+ seconds per batch, so a long-held tx would be holding
- * connection locks for 17+ hours on a 12,500-chunk bill.
+ * ==Heap profile post-Phase-3==
+ *
+ * Peak heap during processing of any body size ≈ `(extractor working state, ~64 KiB) + (chunker buffer, ~12 KiB) + (one
+ * batch of 50 chunks, ~600 KiB) + (one batch of 50 embeddings, ~200 KiB) ≈ 1 MiB`. A 10 MiB or 1 GiB body produce the
+ * same heap footprint. The runtime of embedding (5+ s per batch on the GPU) backpressures all upstream phases via fs2's
+ * pull-based model — extraction reads from the temp file at exactly the speed embedding can consume.
+ *
+ * ==Crash semantics==
+ *
+ * Any failure between the version-row INSERT and the `markFetched` UPDATE leaves the row with `fetched_at = NULL` and
+ * possibly a partial chunk list. The next pipeline tick treats it as "not yet processed", clears partial chunks, and
+ * re-streams from scratch. This trades single-transaction atomicity for unbounded heap usage — acceptable because
+ * embedding is by far the slowest phase and a long-held tx would hold connection locks for hours on a large bill.
  */
 class BillTextProcessor[F[_]: Async] private[text] (
   downloader: BillTextDownloader[F],
@@ -70,7 +72,7 @@ class BillTextProcessor[F[_]: Async] private[text] (
   eventPublisher: IngestionEventPublisher[F],
   xa: Transactor[F],
   logger: PipelineLogger[F],
-  extractText: (Path, String) => F[String],
+  extractText: (Path, String) => Stream[F, String],
 ) {
 
   private val StepName = "bill-text-processing"
@@ -132,18 +134,17 @@ class BillTextProcessor[F[_]: Async] private[text] (
     for {
       versionId <- persistPendingVersion(pendingVersion)
       _         <- clearOrphanChunks(versionId)
-      _ <- streamDownloadAndIngestChunks(
+      chunkCount <- streamDownloadExtractChunkEmbedAndPersist(
         event = event,
         dbBillId = dbBillId,
         versionId = versionId,
         correlationId = correlationId,
-        logCtx = logCtx,
       )
       _ <- markVersionFetched(versionId)
       _ <- publishEvent(event, correlationId)
       _ <- logger.info(
         logCtx,
-        s"Successfully processed bill text for ${event.naturalKey} — version $versionId",
+        s"Successfully processed bill text for ${event.naturalKey} — version $versionId, $chunkCount chunk(s)",
       )
     } yield ProcessingResult.Succeeded(event.naturalKey, eventEmitted = true)
   }
@@ -165,113 +166,77 @@ class BillTextProcessor[F[_]: Async] private[text] (
 
   /**
    * Best-effort DELETE of any leftover chunks attached to `versionId`. Idempotent: a prior successful run on this
-   * version already had its chunks deleted-and-re-inserted under `replaceAll` semantics, and a never-attempted version
-   * has no chunks at all. Any orphans here come from a previous run that crashed between the version-row INSERT and
-   * `markFetched` — clearing them prevents the per-chunk INSERTs from hitting the `(version_id, chunk_index)` unique
-   * constraint.
+   * version already had its chunks deleted-and-re-inserted, and a never-attempted version has no chunks at all. Any
+   * orphans here come from a previous run that crashed between the version-row INSERT and `markFetched` — clearing them
+   * prevents the per-chunk INSERTs from hitting the `(version_id, chunk_index)` unique constraint.
    */
   private[pipeline] def clearOrphanChunks(versionId: Long): F[Unit] =
     TransactionRunner.run(xa)(rawBillTextRepository.deleteByVersionId(versionId))
 
   /**
-   * Streaming-to-disk download → on-disk extraction → chunk → embed-batches → per-chunk INSERT.
+   * The end-to-end streaming pipeline. One fs2 `Stream` runs from temp-file extraction through chunking, batched
+   * embedding, and per-chunk INSERT — backpressure means the slowest stage (embedding) gates the rate of all upstream
+   * stages, keeping heap bounded.
    *
-   * Temp-file lifetime is **scoped tightly to the extraction phase only**. The `downloadToTempFile` Resource is closed
-   * (and the temp file deleted) the moment `extractText` returns the parsed `String` — chunking, embedding, and the
-   * per-chunk INSERT loop run afterward against the in-heap `rawText`, never touching disk. This matters because
-   * embedding is by far the slowest phase (5+ s per batch × tens-to-hundreds of batches per large bill), so scoping the
-   * temp file to extraction shrinks its on-disk window from minutes-per-bill down to seconds-per-bill. Disk pressure
-   * across concurrent pipeline workers stays bounded by `parallelism × peak-extraction-time`, not `parallelism ×
-   * full-processing-time`.
+   * Pipeline stages:
    *
-   * Failure-mode invariants are preserved: the Resource still auto-deletes on extraction failure, and a downstream
-   * embedding/INSERT failure leaves no orphan file (the Resource has already released).
+   *   1. `downloader.downloadToTempFile` — `Resource[F, Path]` writing the body to disk in fs2 chunks.
+   *   1. `extractText(tempPath, format)` — `Stream[F, String]` of semantic fragments per the format's natural unit.
+   *   1. `BillTextChunker.chunkPipe(maxChunkChars)` — accumulate fragments and emit fixed-size chunks.
+   *   1. `chunkN(embedBatchSize)` — group chunks into batches of 50 (default) for the embedding model's batch endpoint.
+   *   1. `evalMap` calls `embeddingService.generateEmbeddings` — `F[List[Option[Array[Float]]]]` per batch.
+   *   1. `flatMap(Stream.emits)` — flatten the batch back to per-chunk emissions.
+   *   1. `zipWithIndex` — assign global `chunk_index` for the DB row.
+   *   1. `evalMap` calls `rawBillTextRepository.insertOne` inside its own transaction — per-chunk commit.
+   *
+   * Returns the total chunk count for logging.
    */
-  private[pipeline] def streamDownloadAndIngestChunks(
+  private[pipeline] def streamDownloadExtractChunkEmbedAndPersist(
     event: BillTextAvailableEvent,
     dbBillId: Long,
     versionId: Long,
     correlationId: UUID,
-    logCtx: LogContext,
-  ): F[Unit] =
-    for {
-      rawText <- downloader
-        .downloadToTempFile(event.textUrl, event.textFormat, correlationId)
-        .use(tempPath => extractText(tempPath, event.textFormat))
-      chunks <- chunkText(rawText)
-      _ <- logger.info(
-        logCtx,
-        s"Chunked ${rawText.length}-char body into ${chunks.size} chunk(s) (max ${embeddingConfig.maxChunkChars} chars each)",
-      )
-      _ <- streamChunksToDb(dbBillId, versionId, chunks)
-    } yield ()
-
-  /**
-   * Chunk the extracted body via [[BillTextChunker]] inside `Async[F].delay` so any thrown `InvalidChunkSize`
-   * (misconfigured `OLLAMA_MAX_CHUNK_CHARS`) surfaces through the F effect's error channel instead of propagating as a
-   * synchronous throw.
-   */
-  private[pipeline] def chunkText(content: String): F[List[String]] =
-    if (embeddingConfig.maxChunkChars <= 0) Async[F].raiseError(InvalidChunkSize(embeddingConfig.maxChunkChars))
-    else
-      Async[F].delay {
-        // Strip null bytes — Postgres TEXT can't hold them and Congress.gov occasionally serves
-        // bills with stray   in the rendered HTML (carryover from the previous monolithic
-        // path's defensive scrub).
-        val sanitized = content.replace(" ", "")
-        BillTextChunker.chunk(sanitized, embeddingConfig.maxChunkChars)
-      }
-
-  /**
-   * Per-batch embed → per-chunk INSERT loop. Chunks are grouped into batches of `embeddingConfig.embedBatchSize` (50 by
-   * default) so the embedding service can saturate the GPU per call (PR #71 follow-up: ~24% throughput win on the 0.6B
-   * model from batching). Within each batch, after embeddings come back, each chunk is INSERTed in its own
-   * auto-committing transaction so heap stays bounded.
-   *
-   * `globalChunkIndex` tracks the chunk_index column across batches — the chunker returns chunks in document order and
-   * the index must reflect that order so `ORDER BY chunk_index` reconstructs the original. Within a batch the same
-   * order is preserved by the embedding service contract (`generateEmbeddings([t1, t2, t3])` returns `[Some(v1),
-   * Some(v2), Some(v3)]` aligned by index).
-   *
-   * `flatTraverse` (sequential) is used rather than `parTraverse` because (a) the GPU is already saturated by single
-   * batch calls so concurrent calls just queue, and (b) we want strict order on the INSERT side so that a partial
-   * failure halts cleanly with `chunks[0..N]` persisted in DB and the next attempt's DELETE+restream proceeds
-   * correctly.
-   */
-  private[pipeline] def streamChunksToDb(
-    dbBillId: Long,
-    versionId: Long,
-    chunks: List[String],
-  ): F[Unit] =
-    chunks.grouped(embeddingConfig.embedBatchSize).toList.zipWithIndex.traverse_ {
-      case (batch, batchIdx) =>
-        val baseIndex = batchIdx * embeddingConfig.embedBatchSize
-        for {
-          embeddings <- embeddingService.generateEmbeddings(batch)
-          _          <- insertBatchOneAtATime(dbBillId, versionId, baseIndex, batch, embeddings)
-        } yield ()
+  ): F[Long] =
+    if (embeddingConfig.maxChunkChars <= 0) {
+      Async[F].raiseError(InvalidChunkSize(embeddingConfig.maxChunkChars))
+    } else {
+      Stream
+        .resource(downloader.downloadToTempFile(event.textUrl, event.textFormat, correlationId))
+        .flatMap(tempPath => extractText(tempPath, event.textFormat))
+        .map(stripNullBytes)
+        .filter(_.nonEmpty)
+        .through(BillTextChunker.chunkPipe(embeddingConfig.maxChunkChars))
+        .chunkN(embeddingConfig.embedBatchSize)
+        .evalMap { batch =>
+          val texts = batch.toList
+          embeddingService.generateEmbeddings(texts).map(emb => texts.zip(emb))
+        }
+        .flatMap(pairs => Stream.emits(pairs))
+        .zipWithIndex
+        .evalMap {
+          case ((text, embedding), idx) =>
+            val row = RawBillTextDO(
+              id = 0L,
+              billId = dbBillId,
+              versionId = Some(versionId),
+              chunkIndex = idx.toInt,
+              content = text,
+              embedding = embedding,
+              createdAt = None,
+            )
+            TransactionRunner.run(xa)(rawBillTextRepository.insertOne(row))
+        }
+        .compile
+        .count
     }
 
-  private[pipeline] def insertBatchOneAtATime(
-    dbBillId: Long,
-    versionId: Long,
-    baseIndex: Int,
-    batch: List[String],
-    embeddings: List[Option[Array[Float]]],
-  ): F[Unit] =
-    batch.zip(embeddings).zipWithIndex.traverse_ {
-      case ((text, embedding), localIdx) =>
-        val row = RawBillTextDO(
-          id = 0L,
-          billId = dbBillId,
-          versionId = Some(versionId),
-          chunkIndex = baseIndex + localIdx,
-          content = text,
-          embedding = embedding,
-          createdAt = None,
-        )
-        TransactionRunner.run(xa)(rawBillTextRepository.insertOne(row))
-    }
+  /**
+   * Postgres TEXT can't hold null bytes; Congress.gov occasionally serves bills with stray ` ` in the rendered HTML.
+   * The buffered code path scrubbed these once on the whole document; the streaming path scrubs per fragment (cheaper,
+   * local).
+   */
+  private[pipeline] def stripNullBytes(text: String): String =
+    text.replace(" ", "")
 
   /**
    * Mark the version row as fully-fetched by setting `fetched_at = NOW()`. After this UPDATE commits, the skip-check on

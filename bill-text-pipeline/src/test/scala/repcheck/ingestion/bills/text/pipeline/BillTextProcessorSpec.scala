@@ -91,12 +91,13 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         eventPublisher = eventPublisher,
         xa = testXa,
         logger = logger,
-        extractText = (_, _) => contentResponseRef.get(),
+        extractText = (_, _) => fs2.Stream.eval(contentResponseRef.get()).flatMap(fs2.Stream.emit),
       )
 
     /**
-     * Stub the success path: `downloadToTempFile` yields a dummy path, `extractText` returns `content`. Caller is still
-     * responsible for stubbing `billRepository.findByBillId`, embedding service responses, etc.
+     * Stub the success path: `downloadToTempFile` yields a dummy path, `extractText` emits `content` as a single Stream
+     * element. Caller is still responsible for stubbing `billRepository.findByBillId`, embedding service responses,
+     * etc.
      */
     def stubSuccessfulDownload(content: String): Unit = {
       contentResponseRef.set(IO.pure(content))
@@ -114,8 +115,9 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     }
 
     /**
-     * Stub a failure during the extraction phase (download succeeds but `extractText` raises). Used for tests that
-     * exercise extractor-level errors like `PdfExtractionFailed`.
+     * Stub a failure during the extraction phase (download succeeds but the streaming extractor raises). The injected
+     * `extractText` stub flatMaps the contentResponseRef IO; setting it to `IO.raiseError` makes the resulting Stream
+     * fail when pulled.
      */
     def stubExtractFailure(error: Throwable): Unit = {
       contentResponseRef.set(IO.raiseError[String](error))
