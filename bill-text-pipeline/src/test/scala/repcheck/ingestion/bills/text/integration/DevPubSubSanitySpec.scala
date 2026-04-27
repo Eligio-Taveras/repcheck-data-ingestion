@@ -278,7 +278,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
 
   private def buildProcessorWithOllama(): BillTextProcessor[IO] = {
     val r              = gcpResources.getOrElse(fail("GCP resources not available"))
-    val pipelineConfig = BillTextPipelineConfig(1, 10, 10485760L, 100.millis)
+    val pipelineConfig = BillTextPipelineConfig(1, 10, 100.millis)
     val downloader     = new BillTextDownloader[IO](httpClient, pipelineConfig, testLogger)
     val embeddingConfig = EmbeddingConfig(
       baseUrl = s"http://127.0.0.1:${wireMock.port().toString}",
@@ -309,6 +309,8 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       eventPublisher = eventPublisher,
       xa = xa,
       logger = testLogger,
+      extractText = (path, format) =>
+        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extract[IO](path, format),
     )
   }
 

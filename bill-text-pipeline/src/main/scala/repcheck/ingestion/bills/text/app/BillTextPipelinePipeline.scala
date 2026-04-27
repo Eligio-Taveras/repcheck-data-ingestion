@@ -13,6 +13,7 @@ import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, Doobie
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
+import repcheck.ingestion.bills.text.extraction.BillTextExtractor
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
@@ -119,6 +120,7 @@ private[app] object BillTextPipelinePipeline {
       eventPublisher = eventPublisher,
       xa = xa,
       logger = logger,
+      extractText = (path, format) => BillTextExtractor.extract[F](path, format),
     )
   }
 

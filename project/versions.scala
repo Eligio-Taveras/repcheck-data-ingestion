@@ -12,6 +12,7 @@ object Versions {
   val scalaXmlVersion   = "2.4.0"
   val difflicious       = "0.4.4"
   val jsoupVersion      = "1.18.3"
+  val pdfboxVersion     = "3.0.5"
   val scalaCheckVersion = "1.18.1"
   val scalaTestPlusScalaCheckVersion = "3.2.18.0"
 }

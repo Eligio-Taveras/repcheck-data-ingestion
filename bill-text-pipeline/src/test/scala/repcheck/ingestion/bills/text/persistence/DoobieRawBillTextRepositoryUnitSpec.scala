@@ -62,4 +62,33 @@ class DoobieRawBillTextRepositoryUnitSpec extends AnyFlatSpec with Matchers {
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
+  "deleteByVersionId" should "produce a ConnectionIO for the DELETE statement" in {
+    val cio = repo.deleteByVersionId(7L)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "produce a distinct ConnectionIO instance for each call (no shared mutable state)" in {
+    val first  = repo.deleteByVersionId(7L)
+    val second = repo.deleteByVersionId(8L)
+    // Each invocation must materialize its own description; if the impl accidentally cached
+    // a singleton instance the two would alias and the WHERE clause would point at the wrong id.
+    (first eq second) shouldBe false
+  }
+
+  "insertOne" should "produce a ConnectionIO for a chunk without an embedding" in {
+    val cio = repo.insertOne(sampleChunk(0))
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "produce a ConnectionIO for a chunk carrying a full 1024-dim embedding" in {
+    val cio = repo.insertOne(sampleChunk(0, withEmbedding = true))
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "accept a chunk whose versionId is None (no parent linkage yet)" in {
+    val orphan = sampleChunk(0).copy(versionId = None)
+    val cio    = repo.insertOne(orphan)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
 }

@@ -142,7 +142,7 @@ class FullChainIntegrationSpec
 
   private def buildProcessor(): BillTextProcessor[IO] = {
     val downloader =
-      new BillTextDownloader[IO](httpClient, BillTextPipelineConfig(1, 10, 10485760L, 100.millis), testLogger)
+      new BillTextDownloader[IO](httpClient, BillTextPipelineConfig(1, 10, 100.millis), testLogger)
     val pubsubPublisher = new GooglePubSubEventPublisher[IO](publisher)
     val pipelineEventPublisher =
       new DefaultIngestionEventPublisher[IO](
@@ -163,6 +163,8 @@ class FullChainIntegrationSpec
       eventPublisher = pipelineEventPublisher,
       xa = xa,
       logger = testLogger,
+      extractText = (path, format) =>
+        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extract[IO](path, format),
     )
   }
 

@@ -73,7 +73,6 @@ class PipelineIntegrationSpec
   private val pipelineConfig = BillTextPipelineConfig(
     parallelism = 1,
     downloadTimeoutSeconds = 10,
-    maxContentBytes = 10485760L,
     pageDelay = 100.millis,
   )
 
@@ -138,6 +137,8 @@ class PipelineIntegrationSpec
       eventPublisher = eventPublisher,
       xa = xa,
       logger = testLogger,
+      extractText = (path, format) =>
+        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extract[IO](path, format),
     )
   }
 

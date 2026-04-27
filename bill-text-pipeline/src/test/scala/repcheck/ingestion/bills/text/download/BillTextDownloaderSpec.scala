@@ -1,5 +1,7 @@
 package repcheck.ingestion.bills.text.download
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.util.UUID
 
 import scala.concurrent.duration._
@@ -16,9 +18,18 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
-import repcheck.ingestion.bills.text.errors.{InvalidTextUrl, TextContentTooLarge, TextDownloadFailed}
+import repcheck.ingestion.bills.text.errors.{InvalidTextUrl, TextDownloadFailed}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
+/**
+ * Specs for the streaming-to-temp-file [[BillTextDownloader]]. Phase 2 of the bill-text-10mb plan: the downloader's
+ * responsibility narrowed to "stream HTTP body to a `Resource[F, Path]`"; HTML/XML/PDF extraction moved to
+ * [[repcheck.ingestion.bills.text.extraction.BillTextExtractor]] (covered separately in `BillTextExtractorSpec`).
+ *
+ * Test pattern is unchanged from the pre-Phase-2 spec: a WireMock server bound to `127.0.0.1` with a dynamic port (per
+ * memory `feedback_wiremock_localhost`) serves canned responses; tests assert the downloader's behaviour against the
+ * streamed bytes and the temp-file lifecycle.
+ */
 class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
   private val wireMock = new WireMockServer(
@@ -31,7 +42,6 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
   private val testConfig = BillTextPipelineConfig(
     parallelism = 1,
     downloadTimeoutSeconds = 5,
-    maxContentBytes = 10485760L,
     pageDelay = 100.millis,
   )
 
@@ -41,20 +51,6 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     def error(context: LogContext, message: String, cause: Option[Throwable]): IO[Unit] = IO.unit
     def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
   }
-
-  private val correlationId = UUID.randomUUID()
-
-  private lazy val httpClient = EmberClientBuilder
-    .default[IO]
-    .withTimeout(5.seconds)
-    .build
-    .allocated
-    .unsafeRunSync()
-    ._1
-
-  private lazy val downloader = new BillTextDownloader[IO](httpClient, testConfig, noopLogger)
-
-  private def baseUrl: String = s"http://127.0.0.1:${wireMock.port()}"
 
   override def beforeAll(): Unit = {
     super.beforeAll()
@@ -67,281 +63,115 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
   }
 
   override def beforeEach(): Unit = {
-    super.beforeEach()
     wireMock.resetAll()
+    super.beforeEach()
   }
 
-  // --- HTML parsing (Congress.gov "Formatted Text" format) ---
+  private val correlationId = UUID.randomUUID()
 
-  "download" should "extract bill text from HTML pre tag" in {
-    val htmlContent =
-      """<html><body><pre>
-        |[Congressional Bills 118th Congress]
-        |
-        |SECTION 1. SHORT TITLE.
-        |
-        |    This Act may be cited as the ``Test Act''.
-        |</pre></body></html>""".stripMargin
+  private def downloaderResource(config: BillTextPipelineConfig = testConfig) =
+    EmberClientBuilder.default[IO].build.map(client => new BillTextDownloader[IO](client, config, noopLogger))
 
+  "downloadToTempFile" should "stream a successful response into a temp file and yield its path" in {
+    val expectedBody = "Section 1. Title — first sentence."
     wireMock.stubFor(
-      get(urlPathEqualTo("/text"))
-        .willReturn(aResponse().withStatus(200).withBody(htmlContent))
+      get(urlPathEqualTo("/bill"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withBody(expectedBody)
+        )
     )
 
-    val result = downloader.download(s"$baseUrl/text", "Formatted Text", correlationId).unsafeRunSync()
-    val _      = result should include("SECTION 1. SHORT TITLE.")
-    val _      = result should include("Test Act")
-    val _      = result should not include "<html>"
-    result should not include "<pre>"
+    val program = downloaderResource().use { downloader =>
+      downloader
+        .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
+        .use(path => IO(Files.readString(path, StandardCharsets.UTF_8)))
+    }
+
+    program.unsafeRunSync() shouldBe expectedBody
   }
 
-  it should "decode HTML entities in bill text" in {
-    val htmlContent = "<html><body><pre>5 &amp; 10 &lt; 20 &gt; 3 &#167;101</pre></body></html>"
-    wireMock.stubFor(
-      get(urlPathEqualTo("/text"))
-        .willReturn(aResponse().withStatus(200).withBody(htmlContent))
-    )
+  it should "delete the temp file when the Resource is released" in {
+    wireMock.stubFor(get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(200).withBody("body")))
 
-    val result = downloader.download(s"$baseUrl/text", "Formatted Text", correlationId).unsafeRunSync()
-    val _      = result should include("5 & 10")
-    val _      = result should include("< 20")
-    val _      = result should include("> 3")
-    result should include("\u00A7101")
+    val program = downloaderResource().use { downloader =>
+      downloader
+        .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
+        .use(path => IO.pure(path))
+        .map(path => Files.exists(path))
+    }
+
+    program.unsafeRunSync() shouldBe false
   }
-
-  it should "fall back to body text when no pre tag exists in HTML" in {
-    val htmlContent = "<html><body><div>Some bill content here</div></body></html>"
-    wireMock.stubFor(
-      get(urlPathEqualTo("/text"))
-        .willReturn(aResponse().withStatus(200).withBody(htmlContent))
-    )
-
-    val result = downloader.download(s"$baseUrl/text", "Formatted Text", correlationId).unsafeRunSync()
-    result should include("Some bill content here")
-  }
-
-  // --- XML parsing (Congress.gov "Formatted XML" / USLM format) ---
-
-  it should "extract text from legis-body in XML bill" in {
-    val xmlContent =
-      """<?xml version="1.0"?>
-        |<bill>
-        |  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-        |    <dublinCore>
-        |      <dc:title>118 HR 1 IH: Test Act</dc:title>
-        |      <dc:publisher>U.S. House of Representatives</dc:publisher>
-        |    </dublinCore>
-        |  </metadata>
-        |  <form>
-        |    <congress>118th CONGRESS</congress>
-        |    <session>1st Session</session>
-        |    <legis-num>H. R. 1</legis-num>
-        |  </form>
-        |  <legis-body>
-        |    <section>
-        |      <enum>1.</enum>
-        |      <header>SHORT TITLE</header>
-        |      <text>This Act may be cited as the Test Act.</text>
-        |    </section>
-        |    <section>
-        |      <enum>2.</enum>
-        |      <header>FINDINGS</header>
-        |      <text>Congress finds the following important provisions.</text>
-        |    </section>
-        |  </legis-body>
-        |</bill>""".stripMargin
-
-    wireMock.stubFor(
-      get(urlPathEqualTo("/text"))
-        .willReturn(aResponse().withStatus(200).withBody(xmlContent))
-    )
-
-    val result = downloader.download(s"$baseUrl/text", "Formatted XML", correlationId).unsafeRunSync()
-    val _      = result should include("SHORT TITLE")
-    val _      = result should include("This Act may be cited as the Test Act.")
-    val _      = result should include("FINDINGS")
-    val _      = result should include("Congress finds the following important provisions.")
-    // Should NOT include metadata or form content
-    val _ = result should not include "U.S. House of Representatives"
-    result should not include "118th CONGRESS"
-  }
-
-  it should "fall back to full text when no legis-body exists in XML" in {
-    val xmlContent = "<root><section>Fallback content here</section></root>"
-    wireMock.stubFor(
-      get(urlPathEqualTo("/text"))
-        .willReturn(aResponse().withStatus(200).withBody(xmlContent))
-    )
-
-    val result = downloader.download(s"$baseUrl/text", "Formatted XML", correlationId).unsafeRunSync()
-    result should include("Fallback content here")
-  }
-
-  // --- Error handling ---
 
   it should "raise TextDownloadFailed on HTTP 404" in {
-    wireMock.stubFor(
-      get(urlPathEqualTo("/text"))
-        .willReturn(aResponse().withStatus(404).withBody("Not Found"))
-    )
+    wireMock.stubFor(get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(404)))
 
-    val ex = intercept[TextDownloadFailed] {
-      downloader.download(s"$baseUrl/text", "Formatted Text", correlationId).unsafeRunSync()
+    val attempt = downloaderResource()
+      .use { downloader =>
+        downloader
+          .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
+          .use(_ => IO.unit)
+          .attempt
+      }
+      .unsafeRunSync()
+
+    attempt match {
+      case Left(_: TextDownloadFailed) => succeed
+      case other                       => fail(s"Expected TextDownloadFailed, got $other")
     }
-    ex.getMessage should include("404")
   }
 
-  it should "raise TextDownloadFailed on HTTP 500" in {
-    wireMock.stubFor(
-      get(urlPathEqualTo("/text"))
-        .willReturn(aResponse().withStatus(500).withBody("Internal Server Error"))
-    )
+  it should "raise TextDownloadFailed on non-success status with body included" in {
+    wireMock.stubFor(get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(500).withBody("server crashed")))
 
-    val ex = intercept[TextDownloadFailed] {
-      downloader.download(s"$baseUrl/text", "Formatted Text", correlationId).unsafeRunSync()
+    val attempt = downloaderResource()
+      .use { downloader =>
+        downloader
+          .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
+          .use(_ => IO.unit)
+          .attempt
+      }
+      .unsafeRunSync()
+
+    attempt match {
+      case Left(err: TextDownloadFailed) =>
+        val _ = err.getMessage should include("500")
+        err.getMessage should include("server crashed")
+      case other => fail(s"Expected TextDownloadFailed, got $other")
     }
-    ex.getMessage should include("500")
   }
 
-  it should "raise TextContentTooLarge when content exceeds max size" in {
-    val smallConfig = BillTextPipelineConfig(
-      parallelism = 1,
-      downloadTimeoutSeconds = 5,
-      maxContentBytes = 10L,
-      pageDelay = 100.millis,
-    )
-    val smallDownloader = new BillTextDownloader[IO](httpClient, smallConfig, noopLogger)
-
-    wireMock.stubFor(
-      get(urlPathEqualTo("/text"))
-        .willReturn(aResponse().withStatus(200).withBody("This content is longer than ten bytes"))
-    )
-
-    val ex = intercept[TextContentTooLarge] {
-      smallDownloader.download(s"$baseUrl/text", "Formatted Text", correlationId).unsafeRunSync()
+  "parseUrl" should "raise InvalidTextUrl for malformed URLs" in {
+    val program = downloaderResource().use(downloader => downloader.parseUrl("not a url at all").attempt)
+    val attempt = program.unsafeRunSync()
+    attempt match {
+      case Left(_: InvalidTextUrl) => succeed
+      case other                   => fail(s"Expected InvalidTextUrl, got $other")
     }
-    val _ = ex.getMessage should include("exceeding maximum")
-    ex.maxBytes shouldBe 10L
   }
 
-  it should "raise InvalidTextUrl for malformed URL" in {
-    val ex = intercept[InvalidTextUrl] {
-      downloader.download("not a valid url %%%", "Formatted Text", correlationId).unsafeRunSync()
+  it should "parse a valid URL successfully" in {
+    val program = downloaderResource().use(downloader => downloader.parseUrl("https://example.com/text"))
+    program.unsafeRunSync().toString shouldBe "https://example.com/text"
+  }
+
+  it should "stream a body of arbitrary size to disk without imposing a configured cap" in {
+    // Sanity check that the no-cap design works for bodies larger than the previous (now-removed)
+    // maxContentBytes default. 1 MiB body exceeds the prior 10 MiB / 200 MiB cap noise; it would
+    // have tripped any in-pipe size check. With no cap, all bytes flow through to the temp file.
+    val largeBody = "X".repeat(1024 * 1024)
+    wireMock.stubFor(
+      get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(200).withBody(largeBody))
+    )
+
+    val program = downloaderResource().use { downloader =>
+      downloader
+        .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
+        .use(path => IO.delay(Files.size(path)))
     }
-    ex.getMessage should include("not a valid url")
-  }
-
-  // --- Pass-through formats ---
-
-  it should "pass through PDF format (whitespace normalization is a no-op for whitespace-free input)" in {
-    val rawContent = "raw pdf bytes"
-    wireMock.stubFor(
-      get(urlPathEqualTo("/text"))
-        .willReturn(aResponse().withStatus(200).withBody(rawContent))
-    )
-
-    val result = downloader.download(s"$baseUrl/text", "PDF", correlationId).unsafeRunSync()
-    result shouldBe rawContent
-  }
-
-  it should "pass through unknown format (whitespace normalization is a no-op for whitespace-free input)" in {
-    val rawContent = "Just some raw text content."
-    wireMock.stubFor(
-      get(urlPathEqualTo("/text"))
-        .willReturn(aResponse().withStatus(200).withBody(rawContent))
-    )
-
-    val result = downloader.download(s"$baseUrl/text", "Unknown Format", correlationId).unsafeRunSync()
-    result shouldBe rawContent
-  }
-
-  // --- Unit tests for extraction methods ---
-
-  "extractHtmlText" should "extract text from pre tag" in {
-    val html   = "<html><body><pre>Section 1. The bill text.</pre></body></html>"
-    val result = downloader.extractHtmlText(html)
-    val _      = result should include("Section 1.")
-    result should not include "<pre>"
-  }
-
-  it should "fall back to body text when no pre tag" in {
-    val html   = "<html><body><div>Content here</div></body></html>"
-    val result = downloader.extractHtmlText(html)
-    result should include("Content here")
-  }
-
-  "extractXmlText" should "extract legis-body content" in {
-    val xml =
-      """<bill>
-        |  <metadata><dc:title xmlns:dc="x">Title</dc:title></metadata>
-        |  <legis-body><section><text>Bill content.</text></section></legis-body>
-        |</bill>""".stripMargin
-    val result = downloader.extractXmlText(xml)
-    val _      = result should include("Bill content.")
-    result should not include "Title"
-  }
-
-  it should "fall back to full text when no legis-body" in {
-    val xml    = "<root><data>Fallback</data></root>"
-    val result = downloader.extractXmlText(xml)
-    result should include("Fallback")
-  }
-
-  "normalizeWhitespace" should "collapse runs of spaces to a single space" in {
-    val result = downloader.normalizeWhitespace("Section    1.    Title")
-    result shouldBe "Section 1. Title"
-  }
-
-  it should "collapse runs of newlines to a single space" in {
-    val result = downloader.normalizeWhitespace("Section 1.\n\n\n\nTitle")
-    result shouldBe "Section 1. Title"
-  }
-
-  it should "collapse runs of mixed tabs/newlines/spaces to a single space" in {
-    val result = downloader.normalizeWhitespace("Section\t\n  1.\r\n\t Title")
-    result shouldBe "Section 1. Title"
-  }
-
-  it should "trim leading and trailing whitespace" in {
-    val result = downloader.normalizeWhitespace("  \n\t  Section 1. Title \n  ")
-    result shouldBe "Section 1. Title"
-  }
-
-  it should "leave single spaces between words untouched" in {
-    val text   = "Section 1. The bill text."
-    val result = downloader.normalizeWhitespace(text)
-    result shouldBe text
-  }
-
-  it should "return an empty string for whitespace-only input" in {
-    val result = downloader.normalizeWhitespace("   \n\t  \r\n   ")
-    result shouldBe ""
-  }
-
-  it should "return an empty string for empty input" in {
-    val result = downloader.normalizeWhitespace("")
-    result shouldBe ""
-  }
-
-  "extractText" should "apply normalizeWhitespace to Formatted Text output" in {
-    // Pre-tag with embedded whitespace runs (typical PLAW formatting)
-    val html =
-      """<html><body><pre>
-        |[[Page 717]]
-        |
-        |
-        |       SECTION 1.    TITLE.
-        |   This is the bill text.</pre></body></html>""".stripMargin
-    val result = downloader.extractText(html, "Formatted Text").unsafeRunSync()
-    val _      = result should not include "  "
-    val _      = result should not include "\n"
-    result should include("SECTION 1. TITLE.")
-  }
-
-  it should "apply normalizeWhitespace to unknown formats" in {
-    val raw    = "leading\n\n\n   text\twith   runs"
-    val result = downloader.extractText(raw, "UnknownFormat").unsafeRunSync()
-    result shouldBe "leading text with runs"
+    program.unsafeRunSync() shouldBe largeBody.length.toLong
   }
 
 }

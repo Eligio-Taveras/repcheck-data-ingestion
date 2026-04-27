@@ -42,19 +42,32 @@ class DoobieRawBillTextRepository extends RawBillTextRepository[ConnectionIO] {
     s"INSERT INTO $tableName (bill_id, version_id, chunk_index, content, embedding) VALUES (?, ?, ?, ?, ?::vector)"
 
   override def replaceAll(versionId: Long, chunks: List[RawBillTextDO]): ConnectionIO[Unit] = {
-    val deleteOldChunks: ConnectionIO[Int] =
-      sql"DELETE FROM $table WHERE version_id = $versionId".update.run
+    val deleteOldChunks: ConnectionIO[Unit] =
+      sql"DELETE FROM $table WHERE version_id = $versionId".update.run.map(_ => ())
 
-    val rowsForUpdate: List[(Long, Option[Long], Int, String, Option[Array[Float]])] =
-      chunks.map(chunk => (chunk.billId, chunk.versionId, chunk.chunkIndex, chunk.content, chunk.embedding))
-
-    val insertNewChunks: ConnectionIO[Int] =
-      Update[(Long, Option[Long], Int, String, Option[Array[Float]])](insertSql).updateMany(rowsForUpdate)
-
-    deleteOldChunks.flatMap { _ =>
-      if (chunks.isEmpty) doobie.free.connection.unit
-      else insertNewChunks.map(_ => ())
+    // Branch at description-construction time, not inside a deferred `flatMap` lambda.
+    // Both arms of the if/else are evaluated when `replaceAll` is invoked, so unit tests
+    // that just build the description (no DB run needed) cover both paths cleanly.
+    if (chunks.isEmpty) {
+      deleteOldChunks
+    } else {
+      val rowsForUpdate: List[(Long, Option[Long], Int, String, Option[Array[Float]])] =
+        chunks.map(chunk => (chunk.billId, chunk.versionId, chunk.chunkIndex, chunk.content, chunk.embedding))
+      val insertNewChunks: ConnectionIO[Unit] =
+        Update[(Long, Option[Long], Int, String, Option[Array[Float]])](insertSql)
+          .updateMany(rowsForUpdate)
+          .map(_ => ())
+      deleteOldChunks.flatMap(_ => insertNewChunks)
     }
+  }
+
+  override def deleteByVersionId(versionId: Long): ConnectionIO[Unit] =
+    sql"DELETE FROM $table WHERE version_id = $versionId".update.run.map(_ => ())
+
+  override def insertOne(chunk: RawBillTextDO): ConnectionIO[Unit] = {
+    val row: (Long, Option[Long], Int, String, Option[Array[Float]]) =
+      (chunk.billId, chunk.versionId, chunk.chunkIndex, chunk.content, chunk.embedding)
+    Update[(Long, Option[Long], Int, String, Option[Array[Float]])](insertSql).run(row).map(_ => ())
   }
 
   override def findByVersionId(versionId: Long): ConnectionIO[List[RawBillTextDO]] =
