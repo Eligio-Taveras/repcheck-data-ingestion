@@ -30,7 +30,6 @@ import repcheck.ingestion.bills.common.testing.{DockerRequired, PubSubEmulatorFi
 import repcheck.ingestion.bills.metadata.api.BillsApiClient
 import repcheck.ingestion.bills.metadata.config.BillMetadataConfig
 import repcheck.ingestion.bills.metadata.pipeline.BillMetadataProcessor
-import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, NoOpEmbeddingService, OllamaEmbeddingService}
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
@@ -210,8 +209,7 @@ class MetadataToVectorSearchLifecycleSpec
   }
 
   private def buildProcessor(withEmbedding: Boolean): BillTextProcessor[IO] = {
-    val pipelineConfig = BillTextPipelineConfig(1, 10, 100.millis)
-    val downloader     = new BillTextDownloader[IO](httpClient, pipelineConfig, testLogger)
+    val downloader = new BillTextDownloader[IO](httpClient, testLogger)
     val (embeddingService, embeddingConfig) =
       if (withEmbedding) {
         val cfg = EmbeddingConfig(
@@ -246,8 +244,8 @@ class MetadataToVectorSearchLifecycleSpec
       eventPublisher = eventPublisher,
       xa = xa,
       logger = testLogger,
-      extractText = (path, format) =>
-        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](path, format),
+      extractText = (bytes, format) =>
+        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](bytes, format),
     )
   }
 

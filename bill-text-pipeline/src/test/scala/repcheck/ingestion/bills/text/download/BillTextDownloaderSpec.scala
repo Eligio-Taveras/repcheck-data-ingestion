@@ -1,10 +1,7 @@
 package repcheck.ingestion.bills.text.download
 
 import java.nio.charset.StandardCharsets
-import java.nio.file.Files
 import java.util.UUID
-
-import scala.concurrent.duration._
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
@@ -17,18 +14,16 @@ import com.github.tomakehurst.wiremock.core.WireMockConfiguration
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
-import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.errors.{InvalidTextUrl, TextDownloadFailed}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 /**
- * Specs for the streaming-to-temp-file [[BillTextDownloader]]. Phase 2 of the bill-text-10mb plan: the downloader's
- * responsibility narrowed to "stream HTTP body to a `Resource[F, Path]`"; HTML/XML/PDF extraction moved to
- * [[repcheck.ingestion.bills.text.extraction.BillTextExtractor]] (covered separately in `BillTextExtractorSpec`).
+ * Specs for the streaming [[BillTextDownloader]]. Phase 3 of the bill-text-10mb plan: the downloader's API narrowed to
+ * `streamBody` returning `Stream[F, Byte]`. Format-specific extractors (HTML, XML, plaintext, PDF) consume that byte
+ * stream directly via their respective parsers.
  *
- * Test pattern is unchanged from the pre-Phase-2 spec: a WireMock server bound to `127.0.0.1` with a dynamic port (per
- * memory `feedback_wiremock_localhost`) serves canned responses; tests assert the downloader's behaviour against the
- * streamed bytes and the temp-file lifecycle.
+ * Test pattern: a WireMock server bound to `127.0.0.1` with a dynamic port (per memory `feedback_wiremock_localhost`)
+ * serves canned responses; tests assert the downloader's behaviour against the streamed bytes.
  */
 class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
@@ -37,12 +32,6 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
       .options()
       .bindAddress("127.0.0.1")
       .dynamicPort()
-  )
-
-  private val testConfig = BillTextPipelineConfig(
-    parallelism = 1,
-    downloadTimeoutSeconds = 5,
-    pageDelay = 100.millis,
   )
 
   private val noopLogger: PipelineLogger[IO] = new PipelineLogger[IO] {
@@ -69,52 +58,35 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
 
   private val correlationId = UUID.randomUUID()
 
-  private def downloaderResource(config: BillTextPipelineConfig = testConfig) =
-    EmberClientBuilder.default[IO].build.map(client => new BillTextDownloader[IO](client, config, noopLogger))
+  private def downloaderResource =
+    EmberClientBuilder.default[IO].build.map(client => new BillTextDownloader[IO](client, noopLogger))
 
-  "downloadToTempFile" should "stream a successful response into a temp file and yield its path" in {
+  private def streamBodyAsString(downloader: BillTextDownloader[IO], url: String, format: String): IO[String] =
+    downloader
+      .streamBody(url, format, correlationId)
+      .through(fs2.text.utf8.decode)
+      .compile
+      .string
+
+  "streamBody" should "emit the full response body as a Stream[F, Byte] for a successful response" in {
     val expectedBody = "Section 1. Title — first sentence."
     wireMock.stubFor(
       get(urlPathEqualTo("/bill"))
-        .willReturn(
-          aResponse()
-            .withStatus(200)
-            .withBody(expectedBody)
-        )
+        .willReturn(aResponse().withStatus(200).withBody(expectedBody))
     )
 
-    val program = downloaderResource().use { downloader =>
-      downloader
-        .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
-        .use(path => IO(Files.readString(path, StandardCharsets.UTF_8)))
-    }
-
+    val program = downloaderResource.use(downloader =>
+      streamBodyAsString(downloader, s"${wireMock.baseUrl()}/bill", "Formatted Text")
+    )
     program.unsafeRunSync() shouldBe expectedBody
-  }
-
-  it should "delete the temp file when the Resource is released" in {
-    wireMock.stubFor(get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(200).withBody("body")))
-
-    val program = downloaderResource().use { downloader =>
-      downloader
-        .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
-        .use(path => IO.pure(path))
-        .map(path => Files.exists(path))
-    }
-
-    program.unsafeRunSync() shouldBe false
   }
 
   it should "raise TextDownloadFailed on HTTP 404" in {
     wireMock.stubFor(get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(404)))
 
-    val attempt = downloaderResource()
-      .use { downloader =>
-        downloader
-          .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
-          .use(_ => IO.unit)
-          .attempt
-      }
+    val attempt = downloaderResource
+      .use(downloader => streamBodyAsString(downloader, s"${wireMock.baseUrl()}/bill", "Formatted Text"))
+      .attempt
       .unsafeRunSync()
 
     attempt match {
@@ -123,16 +95,14 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     }
   }
 
-  it should "raise TextDownloadFailed on non-success status with body included" in {
-    wireMock.stubFor(get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(500).withBody("server crashed")))
+  it should "raise TextDownloadFailed on non-success status with body text included for debugging" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(500).withBody("server crashed"))
+    )
 
-    val attempt = downloaderResource()
-      .use { downloader =>
-        downloader
-          .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
-          .use(_ => IO.unit)
-          .attempt
-      }
+    val attempt = downloaderResource
+      .use(downloader => streamBodyAsString(downloader, s"${wireMock.baseUrl()}/bill", "Formatted Text"))
+      .attempt
       .unsafeRunSync()
 
     attempt match {
@@ -143,8 +113,26 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     }
   }
 
+  it should "stream a body of arbitrary size without imposing a cap" in {
+    // Sanity check that no body-size cap applies. 1 MiB body would have tripped the prior 10 MiB
+    // cap (since removed in PR #81). With no cap, all bytes flow through unchanged.
+    val largeBody = "X".repeat(1024 * 1024)
+    wireMock.stubFor(
+      get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(200).withBody(largeBody))
+    )
+
+    val program = downloaderResource.use { downloader =>
+      downloader
+        .streamBody(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
+        .compile
+        .toVector
+        .map(_.length)
+    }
+    program.unsafeRunSync() shouldBe largeBody.getBytes(StandardCharsets.UTF_8).length
+  }
+
   "parseUrl" should "raise InvalidTextUrl for malformed URLs" in {
-    val program = downloaderResource().use(downloader => downloader.parseUrl("not a url at all").attempt)
+    val program = downloaderResource.use(downloader => downloader.parseUrl("not a url at all").attempt)
     val attempt = program.unsafeRunSync()
     attempt match {
       case Left(_: InvalidTextUrl) => succeed
@@ -153,25 +141,8 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
   }
 
   it should "parse a valid URL successfully" in {
-    val program = downloaderResource().use(downloader => downloader.parseUrl("https://example.com/text"))
+    val program = downloaderResource.use(downloader => downloader.parseUrl("https://example.com/text"))
     program.unsafeRunSync().toString shouldBe "https://example.com/text"
-  }
-
-  it should "stream a body of arbitrary size to disk without imposing a configured cap" in {
-    // Sanity check that the no-cap design works for bodies larger than the previous (now-removed)
-    // maxContentBytes default. 1 MiB body exceeds the prior 10 MiB / 200 MiB cap noise; it would
-    // have tripped any in-pipe size check. With no cap, all bytes flow through to the temp file.
-    val largeBody = "X".repeat(1024 * 1024)
-    wireMock.stubFor(
-      get(urlPathEqualTo("/bill")).willReturn(aResponse().withStatus(200).withBody(largeBody))
-    )
-
-    val program = downloaderResource().use { downloader =>
-      downloader
-        .downloadToTempFile(s"${wireMock.baseUrl()}/bill", "Formatted Text", correlationId)
-        .use(path => IO.delay(Files.size(path)))
-    }
-    program.unsafeRunSync() shouldBe largeBody.length.toLong
   }
 
 }

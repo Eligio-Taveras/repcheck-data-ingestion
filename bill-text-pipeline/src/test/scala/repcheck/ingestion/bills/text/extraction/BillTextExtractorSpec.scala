@@ -2,10 +2,11 @@ package repcheck.ingestion.bills.text.extraction
 
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path}
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
+
+import fs2.Stream
 
 import org.apache.pdfbox.pdmodel.common.PDRectangle
 import org.apache.pdfbox.pdmodel.font.{PDType1Font, Standard14Fonts}
@@ -15,28 +16,22 @@ import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.bills.text.errors.PdfExtractionFailed
 
 /**
- * Specs for the streaming [[BillTextExtractor]] dispatcher. Phase 3 of the bill-text-10mb plan replaces the buffered
- * `extract: F[String]` API with `extractStream: Stream[F, String]`, with per-format streaming extractors backing each
- * branch.
+ * Specs for the streaming [[BillTextExtractor]] dispatcher. Phase 3 of the bill-text-10mb plan: the dispatcher consumes
+ * a `Stream[F, Byte]` directly, so HTML / XML / plain-text bytes flow from the HTTP socket through the parser without
+ * ever touching disk. PDF is the one exception: it spools to a temp file inside `PdfStreamExtractor`.
  *
- * Tests consume each stream via `compile.toList` and assert the joined fragments contain the expected text. We don't
- * assert exact fragment counts — those are parser-implementation details that vary between StAX, TagSoup, and PDFBox,
- * and asserting them would couple tests to internals.
+ * Tests construct in-memory byte streams from string fixtures (UTF-8 encoded) and consume the resulting `Stream[IO,
+ * String]` via `compile.toList`. We don't assert exact fragment counts — those are parser-implementation details that
+ * vary between StAX, TagSoup, and PDFBox, and asserting them would couple tests to internals.
  */
 class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
 
-  private def withTempFile[A](contents: String, suffix: String)(f: Path => A): A = {
-    val path = Files.createTempFile("bill-text-extractor-test-", suffix)
-    try {
-      val _ = Files.writeString(path, contents, StandardCharsets.UTF_8)
-      f(path)
-    } finally {
-      val _ = Files.deleteIfExists(path)
-    }
-  }
+  private def bytesOf(content: String): Stream[IO, Byte] =
+    Stream.emits(content.getBytes(StandardCharsets.UTF_8))
 
-  private def writeTinyPdf(text: String): Path = {
+  private def pdfBytes(text: String): Stream[IO, Byte] = {
     val document = new PDDocument()
+    val baos     = new ByteArrayOutputStream()
     try {
       val page = new PDPage(PDRectangle.LETTER)
       document.addPage(page)
@@ -51,21 +46,14 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
         contentStream.endText()
       } finally contentStream.close()
 
-      val baos = new ByteArrayOutputStream()
-      try
-        document.save(baos)
-      finally
-        baos.close()
-
-      val path = Files.createTempFile("bill-text-extractor-pdf-", ".pdf")
-      val _    = Files.write(path, baos.toByteArray)
-      path
+      document.save(baos)
     } finally document.close()
+    Stream.emits(baos.toByteArray)
   }
 
-  private def joined(path: Path, format: String): String =
+  private def joined(bytes: Stream[IO, Byte], format: String): String =
     BillTextExtractor
-      .extractStream[IO](path, format)
+      .extractStream[IO](bytes, format)
       .compile
       .toList
       .unsafeRunSync()
@@ -82,22 +70,17 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
         |  </body>
         |</html>""".stripMargin
 
-    withTempFile(html, ".html") { path =>
-      val result = joined(path, "Formatted Text")
-      val _      = result should include("SECTION 1. Title")
-      val _      = result should include("first sentence")
-      result should include("Section 2. Second sentence.")
-    }
+    val result = joined(bytesOf(html), "Formatted Text")
+    val _      = result should include("SECTION 1. Title")
+    val _      = result should include("first sentence")
+    result should include("Section 2. Second sentence.")
   }
 
   it should "fall back to body text for 'Formatted Text' HTML with no <pre>" in {
-    val html = "<html><body><h1>Title</h1><p>Body paragraph.</p></body></html>"
-
-    withTempFile(html, ".html") { path =>
-      val result = joined(path, "Formatted Text")
-      val _      = result should include("Title")
-      result should include("Body paragraph")
-    }
+    val html   = "<html><body><h1>Title</h1><p>Body paragraph.</p></body></html>"
+    val result = joined(bytesOf(html), "Formatted Text")
+    val _      = result should include("Title")
+    result should include("Body paragraph")
   }
 
   it should "skip <script> and <style> content for 'Formatted Text'" in {
@@ -108,12 +91,10 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
         |  <p>Real bill content.</p>
         |</body></html>""".stripMargin
 
-    withTempFile(html, ".html") { path =>
-      val result = joined(path, "Formatted Text")
-      val _      = result should include("Real bill content")
-      val _      = result should not include "leak"
-      result should not include "color: red"
-    }
+    val result = joined(bytesOf(html), "Formatted Text")
+    val _      = result should include("Real bill content")
+    val _      = result should not include "leak"
+    result should not include "color: red"
   }
 
   it should "extract <legis-body> contents from 'Formatted XML' (USLM-style)" in {
@@ -128,13 +109,11 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
         |  </legis-body>
         |</bill>""".stripMargin
 
-    withTempFile(xml, ".xml") { path =>
-      val result = joined(path, "Formatted XML")
-      val _      = result should include("SECTION 1. The actual bill content")
-      val _      = result should include("SECTION 2. More content")
-      val _      = result should not include "Skip me"
-      result should not include "Skip this header"
-    }
+    val result = joined(bytesOf(xml), "Formatted XML")
+    val _      = result should include("SECTION 1. The actual bill content")
+    val _      = result should include("SECTION 2. More content")
+    val _      = result should not include "Skip me"
+    result should not include "Skip this header"
   }
 
   it should "produce an empty stream for 'Formatted XML' with no <legis-body> (loud-failure design)" in {
@@ -142,59 +121,47 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
       """<?xml version="1.0" encoding="UTF-8"?>
         |<bill><document>Old-format content here.</document></bill>""".stripMargin
 
-    withTempFile(xml, ".xml") { path =>
-      val emitted = BillTextExtractor.extractStream[IO](path, "Formatted XML").compile.toList.unsafeRunSync()
-      // No <legis-body> => extractor emits nothing. Downstream chunker emits nothing. The processor
-      // logs "0 chunks" — a loud signal that the document didn't conform to expected USLM shape.
-      emitted shouldBe Nil
-    }
+    val emitted = BillTextExtractor.extractStream[IO](bytesOf(xml), "Formatted XML").compile.toList.unsafeRunSync()
+    // No <legis-body> => extractor emits nothing. Downstream chunker emits nothing. The processor
+    // logs "0 chunks" — a loud signal that the document didn't conform to expected USLM shape.
+    emitted shouldBe Nil
   }
 
   it should "dispatch to PdfStreamExtractor for the 'PDF' format and return its extracted text" in {
     val expectedText = "SECTION 1. PDF dispatch test."
-    val path         = writeTinyPdf(expectedText)
-    try {
-      val result = joined(path, "PDF")
-      result should include(expectedText)
-    } finally {
-      val _ = Files.deleteIfExists(path)
+    val result       = joined(pdfBytes(expectedText), "PDF")
+    result should include(expectedText)
+  }
+
+  it should "surface PdfExtractionFailed from PdfStreamExtractor when the 'PDF' dispatch hits invalid PDF bytes" in {
+    val notAPdf = bytesOf("this is not a PDF")
+    val attempt = BillTextExtractor.extractStream[IO](notAPdf, "PDF").compile.toList.attempt.unsafeRunSync()
+    attempt match {
+      case Left(_: PdfExtractionFailed) => succeed
+      case other                        => fail(s"Expected PdfExtractionFailed, got $other")
     }
   }
 
-  it should "surface PdfExtractionFailed from PdfStreamExtractor when the 'PDF' dispatch hits an invalid PDF" in {
-    val path = Files.createTempFile("bill-text-extractor-bad-pdf-", ".pdf")
-    try {
-      val _       = Files.writeString(path, "this is not a PDF")
-      val attempt = BillTextExtractor.extractStream[IO](path, "PDF").compile.toList.attempt.unsafeRunSync()
-      attempt match {
-        case Left(_: PdfExtractionFailed) => succeed
-        case other                        => fail(s"Expected PdfExtractionFailed, got $other")
-      }
-    } finally {
-      val _ = Files.deleteIfExists(path)
-    }
-  }
-
-  it should "read the file as plain UTF-8 text for the catch-all branch (unknown format)" in {
-    val raw = "Plain text bill body — line one.\nLine two."
-
-    withTempFile(raw, ".txt") { path =>
-      val result = joined(path, "Plaintext")
-      val _      = result should include("Plain text bill body")
-      result should include("line one")
-    }
+  it should "decode bytes as plain UTF-8 text for the catch-all branch (unknown format)" in {
+    val raw    = "Plain text bill body — line one.\nLine two."
+    val result = joined(bytesOf(raw), "Plaintext")
+    val _      = result should include("Plain text bill body")
+    result should include("line one")
   }
 
   it should "collapse whitespace runs across all formats" in {
     val htmlWithLotsOfWhitespace = "<html><body><pre>  Section\t\t1.\n\n\n  Title.   </pre></body></html>"
-    withTempFile(htmlWithLotsOfWhitespace, ".html") { path =>
-      val result =
-        BillTextExtractor.extractStream[IO](path, "Formatted Text").compile.toList.unsafeRunSync().mkString
-      // Internal whitespace runs collapsed (no \n, no \t, no double-space).
-      val _ = result should not include "\n"
-      val _ = result should not include "\t"
-      result should not include "  "
-    }
+    val result =
+      BillTextExtractor
+        .extractStream[IO](bytesOf(htmlWithLotsOfWhitespace), "Formatted Text")
+        .compile
+        .toList
+        .unsafeRunSync()
+        .mkString
+    // Internal whitespace runs collapsed (no \n, no \t, no double-space).
+    val _ = result should not include "\n"
+    val _ = result should not include "\t"
+    result should not include "  "
   }
 
   "collapseWhitespace" should "collapse runs of whitespace to single spaces" in {

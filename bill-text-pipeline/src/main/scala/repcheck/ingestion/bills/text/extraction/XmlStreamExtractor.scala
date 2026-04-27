@@ -1,7 +1,6 @@
 package repcheck.ingestion.bills.text.extraction
 
-import java.io.{BufferedInputStream, FileInputStream}
-import java.nio.file.{Path => NioPath}
+import java.io.InputStream
 import javax.xml.stream.{XMLInputFactory, XMLStreamConstants, XMLStreamReader}
 
 import cats.effect.{Async, Resource}
@@ -9,70 +8,69 @@ import cats.effect.{Async, Resource}
 import fs2.Stream
 
 /**
- * Streaming USLM-XML extractor backed by StAX (`javax.xml.stream`, in-JDK, no extra dep).
+ * Streaming USLM-XML extractor backed by StAX (`javax.xml.stream`, in-JDK, no extra dep). Consumes a `Stream[F, Byte]`
+ * (typically the HTTP response body) directly — no temp file required.
  *
  * Bill text in `Formatted XML` arrives as a USLM document whose interesting content lives inside `<legis-body>`.
  * Sibling elements (`<metadata>`, `<dublinCore>`, `<form>`) hold administrative boilerplate the embedding model doesn't
- * need. The buffered code path used `XML.loadFile` to build a full DOM and `\\\\ "legis-body"` to descend; this
- * streaming variant walks StAX events with a small state machine, emitting CHARACTERS data only while inside
+ * need. This streaming variant walks StAX events with a small state machine, emitting CHARACTERS data only while inside
  * `<legis-body>`.
+ *
+ * ==Streaming shape==
+ *
+ * `fs2.io.toInputStreamResource` exposes the byte stream as a `java.io.InputStream` (needed by StAX's
+ * `XMLInputFactory.createXMLStreamReader(InputStream)` constructor). The bridge runs inside an internal queue; StAX's
+ * pull-based reads pull from the queue, which pulls from the fs2 stream — backpressure flows end-to-end.
  *
  * ==Heap profile==
  *
  * StAX's `XMLStreamReader` is a pull-based reader — the parser only buffers the current event's text payload, not the
  * whole document. Heap usage stays bounded by `(parser internal state) + (current CHARACTERS event text) + (1 fragment
- * downstream)`. For a 10 GiB XML document the parser handles it the same as a 10 KiB one.
+ * downstream)`. For a 10 GiB XML body the parser handles it the same as a 10 KiB one.
  *
  * ==State machine==
  *
- *   - START_DOCUMENT — initial state.
- *   - START_ELEMENT — increment `legisBodyDepth` if we're already inside `<legis-body>`; if the element is itself
- *     `<legis-body>`, set `legisBodyDepth = 1` (we're now inside).
- *   - END_ELEMENT — decrement `legisBodyDepth`. When it returns to 0 we've exited the legis-body subtree.
+ *   - START_ELEMENT — increment `legisBodyDepth` if element is `<legis-body>` or we're already inside one.
+ *   - END_ELEMENT — decrement `legisBodyDepth` if `> 0`.
  *   - CHARACTERS — if `legisBodyDepth > 0`, emit `getText()` (collapsed, untrimmed per the per-fragment whitespace
  *     contract).
  *
- * If `<legis-body>` is absent (older or non-standard XML), the extractor falls back to emitting **all** CHARACTERS
- * events from the document. Mirrors the buffered code path's fallback to `xml.text`.
+ * Bills always have `<legis-body>`. If a future format change drops it, this extractor returns an empty stream — a loud
+ * failure mode (downstream chunker emits nothing, processor logs "0 chunks") rather than a silent fall back.
+ *
+ * ==XXE / billion-laughs hardening==
+ *
+ * External-entity resolution and DTD support are explicitly disabled on the `XMLInputFactory` so a maliciously crafted
+ * document can't pull from disk or network or expand recursive entities to exhaust memory.
  */
 object XmlStreamExtractor {
 
   /**
-   * Walk the supplied XML file via StAX and emit its prose text as a stream of fragments. Each fragment is the text
-   * payload of one `CHARACTERS` event, with internal whitespace runs collapsed (no trim — see
+   * Walk the supplied byte stream as XML via StAX and emit its prose text as a stream of fragments. Each fragment is
+   * the text payload of one `CHARACTERS` event, with internal whitespace runs collapsed (no trim — see
    * [[BillTextExtractor.collapseWhitespace]] for the rationale).
    *
-   * The XML stream is opened as a `Resource` so the underlying file handle and StAX reader release deterministically
+   * The InputStream and the StAX reader are both held in `Resource`s so the JVM resources release deterministically
    * even on stream cancellation or error.
    */
-  def extract[F[_]: Async](path: NioPath): Stream[F, String] =
-    Stream.resource(readerResource[F](path)).flatMap { reader =>
-      Stream.unfoldEval(InitialState)(state => Async[F].blocking(advance(reader, state)))
+  def extract[F[_]: Async](bytes: Stream[F, Byte]): Stream[F, String] =
+    Stream.resource(fs2.io.toInputStreamResource(bytes)).flatMap { is =>
+      Stream.resource(readerResource[F](is)).flatMap { reader =>
+        Stream.unfoldEval(InitialState)(state => Async[F].blocking(advance(reader, state)))
+      }
     }
 
-  private def readerResource[F[_]: Async](path: NioPath): Resource[F, XMLStreamReader] = {
-    val acquire = Async[F].blocking {
-      val factory = XMLInputFactory.newDefaultFactory()
-      // Defensive: defeat XXE / billion-laughs vectors. Bill XML never references external DTDs;
-      // disable resolution so a maliciously crafted document can't pull from disk or network.
-      factory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, java.lang.Boolean.FALSE)
-      factory.setProperty(XMLInputFactory.SUPPORT_DTD, java.lang.Boolean.FALSE)
-      val stream = new BufferedInputStream(new FileInputStream(path.toFile))
-      val reader = factory.createXMLStreamReader(stream)
-      // Bundle the input stream with the reader so we can close both deterministically.
-      ReaderHandle(reader, stream)
-    }
-    Resource
-      .make(acquire)(handle =>
-        Async[F].blocking {
-          handle.reader.close()
-          handle.stream.close()
-        }
-      )
-      .map(_.reader)
-  }
-
-  final private case class ReaderHandle(reader: XMLStreamReader, stream: BufferedInputStream)
+  private def readerResource[F[_]: Async](is: InputStream): Resource[F, XMLStreamReader] =
+    Resource.make(
+      Async[F].blocking {
+        val factory = XMLInputFactory.newDefaultFactory()
+        // Defeat XXE / billion-laughs vectors. Bill XML never references external DTDs;
+        // disable resolution so a maliciously crafted document can't pull from disk or network.
+        factory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, java.lang.Boolean.FALSE)
+        factory.setProperty(XMLInputFactory.SUPPORT_DTD, java.lang.Boolean.FALSE)
+        factory.createXMLStreamReader(is)
+      }
+    )(reader => Async[F].blocking(reader.close()))
 
   /**
    * Streaming state across StAX events.
@@ -88,9 +86,6 @@ object XmlStreamExtractor {
   /**
    * Pull the next CHARACTERS payload to emit, walking StAX events until we find one or hit END_DOCUMENT. Returns
    * `Some((fragment, nextState))` to emit a fragment and continue, or `None` to signal end-of-stream.
-   *
-   * Bills always have `<legis-body>`. If a future format change drops it, this extractor returns an empty stream — a
-   * loud failure mode (downstream chunker emits nothing, processor logs "0 chunks") rather than a silent fall back.
    */
   private def advance(reader: XMLStreamReader, state: State): Option[(String, State)] = {
     @scala.annotation.tailrec
@@ -127,9 +122,7 @@ object XmlStreamExtractor {
 
           case _ =>
             // Skip START_DOCUMENT, END_DOCUMENT (loop terminates via hasNext), COMMENT, PI, DTD,
-            // ATTRIBUTE, NAMESPACE, SPACE, ENTITY_REFERENCE. We treat END_DOCUMENT as a non-event
-            // here because the next `hasNext` returns false and the next loop iteration returns
-            // None — same effective behavior with one less branch to cover.
+            // ATTRIBUTE, NAMESPACE, SPACE, ENTITY_REFERENCE.
             loop(s)
         }
       }

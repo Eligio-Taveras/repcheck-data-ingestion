@@ -32,7 +32,6 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillTextVersionRepository}
 import repcheck.ingestion.bills.common.testing.{E2ETest, TransactorFixture}
-import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
@@ -277,9 +276,8 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
   }
 
   private def buildProcessorWithOllama(): BillTextProcessor[IO] = {
-    val r              = gcpResources.getOrElse(fail("GCP resources not available"))
-    val pipelineConfig = BillTextPipelineConfig(1, 10, 100.millis)
-    val downloader     = new BillTextDownloader[IO](httpClient, pipelineConfig, testLogger)
+    val r          = gcpResources.getOrElse(fail("GCP resources not available"))
+    val downloader = new BillTextDownloader[IO](httpClient, testLogger)
     val embeddingConfig = EmbeddingConfig(
       baseUrl = s"http://127.0.0.1:${wireMock.port().toString}",
       modelName = "bill-text-embedding",
@@ -309,8 +307,8 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       eventPublisher = eventPublisher,
       xa = xa,
       logger = testLogger,
-      extractText = (path, format) =>
-        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](path, format),
+      extractText = (bytes, format) =>
+        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](bytes, format),
     )
   }
 

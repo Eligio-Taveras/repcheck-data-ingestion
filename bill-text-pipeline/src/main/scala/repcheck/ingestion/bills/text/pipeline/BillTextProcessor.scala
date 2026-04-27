@@ -1,6 +1,5 @@
 package repcheck.ingestion.bills.text.pipeline
 
-import java.nio.file.Path
 import java.time.Instant
 import java.util.UUID
 
@@ -40,10 +39,11 @@ import repcheck.shared.models.congress.dos.bill.{BillTextVersionDO, RawBillTextD
  *   1. **Clear orphan chunks** for that `version_id` — DELETE any rows left by a previous failed run before
  *      re-streaming. This makes the per-chunk INSERTs idempotent against `(version_id, chunk_index)` unique constraint
  *      conflicts.
- *   1. **Open the streaming pipeline**: download → temp file (Phase 2) → streaming extractor (Phase 3, per-format) →
- *      streaming chunker → batched embed → per-chunk INSERT. The temp file Resource stays open for the duration of the
- *      stream because extraction is interleaved with embedding/INSERT under fs2 backpressure — the parser only pulls
- *      more bytes when the consumer is ready.
+ *   1. **Open the streaming pipeline**: HTTP body bytes → streaming extractor (per-format) → streaming chunker →
+ *      batched embed → per-chunk INSERT. For HTML / XML / plain-text formats the bytes flow directly from the HTTP
+ *      socket into the parser — no temp file. PDF spools to a temp file inside [[PdfStreamExtractor]] (PDF requires
+ *      random access to the xref table at the end of the file). Backpressure flows end-to-end: the slowest stage
+ *      (embedding, ~5s per batch) gates the rate of all upstream stages.
  *   1. **Mark the version complete** via UPDATE `bill_text_versions SET fetched_at = NOW()`. After this, the next
  *      pipeline tick's skip-check will short-circuit re-processing.
  *   1. **Publish the ingested event** for downstream consumers (LLM analysis pipeline).
@@ -53,7 +53,7 @@ import repcheck.shared.models.congress.dos.bill.{BillTextVersionDO, RawBillTextD
  * Peak heap during processing of any body size ≈ `(extractor working state, ~64 KiB) + (chunker buffer, ~12 KiB) + (one
  * batch of 50 chunks, ~600 KiB) + (one batch of 50 embeddings, ~200 KiB) ≈ 1 MiB`. A 10 MiB or 1 GiB body produce the
  * same heap footprint. The runtime of embedding (5+ s per batch on the GPU) backpressures all upstream phases via fs2's
- * pull-based model — extraction reads from the temp file at exactly the speed embedding can consume.
+ * pull-based model — bytes are pulled from the HTTP socket at exactly the speed embedding can consume.
  *
  * ==Crash semantics==
  *
@@ -72,7 +72,7 @@ class BillTextProcessor[F[_]: Async] private[text] (
   eventPublisher: IngestionEventPublisher[F],
   xa: Transactor[F],
   logger: PipelineLogger[F],
-  extractText: (Path, String) => Stream[F, String],
+  extractText: (Stream[F, Byte], String) => Stream[F, String],
 ) {
 
   private val StepName = "bill-text-processing"
@@ -200,9 +200,8 @@ class BillTextProcessor[F[_]: Async] private[text] (
     if (embeddingConfig.maxChunkChars <= 0) {
       Async[F].raiseError(InvalidChunkSize(embeddingConfig.maxChunkChars))
     } else {
-      Stream
-        .resource(downloader.downloadToTempFile(event.textUrl, event.textFormat, correlationId))
-        .flatMap(tempPath => extractText(tempPath, event.textFormat))
+      val bytes = downloader.streamBody(event.textUrl, event.textFormat, correlationId)
+      extractText(bytes, event.textFormat)
         .map(stripNullBytes)
         .filter(_.nonEmpty)
         .through(BillTextChunker.chunkPipe(embeddingConfig.maxChunkChars))

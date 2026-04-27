@@ -1,7 +1,6 @@
 package repcheck.ingestion.bills.text.extraction
 
-import java.io.{BufferedInputStream, FileInputStream}
-import java.nio.file.{Path => NioPath}
+import java.io.InputStream
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -13,9 +12,10 @@ import org.ccil.cowan.tagsoup.Parser
 import org.xml.sax.{Attributes, ContentHandler, InputSource, Locator}
 
 /**
- * Streaming HTML extractor backed by TagSoup, a SAX-based parser that gracefully handles malformed markup. Congress.gov
- * "Formatted Text" payloads occasionally contain stray entities and unbalanced tags inside the bill's `<pre>` block;
- * TagSoup tolerates these where Jsoup's DOM mode can stumble.
+ * Streaming HTML extractor backed by TagSoup, a SAX-based parser that gracefully handles malformed markup. Consumes a
+ * `Stream[F, Byte]` (typically the HTTP response body) directly — no temp file required. Congress.gov "Formatted Text"
+ * payloads occasionally contain stray entities and unbalanced tags inside the bill's `<pre>` block; TagSoup tolerates
+ * these where Jsoup's DOM mode can stumble.
  *
  * ==Streaming via push-pull bridge==
  *
@@ -25,6 +25,9 @@ import org.xml.sax.{Attributes, ContentHandler, InputSource, Locator}
  * natural backpressure if the consumer is slower than the parser). The fs2 `Stream` pulls via `queue.take` in
  * `blocking`. End-of-document is signalled by `put(None)`. The queue is bounded (16 fragments) so the parser never runs
  * ahead of the consumer by more than ~16 fragments worth of text.
+ *
+ * The HTTP byte stream is bridged to TagSoup's `InputSource` via `fs2.io.toInputStreamResource`, so the parser pulls
+ * bytes from the network at the rate the queue can drain.
  *
  * Error propagation: parser exceptions surface via `Async[F].blocking`'s F effect channel and are routed through fs2's
  * `concurrently` combinator — when the producer fiber fails the consumer is cancelled and the error propagates upward
@@ -45,49 +48,48 @@ import org.xml.sax.{Attributes, ContentHandler, InputSource, Locator}
 object HtmlStreamExtractor {
 
   /**
-   * Streaming extraction of HTML body text. Spawns a parser fiber that walks the HTML and pushes text fragments into an
-   * internal queue; the returned stream pulls those fragments. Both producer and consumer release deterministically via
-   * fs2 Resource semantics; a parser failure cancels the consumer and propagates upward.
+   * Streaming extraction of HTML body text from an upstream byte stream. Spawns a parser fiber that walks the HTML and
+   * pushes text fragments into an internal queue; the returned stream pulls those fragments. Both producer and consumer
+   * release deterministically via fs2 Resource semantics; a parser failure cancels the consumer and propagates upward.
    *
-   * @param path
-   *   absolute path to the on-disk HTML download (UTF-8 expected; TagSoup detects encoding from `<meta>` tags or falls
-   *   back to UTF-8 — Congress.gov is consistently UTF-8).
+   * @param bytes
+   *   the byte stream to parse. UTF-8 expected; TagSoup detects encoding from `<meta>` tags or falls back to UTF-8 —
+   *   Congress.gov is consistently UTF-8.
    */
-  def extract[F[_]: Async](path: NioPath): Stream[F, String] =
-    Stream.resource(queueResource[F]).flatMap { queue =>
-      val parser =
-        Stream
-          .eval(Async[F].blocking(runParser(path, queue)))
-          .onFinalize(Async[F].blocking { val _ = queue.put(None); () })
-          .drain
+  def extract[F[_]: Async](bytes: Stream[F, Byte]): Stream[F, String] =
+    Stream.resource(fs2.io.toInputStreamResource(bytes)).flatMap { is =>
+      Stream.resource(queueResource[F]).flatMap { queue =>
+        val parser =
+          Stream
+            .eval(Async[F].blocking(runParser(is, queue)))
+            .onFinalize(Async[F].blocking { val _ = queue.put(None); () })
+            .drain
 
-      val consumer = Stream
-        .repeatEval(Async[F].blocking(queue.take()))
-        .takeWhile(_.isDefined)
-        .map(_.getOrElse(""))
-        .filter(_.nonEmpty)
+        val consumer = Stream
+          .repeatEval(Async[F].blocking(queue.take()))
+          .takeWhile(_.isDefined)
+          .map(_.getOrElse(""))
+          .filter(_.nonEmpty)
 
-      consumer.concurrently(parser)
+        consumer.concurrently(parser)
+      }
     }
 
   private def queueResource[F[_]: Async]: Resource[F, LinkedBlockingQueue[Option[String]]] =
     Resource.make(Async[F].delay(new LinkedBlockingQueue[Option[String]](16)))(_ => Async[F].unit)
 
   /**
-   * Synchronously parse the HTML file with TagSoup, pushing each text fragment into the queue. Blocks on `queue.put` if
-   * the queue is full — that's the backpressure mechanism. Parser failures propagate as a thrown exception out of the
-   * calling `Async[F].blocking`, where fs2's `concurrently` re-routes them into the consumer-side error channel.
+   * Synchronously parse the supplied InputStream with TagSoup, pushing each text fragment into the queue. Blocks on
+   * `queue.put` if the queue is full — that's the backpressure mechanism. Parser failures propagate as a thrown
+   * exception out of the calling `Async[F].blocking`, where fs2's `concurrently` re-routes them into the consumer-side
+   * error channel.
    */
-  private def runParser(path: NioPath, queue: LinkedBlockingQueue[Option[String]]): Unit = {
+  private def runParser(is: InputStream, queue: LinkedBlockingQueue[Option[String]]): Unit = {
     val parser  = new Parser()
     val handler = new TextEmittingHandler(queue)
     parser.setContentHandler(handler)
-    val byteStream = new BufferedInputStream(new FileInputStream(path.toFile))
-    val source     = new InputSource(byteStream)
-    try
-      parser.parse(source)
-    finally
-      byteStream.close()
+    val source = new InputSource(is)
+    parser.parse(source)
   }
 
   /**

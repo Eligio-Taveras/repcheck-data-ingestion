@@ -1,6 +1,8 @@
 package repcheck.ingestion.bills.text.chunking
 
-import fs2.{Pipe, Pull, Stream}
+import scala.annotation.tailrec
+
+import fs2.{Chunk, Pipe, Pull, Stream}
 
 /**
  * Streaming bill-text chunker. Takes a `Stream[F, String]` of semantic fragments emitted by the streaming extraction
@@ -22,11 +24,22 @@ import fs2.{Pipe, Pull, Stream}
  * vector per slice without exceeding its input context window. Bill text is overwhelmingly ASCII so the char count
  * tracks byte/token count closely; the model truncates inside any slightly oversized slice on its own end.
  *
+ * ==Stack safety==
+ *
+ *   - The inner buffer-draining loop ([[collectFullChunksFromBuffer]]) is a classic accumulator-based `@tailrec` —
+ *     verified by the compiler — so it can flush a 1 GiB buffer worth of full chunks without growing the JVM stack.
+ *   - The outer fragment-pulling loop ([[pullFragmentsAndEmitChunks]]) uses fs2's `Pull.loop` primitive, which is
+ *     stack-safe by construction (fs2's Pull monad is a stack-safe free interpretation, and `Pull.loop` is the
+ *     library-blessed way to express "iterate this step until it returns `None`"). Both `Pull.loop` and `@tailrec` are
+ *     explicit-by-construction stack-safety mechanisms; nothing here relies on incidental tail-call elimination by the
+ *     JVM.
+ *
  * ==Determinism + ordering==
  *
  * For a fixed `(input fragments, maxChunkChars)` pair, [[chunkPipe]] emits the same chunks in the same order. The
- * concatenation of all emitted chunks equals the concatenation of all input fragments. Re-processing a bill yields
- * identical chunks → `ORDER BY chunk_index` after persistence reconstructs the document exactly.
+ * concatenation of all emitted chunks equals the concatenation of all input fragments (modulo whitespace trim at chunk
+ * boundaries). Re-processing a bill yields identical chunks → `ORDER BY chunk_index` after persistence reconstructs the
+ * document.
  */
 object BillTextChunker {
 
@@ -46,52 +59,61 @@ object BillTextChunker {
     if (maxChunkChars <= 0) {
       Stream.empty
     } else {
-      go(in, "", maxChunkChars).stream
+      pullFragmentsAndEmitChunks[F](maxChunkChars).apply((in, "")).stream
     }
   }
 
   /**
-   * Recursive `Pull` that pulls one fragment from upstream, appends it to the running buffer, drains every full chunk
-   * out of the buffer, and recurses on the remaining (sub-`maxChunkChars`) tail. On upstream termination, emits the
-   * final residual as the last chunk if non-empty.
+   * Outer loop, expressed via fs2's stack-safe `Pull.loop` primitive. Each iteration pulls one fragment from upstream,
+   * appends it to the buffer, drains every full chunk via the `@tailrec` inner accumulator, emits all the collected
+   * chunks at once, and iterates with the residual buffer. On upstream termination, emits the final residual chunk if
+   * non-empty.
    *
-   * Pull-based rather than `evalMap`-based because each input fragment may produce zero, one, or many output chunks
-   * (depending on how far over `maxChunkChars` the buffer grew). `evalMap` is 1:1; `Pull.output1` repeatedly inside a
-   * recursive pull lets us emit any number of chunks per input.
+   * `Pull.loop` returns `R => Pull[F, O, Unit]` — partially-applied here so the call site reads
+   * `pullFragmentsAndEmitChunks(maxChunkChars).apply((upstream, ""))`.
    */
-  private def go[F[_]](
-    upstream: Stream[F, String],
-    buffer: String,
-    maxChunkChars: Int,
-  ): Pull[F, String, Unit] =
-    upstream.pull.uncons1.flatMap {
-      case Some((fragment, rest)) =>
-        drainFullChunks(buffer + fragment, maxChunkChars).flatMap(newBuffer => go(rest, newBuffer, maxChunkChars))
-      case None =>
-        val finalChunk = buffer.trim
-        if (finalChunk.nonEmpty) Pull.output1(finalChunk) else Pull.done
+  private def pullFragmentsAndEmitChunks[F[_]](
+    maxChunkChars: Int
+  ): ((Stream[F, String], String)) => Pull[F, String, Unit] =
+    Pull.loop[F, String, (Stream[F, String], String)] {
+      case (upstream, buffer) =>
+        upstream.pull.uncons1.flatMap {
+          case Some((fragment, rest)) =>
+            val (chunksToEmit, residualBuffer) = collectFullChunksFromBuffer(buffer + fragment, maxChunkChars, Nil)
+            Pull.output(Chunk.from(chunksToEmit)).as(Some((rest, residualBuffer)))
+          case None =>
+            val finalChunk = buffer.trim
+            val emit       = if (finalChunk.nonEmpty) Pull.output1(finalChunk) else Pull.done
+            emit.as(None)
+        }
     }
 
   /**
-   * Repeatedly slice `maxChunkChars` off the front of `buffer` and emit it as a chunk (trimmed), until the buffer is
-   * shorter than `maxChunkChars`. Returns the residual buffer (always strictly shorter than `maxChunkChars`).
+   * `@tailrec` accumulator that slices `maxChunkChars` off the front of `buffer` repeatedly, collecting trimmed
+   * non-empty chunks into `acc` (in reverse order), until the buffer is shorter than `maxChunkChars`. Returns the
+   * collected chunks in document order along with the residual buffer (always strictly shorter than `maxChunkChars`).
    *
    * The per-chunk `.trim` compensates for the upstream extractors' decision to collapse whitespace runs without
    * trimming fragment-by-fragment (because trimming a fragment destroys inter-fragment whitespace at boundaries).
    * Trimming once per chunk only affects ~1 character at each end of a 12 KB chunk and gets the embedding model the
    * clean input it expects.
    *
-   * If the trimmed chunk is empty (the slice was pure whitespace), it's omitted — the embedding model can't do anything
-   * with empty input and `raw_bill_text.content` has a NOT NULL implicit contract.
+   * Empty post-trim chunks are dropped — the embedding model can't do anything with empty input and
+   * `raw_bill_text.content` has a NOT NULL implicit contract.
    */
-  private def drainFullChunks[F[_]](buffer: String, maxChunkChars: Int): Pull[F, String, String] =
+  @tailrec
+  private def collectFullChunksFromBuffer(
+    buffer: String,
+    maxChunkChars: Int,
+    acc: List[String],
+  ): (List[String], String) =
     if (buffer.length < maxChunkChars) {
-      Pull.pure(buffer)
+      (acc.reverse, buffer)
     } else {
       val chunk     = buffer.substring(0, maxChunkChars).trim
       val remaining = buffer.substring(maxChunkChars)
-      val emitChunk = if (chunk.nonEmpty) Pull.output1(chunk) else Pull.done
-      emitChunk >> drainFullChunks(remaining, maxChunkChars)
+      val newAcc    = if (chunk.nonEmpty) chunk :: acc else acc
+      collectFullChunksFromBuffer(remaining, maxChunkChars, newAcc)
     }
 
 }

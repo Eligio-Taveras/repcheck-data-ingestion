@@ -21,7 +21,6 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillTextVersionRepository}
 import repcheck.ingestion.bills.common.testing.{DockerRequired, PubSubEmulatorFixture, TransactorFixture}
-import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, NoOpEmbeddingService}
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
@@ -141,8 +140,7 @@ class FullChainIntegrationSpec
   }
 
   private def buildProcessor(): BillTextProcessor[IO] = {
-    val downloader =
-      new BillTextDownloader[IO](httpClient, BillTextPipelineConfig(1, 10, 100.millis), testLogger)
+    val downloader      = new BillTextDownloader[IO](httpClient, testLogger)
     val pubsubPublisher = new GooglePubSubEventPublisher[IO](publisher)
     val pipelineEventPublisher =
       new DefaultIngestionEventPublisher[IO](
@@ -163,8 +161,8 @@ class FullChainIntegrationSpec
       eventPublisher = pipelineEventPublisher,
       xa = xa,
       logger = testLogger,
-      extractText = (path, format) =>
-        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](path, format),
+      extractText = (bytes, format) =>
+        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](bytes, format),
     )
   }
 

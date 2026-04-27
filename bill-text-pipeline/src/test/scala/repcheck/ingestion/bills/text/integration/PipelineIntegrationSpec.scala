@@ -21,7 +21,6 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillTextVersionRepository}
 import repcheck.ingestion.bills.common.testing.{DockerRequired, PubSubEmulatorFixture, TransactorFixture}
-import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{
   EmbeddingConfig,
@@ -70,12 +69,6 @@ class PipelineIntegrationSpec
     embedBatchSize = 10,
   )
 
-  private val pipelineConfig = BillTextPipelineConfig(
-    parallelism = 1,
-    downloadTimeoutSeconds = 10,
-    pageDelay = 100.millis,
-  )
-
   private lazy val (httpClient, httpShutdown) = EmberClientBuilder
     .default[IO]
     .withTimeout(10.seconds)
@@ -116,7 +109,7 @@ class PipelineIntegrationSpec
     embeddingService: EmbeddingService[IO],
     embeddingConfig: EmbeddingConfig = defaultEmbeddingConfig,
   ): BillTextProcessor[IO] = {
-    val downloader      = new BillTextDownloader[IO](httpClient, pipelineConfig, testLogger)
+    val downloader      = new BillTextDownloader[IO](httpClient, testLogger)
     val pubsubPublisher = new GooglePubSubEventPublisher[IO](publisher)
     val eventPublisher =
       new DefaultIngestionEventPublisher[IO](
@@ -137,8 +130,8 @@ class PipelineIntegrationSpec
       eventPublisher = eventPublisher,
       xa = xa,
       logger = testLogger,
-      extractText = (path, format) =>
-        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](path, format),
+      extractText = (bytes, format) =>
+        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](bytes, format),
     )
   }
 
