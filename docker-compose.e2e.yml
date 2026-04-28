@@ -256,6 +256,13 @@ services:
       OLLAMA_EMBED_BATCH_SIZE: "5"
       OLLAMA_EMBED_BATCH_TIMEOUT: "200ms"
       PIPELINE_PARALLELISM: "1"
+      # GovInfo — required by config schema. The e2e fixtures point at WireMock URLs (not the
+      # Congress.gov BILLS-* shape) so the URL rewriter falls through to passthrough; the key value
+      # is unused in practice. Stays settable for future fixtures that exercise the GovInfo path.
+      GOVINFO_API_KEY: e2e-test-key
+      GOVINFO_BASE_URL: http://wiremock:8080
+      # Congress.gov API key — kept available for future api.congress.gov metadata calls in this pipeline.
+      CONGRESS_GOV_API_KEY: e2e-test-key
 
   votes-pipeline:
     build:

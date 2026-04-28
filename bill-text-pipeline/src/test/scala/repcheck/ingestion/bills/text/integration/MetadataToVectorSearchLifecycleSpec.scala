@@ -224,7 +224,12 @@ class MetadataToVectorSearchLifecycleSpec
   }
 
   private def buildProcessor(withEmbedding: Boolean): BillTextProcessor[IO] = {
-    val downloader = new BillTextDownloader[IO](httpClient, testLogger)
+    val downloader = new BillTextDownloader[IO](
+      client = httpClient,
+      govInfoApiKey = "integration-test-key",
+      govInfoBaseUrl = "https://api.govinfo.gov",
+      logger = testLogger,
+    )
     val (embeddingService, embeddingConfig) =
       if (withEmbedding) {
         val cfg = EmbeddingConfig(

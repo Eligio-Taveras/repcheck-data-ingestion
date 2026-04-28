@@ -14,11 +14,20 @@ import repcheck.ingestion.bills.text.errors.{InvalidTextUrl, TextDownloadFailed}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 /**
- * Streams a Congress.gov bill text body straight from the HTTP response into the downstream extractor — no temp file
- * for HTML / XML / plain-text formats. Only PDF needs a temp file (PDF format requires random access to the xref table
- * at the end of the file), and that materialization is handled internally by
+ * Streams a bill text body from GPO's `api.govinfo.gov` straight into the downstream extractor — no temp file for HTML
+ * / XML / plain-text formats. Only PDF needs a temp file (PDF format requires random access to the xref table at the
+ * end of the file), and that materialization is handled internally by
  * [[repcheck.ingestion.bills.text.extraction.PdfStreamExtractor]] so the downloader's API stays uniform: open HTTP,
  * emit response body bytes.
+ *
+ * ==Source: GovInfo, not Congress.gov==
+ *
+ * Congress.gov's `/bill/.../text` endpoint returns metadata pointing at `www.congress.gov/{c}/bills/.../BILLS-*.htm`,
+ * which is fronted by Cloudflare. Cloudflare bot-challenges raw HTTP clients (no JS, no cookies) with HTTP 403 + a
+ * "Just a moment..." page roughly 30% of the time, regardless of pacing. The same content is mirrored on GPO's
+ * `api.govinfo.gov` under stable, key-authenticated package paths — no anti-bot layer. We rewrite each incoming
+ * Congress.gov URL to its GovInfo equivalent before issuing the request. URLs that don't match the
+ * `BILLS-*.{htm|xml|pdf}` shape fall through to the original URL (acceptable long-tail fallback).
  *
  * ==Why streaming, no buffering==
  *
@@ -50,23 +59,32 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
  * @param client
  *   the http4s `Client[F]` used for the request. Caller is responsible for any rate-limit wrapping; this downloader
  *   doesn't paginate or retry.
+ * @param govInfoApiKey
+ *   GovInfo API key issued by GPO's `govinfo.gov/api-signup`. Appended as `?api_key=...` on every rewritten GovInfo
+ *   request. Not used for non-rewrite (passthrough) URLs.
+ * @param govInfoBaseUrl
+ *   base URL for the GovInfo API; defaults to the production endpoint, overridable for tests pointing at WireMock.
  * @param logger
  *   structured logger; download lifecycle events are emitted with the supplied correlation ID.
  */
 class BillTextDownloader[F[_]: Async](
   client: Client[F],
+  govInfoApiKey: String,
+  govInfoBaseUrl: String,
   logger: PipelineLogger[F],
 ) {
 
   private val StepName = "bill-text-download"
 
   /**
-   * Stream the response body bytes from `textUrl`. Status-code handling: 404 → [[TextDownloadFailed]], non-success
-   * other than 404 → [[TextDownloadFailed]] including the response body for debugging, success → emit `response.body`.
+   * Stream the response body bytes from `textUrl`. The URL is rewritten to its GovInfo equivalent when it matches the
+   * Congress.gov `BILLS-*.{htm|xml|pdf}` shape. Status-code handling: 404 → [[TextDownloadFailed]], non-success other
+   * than 404 → [[TextDownloadFailed]] including the response body for debugging, success → emit `response.body`.
    *
    * @param textUrl
-   *   absolute URL of the bill text body to download. Parsed as an http4s `Uri`; an unparseable string raises
-   *   [[InvalidTextUrl]] when the stream is first pulled.
+   *   URL emitted by the Congress.gov `/bill/.../text` API for a chosen version + format. If it points at
+   *   `www.congress.gov/.../BILLS-*.{htm|xml|pdf}`, it's rewritten to the GovInfo package endpoint with the API key.
+   *   Otherwise it's used as-is.
    * @param textFormat
    *   format hint from Congress.gov (e.g. `"Formatted Text"`, `"PDF"`). Used for log context only — the actual format
    *   dispatch happens in [[repcheck.ingestion.bills.text.extraction.BillTextExtractor]].
@@ -85,22 +103,41 @@ class BillTextDownloader[F[_]: Async](
       entityId = Some(textUrl),
     )
 
-    Stream.eval(parseUrl(textUrl)).flatMap { uri =>
-      Stream.exec(logger.info(logCtx, s"Opening HTTP request to $textUrl (format=$textFormat)")) ++
-        Stream.resource(client.run(Request[F](uri = uri))).flatMap { response =>
-          response.status match {
-            case Status.NotFound =>
-              Stream.raiseError[F](TextDownloadFailed(textUrl, textFormat, "HTTP 404 - bill text not found"))
-            case status if status.isSuccess =>
-              response.body
-            case status =>
-              Stream.eval(response.as[String]).flatMap { body =>
-                Stream.raiseError[F](TextDownloadFailed(textUrl, textFormat, s"HTTP ${status.code}: $body"))
-              }
+    Stream.eval(buildRequest(textUrl)).flatMap {
+      case (request, effectiveUrl) =>
+        Stream.exec(logger.info(logCtx, s"Opening HTTP request to $effectiveUrl (format=$textFormat)")) ++
+          Stream.resource(client.run(request)).flatMap { response =>
+            response.status match {
+              case Status.NotFound =>
+                Stream.raiseError[F](TextDownloadFailed(textUrl, textFormat, "HTTP 404 - bill text not found"))
+              case status if status.isSuccess =>
+                response.body
+              case status =>
+                Stream.eval(response.as[String]).flatMap { body =>
+                  Stream.raiseError[F](TextDownloadFailed(textUrl, textFormat, s"HTTP ${status.code}: $body"))
+                }
+            }
           }
-        }
     }
   }
+
+  /**
+   * Translates the caller-supplied URL into the actual `Request[F]` we issue, applying the GovInfo URL rewrite +
+   * api_key parameter when the input matches the BILLS-* pattern. Returns the request alongside the effective URL
+   * string used for logging — note we deliberately log a redacted form (without the api_key) so secrets don't leak into
+   * log aggregators.
+   */
+  private[download] def buildRequest(textUrl: String): F[(Request[F], String)] =
+    GovInfoUrlRewriter.parseCongressGovBillUrl(textUrl) match {
+      case Some((packageId, suffix)) =>
+        val govInfoUrl = GovInfoUrlRewriter.toGovInfoUrl(packageId, suffix, govInfoBaseUrl)
+        parseUrl(govInfoUrl).map { uri =>
+          val authedUri = uri.withQueryParam("api_key", govInfoApiKey)
+          (Request[F](uri = authedUri), govInfoUrl)
+        }
+      case None =>
+        parseUrl(textUrl).map(uri => (Request[F](uri = uri), textUrl))
+    }
 
   private[download] def parseUrl(textUrl: String): F[Uri] =
     Async[F].fromEither(

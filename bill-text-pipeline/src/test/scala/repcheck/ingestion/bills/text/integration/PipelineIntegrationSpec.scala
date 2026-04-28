@@ -120,7 +120,12 @@ class PipelineIntegrationSpec
     embeddingService: EmbeddingService[IO],
     embeddingConfig: EmbeddingConfig = defaultEmbeddingConfig,
   ): BillTextProcessor[IO] = {
-    val downloader      = new BillTextDownloader[IO](httpClient, testLogger)
+    val downloader = new BillTextDownloader[IO](
+      client = httpClient,
+      govInfoApiKey = "integration-test-key",
+      govInfoBaseUrl = "https://api.govinfo.gov",
+      logger = testLogger,
+    )
     val pubsubPublisher = new GooglePubSubEventPublisher[IO](publisher)
     val eventPublisher =
       new DefaultIngestionEventPublisher[IO](
