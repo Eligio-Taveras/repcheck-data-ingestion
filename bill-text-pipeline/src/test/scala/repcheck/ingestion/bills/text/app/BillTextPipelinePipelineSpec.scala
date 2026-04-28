@@ -226,9 +226,15 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       source = "test",
     )
 
+    // The new buildStream issues Pull RPCs until one returns empty (drain-until-empty semantics). The stub
+    // returns the test event on the first pull and an empty list thereafter, so the stream terminates after
+    // exactly one event flows through. Without this two-phase stub the test would loop forever.
+    val pullCount = new java.util.concurrent.atomic.AtomicInteger(0)
     val subscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
-      def pull(maxMessages: Int): IO[List[ReceivedEvent]] =
-        IO.pure(List(ReceivedEvent(pipelineEvent, "ack-1")))
+      def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.delay {
+        if (pullCount.getAndIncrement() == 0) List(ReceivedEvent(pipelineEvent, "ack-1"))
+        else List.empty
+      }
       def acknowledge(ackIds: List[String]): IO[Unit] = IO.unit
     }
 
@@ -247,6 +253,61 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
 
     val _ = results.size shouldBe 1
     results.headOption.map(_.isSucceeded) shouldBe Some(true)
+  }
+
+  it should "drain across multiple pulls until subscription is empty" in {
+    // Verifies the new repeatEval+takeWhile behavior: simulate the Pub/Sub emulator's 100-cap by returning N
+    // events on pull #1, M events on pull #2, then empty on pull #3. The stream should produce N+M results.
+    val logger        = new StubPipelineLogger
+    val correlationId = UUID.randomUUID()
+
+    def evt(naturalKey: String): ReceivedEvent = {
+      val payload = BillTextAvailableEvent(
+        naturalKey = naturalKey,
+        congress = 118,
+        textUrl = s"https://example.com/$naturalKey",
+        textFormat = "Formatted Text",
+        versionCode = "IH",
+        previousVersionCode = None,
+      )
+      val pe = PipelineEvent(
+        eventType = "bill.text.available",
+        payload = payload,
+        timestamp = Instant.now(),
+        eventId = UUID.randomUUID(),
+        correlationId = correlationId,
+        source = "test",
+      )
+      ReceivedEvent(pe, s"ack-$naturalKey")
+    }
+
+    val pullCount = new java.util.concurrent.atomic.AtomicInteger(0)
+    val subscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
+      def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.delay {
+        pullCount.getAndIncrement() match {
+          case 0 => List(evt("118-HR-1"), evt("118-HR-2"), evt("118-HR-3"))
+          case 1 => List(evt("118-HR-4"), evt("118-HR-5"))
+          case _ => List.empty
+        }
+      }
+      def acknowledge(ackIds: List[String]): IO[Unit] = IO.unit
+    }
+
+    val processor = mock[BillTextProcessor[IO]]
+    org.mockito.Mockito
+      .when(
+        processor.processEvent(
+          org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
+          org.mockito.ArgumentMatchers.any[UUID],
+        )
+      )
+      .thenReturn(IO.pure(ProcessingResult.Succeeded("any")))
+
+    val stream  = BillTextPipelinePipeline.buildStream[IO](subscriber, processor, testConfig, logger)
+    val results = stream.compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 5
+    results.forall(_.isSucceeded) shouldBe true
   }
 
   it should "produce empty stream when subscriber has no messages" in {

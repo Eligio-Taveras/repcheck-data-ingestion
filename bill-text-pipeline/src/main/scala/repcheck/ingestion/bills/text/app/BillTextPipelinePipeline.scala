@@ -135,9 +135,17 @@ private[app] object BillTextPipelinePipeline {
   }
 
   /**
-   * Builds the FS2 result stream from the Pub/Sub subscriber. Pulls a batch of messages, deserializes each into a
-   * `PipelineEvent[BillTextAvailableEvent]`, processes via the `BillTextProcessor`, and acknowledges successfully
-   * processed messages. The correlationId is extracted from each `PipelineEvent` envelope — one correlationId per bill.
+   * Builds the FS2 result stream from the Pub/Sub subscriber. Pulls batches of messages until the subscription drains,
+   * deserializes each into a `PipelineEvent[BillTextAvailableEvent]`, processes via the `BillTextProcessor`, and
+   * acknowledges successfully processed messages. The correlationId is extracted from each `PipelineEvent` envelope —
+   * one correlationId per bill.
+   *
+   * `repeatEval` + `takeWhile(_.nonEmpty)` keeps issuing Pull RPCs until one returns zero messages, then terminates the
+   * stream. This works around the Pub/Sub emulator's per-RPC cap (100 messages regardless of `maxMessages` requested)
+   * without changing observed behavior on production GCP Pub/Sub: there too we keep pulling as long as messages are
+   * available, only stopping when the subscription is empty. Backpressure flows through `parEvalMap` — pulls happen on
+   * demand as parallelism slots free up, so the next RPC fires before the previous batch's last bill finishes
+   * processing.
    */
   private[app] def buildStream[F[_]: Async](
     subscriber: PubSubEventSubscriber[F],
@@ -146,7 +154,8 @@ private[app] object BillTextPipelinePipeline {
     logger: PipelineLogger[F],
   ): Stream[F, ProcessingResult] =
     Stream
-      .eval(subscriber.pull(config.eventSubscriber.maxMessages))
+      .repeatEval(subscriber.pull(config.eventSubscriber.maxMessages))
+      .takeWhile(_.nonEmpty)
       .flatMap(Stream.emits)
       .parEvalMap(config.pipeline.parallelism) { receivedEvent =>
         processAndAck(subscriber, processor, receivedEvent, logger)
