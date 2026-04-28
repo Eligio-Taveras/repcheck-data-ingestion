@@ -325,6 +325,32 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     results shouldBe empty
   }
 
+  it should "treat a Pub/Sub pull timeout as drained — emits empty list, logs warn, terminates cleanly" in {
+    // Defensive guard: when the SDK silently stalls a Pull RPC (observed during PR #83 validation), the
+    // configured `pullTimeout` should fire, surface a warn log, and short-circuit the stream. The next
+    // Ofelia tick re-runs the pipeline, so we don't lose work — we just exit instead of wedging.
+    val logger    = new StubPipelineLogger
+    val processor = mock[BillTextProcessor[IO]]
+
+    // Subscriber whose pull never returns. With pullTimeout=100ms below, the .timeout() will fire.
+    val hangingSubscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
+      def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.never
+      def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
+    }
+
+    val timeoutConfig = testConfig.copy(
+      eventSubscriber = testConfig.eventSubscriber.copy(pullTimeout = 100.millis)
+    )
+
+    val stream  = BillTextPipelinePipeline.buildStream[IO](hangingSubscriber, processor, timeoutConfig, logger)
+    val results = stream.compile.toList.unsafeRunSync()
+
+    val _              = results shouldBe empty
+    val warnedMessages = logger.messages.filter(_.startsWith("WARN: "))
+    val _              = warnedMessages should not be empty
+    warnedMessages.exists(_.contains("Pub/Sub pull timed out")) shouldBe true
+  }
+
   "processAndAck" should "acknowledge successfully processed events" in {
     val logger        = new StubPipelineLogger
     val ackedIds      = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
