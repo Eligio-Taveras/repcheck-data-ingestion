@@ -427,7 +427,15 @@ services:
     restart: "no"
 
 volumes:
+  # Reuse the existing AlloyDB data volume created by the original `repcheck-data-ingestion`
+  # compose run (1.2 GB, ~139k bills across 72 congresses). When this worktree's compose first
+  # came up it created a fresh per-project volume `cross-bill-embed_alloydbdata` and re-ran
+  # migrations against an empty schema, leaving the stack with only ~7k bills (whatever the
+  # current run had time to ingest). Pointing at the existing volume by name (external: true)
+  # restores the historical data; Liquibase migrations are additive so any new migrations on
+  # this branch will run cleanly on top.
   alloydbdata:
-    driver: local
+    external: true
+    name: repcheck-data-ingestion_alloydbdata
   ollamadata:
     driver: local
