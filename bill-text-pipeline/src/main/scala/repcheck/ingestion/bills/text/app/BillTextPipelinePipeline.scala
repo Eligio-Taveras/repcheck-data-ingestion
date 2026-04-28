@@ -245,14 +245,16 @@ private[app] object BillTextPipelinePipeline {
       pubSubPublisher   <- pubSubPublisherFactory(config.eventPublisher)
       pubSubSubscriber  <- pubSubSubscriberFactory(config.eventSubscriber, logger)
       embeddingService = new OllamaEmbeddingService[F](ollamaClient, config.embedding, logger)
+      // Foreground-only embedder: no background fiber, no Queue, no timeout. The producer that fills the buffer
+      // to `batchSize` synchronously embeds + persists; the producer whose chunk stream ends force-flushes the
+      // residual via finalizeSubmission. `embedBatchTimeout` and `embedQueueCapacityMultiplier` are no longer
+      // needed at construction time (the buffer is unbounded by Ref semantics; flushes are threshold-triggered).
       embedder <- CrossBillEmbedder.resource[F](
         embeddingService = embeddingService,
         rawBillTextRepository = new DoobieRawBillTextRepository,
         xa = xa,
         logger = logger,
-        embedBatchSize = config.embedding.embedBatchSize,
-        embedBatchTimeout = config.embedding.embedBatchTimeout,
-        queueCapacity = config.embedding.embedBatchSize * config.embedding.embedQueueCapacityMultiplier,
+        batchSize = config.embedding.embedBatchSize,
       )
     } yield PipelineResources(xa, congressGovClient, ollamaClient, pubSubPublisher, pubSubSubscriber, embedder)
 

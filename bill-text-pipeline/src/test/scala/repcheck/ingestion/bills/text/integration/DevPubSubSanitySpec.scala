@@ -313,9 +313,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
         rawBillTextRepository = rawTextRepo,
         xa = xa,
         logger = testLogger,
-        embedBatchSize = embeddingConfig.embedBatchSize,
-        embedBatchTimeout = embeddingConfig.embedBatchTimeout,
-        queueCapacity = embeddingConfig.embedBatchSize * 10,
+        batchSize = embeddingConfig.embedBatchSize,
       )
       .allocated
       .unsafeRunSync()

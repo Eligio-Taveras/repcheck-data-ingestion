@@ -167,9 +167,7 @@ class FullChainIntegrationSpec
         rawBillTextRepository = rawTextRepo,
         xa = xa,
         logger = testLogger,
-        embedBatchSize = embeddingConfigStub.embedBatchSize,
-        embedBatchTimeout = embeddingConfigStub.embedBatchTimeout,
-        queueCapacity = embeddingConfigStub.embedBatchSize * 10,
+        batchSize = embeddingConfigStub.embedBatchSize,
       )
       .allocated
       .unsafeRunSync()
