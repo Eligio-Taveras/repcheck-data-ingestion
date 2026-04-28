@@ -331,6 +331,26 @@ class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
   // Resource cleanup edge case
   // ===========================================================================
 
+  it should "leave a bill in state when a flush completes but more chunks are pending (else branch of applyBatchResult)" in {
+    // Covers the `if (updated.shouldComplete) { ... } else { ... }` else branch on line 274:
+    // a bill whose persisted-count grows past one flush but hasn't reached `expected` yet.
+    // batchSize = 1 → every chunk triggers a flush → first 2 flushes leave the bill still in state.
+    val embedder = new RecordingEmbeddingService
+    val rawRepo  = new RecordingRawRepo
+
+    val result = runWithEmbedder(embedder, rawRepo, batchSize = 1) { e =>
+      e.processChunks(ctx(1L, "118-HR-1"), Stream.emits(List("a", "b", "c")))
+    }
+
+    val _ = result match {
+      case ProcessingResult.Succeeded(naturalKey, _) => naturalKey shouldBe "118-HR-1"
+      case other                                     => fail(s"Expected Succeeded but got $other")
+    }
+    // 3 separate batches because batchSize=1 forces a flush per chunk.
+    val _ = embedder.batches.size shouldBe 3
+    rawRepo.allRows.size shouldBe 3
+  }
+
   it should "classify SocketTimeoutException as Transient" in {
     val rawRepo  = new RecordingRawRepo
     val embedder = new FailingEmbeddingService(new java.net.SocketTimeoutException("read timed out"))
