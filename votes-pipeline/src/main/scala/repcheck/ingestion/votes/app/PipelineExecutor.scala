@@ -36,7 +36,8 @@ private[app] object PipelineExecutor {
   ) {
     def itemsProcessed: Int = succeededCount + skippedCount + failures.length
     def itemsFailed: Int    = failures.length
-    def itemsSucceeded: Int = succeededCount
+    // Skipped results count toward succeeded (per pipeline-models v0.1.21 — idempotent skip is a successful no-op).
+    def itemsSucceeded: Int = succeededCount + skippedCount
 
     /**
      * Group failures by reason and count each. Derived from the retained failure list rather than tracked in parallel,
