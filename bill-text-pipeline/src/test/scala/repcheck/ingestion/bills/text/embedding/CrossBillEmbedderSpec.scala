@@ -331,6 +331,80 @@ class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
   // Resource cleanup edge case
   // ===========================================================================
 
+  it should "classify SocketTimeoutException as Transient" in {
+    val rawRepo  = new RecordingRawRepo
+    val embedder = new FailingEmbeddingService(new java.net.SocketTimeoutException("read timed out"))
+
+    val result = runWithEmbedder(embedder, rawRepo, batchSize = 50) { e =>
+      e.processChunks(ctx(1L, "118-HR-1"), Stream.emit("text"))
+    }
+
+    result match {
+      case ProcessingResult.Failed(_, _, ec) => ec shouldBe "Transient"
+      case other                             => fail(s"Expected Failed(Transient) but got $other")
+    }
+  }
+
+  it should "classify ConnectException as Transient" in {
+    val rawRepo  = new RecordingRawRepo
+    val embedder = new FailingEmbeddingService(new java.net.ConnectException("connection refused"))
+
+    val result = runWithEmbedder(embedder, rawRepo, batchSize = 50) { e =>
+      e.processChunks(ctx(1L, "118-HR-1"), Stream.emit("text"))
+    }
+
+    result match {
+      case ProcessingResult.Failed(_, _, ec) => ec shouldBe "Transient"
+      case other                             => fail(s"Expected Failed(Transient) but got $other")
+    }
+  }
+
+  it should "classify SQLTransientException as Transient via DB-side failure" in {
+    val rawRepo  = new FailingRawRepo(new java.sql.SQLTransientException("rolled back"))
+    val embedder = new RecordingEmbeddingService
+
+    val result = runWithEmbedder(embedder, rawRepo, batchSize = 50) { e =>
+      e.processChunks(ctx(1L, "118-HR-1"), Stream.emit("text"))
+    }
+
+    result match {
+      case ProcessingResult.Failed(_, _, ec) => ec shouldBe "Transient"
+      case other                             => fail(s"Expected Failed(Transient) but got $other")
+    }
+  }
+
+  it should "classify a generic Throwable as Systemic (default branch)" in {
+    val rawRepo  = new RecordingRawRepo
+    val embedder = new FailingEmbeddingService(new RuntimeException("unexpected"))
+
+    val result = runWithEmbedder(embedder, rawRepo, batchSize = 50) { e =>
+      e.processChunks(ctx(1L, "118-HR-1"), Stream.emit("text"))
+    }
+
+    result match {
+      case ProcessingResult.Failed(_, _, ec) => ec shouldBe "Systemic"
+      case other                             => fail(s"Expected Failed(Systemic) but got $other")
+    }
+  }
+
+  it should "fall back to the simple class name when the exception's message is null" in {
+    // Covers the `Option(error.getMessage).getOrElse(error.getClass.getSimpleName)` branch in failBatch.
+    val rawRepo  = new RecordingRawRepo
+    val embedder = new FailingEmbeddingService(new RuntimeException()) // no message
+
+    val result = runWithEmbedder(embedder, rawRepo, batchSize = 50) { e =>
+      e.processChunks(ctx(1L, "118-HR-1"), Stream.emit("text"))
+    }
+
+    result match {
+      case ProcessingResult.Failed(_, reason, _) =>
+        // Exception with null message falls back to simple class name.
+        val _ = reason should include("RuntimeException")
+        succeed
+      case other => fail(s"Expected Failed but got $other")
+    }
+  }
+
   it should "Fail the bill's Deferred via cleanup when the chunk stream raises mid-submission" in {
     val embedder    = new RecordingEmbeddingService
     val rawRepo     = new RecordingRawRepo
