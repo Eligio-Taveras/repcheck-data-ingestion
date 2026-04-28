@@ -263,7 +263,7 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val loggerMock = mkLogger
     val converter  = new SenateVoteConverter[IO](loggerMock, testBaseUrl)
     val dto = senateDto(
-      document = billDoc(docType = "S.", docNumber = "1059", docCongress = 0, docTitle = "Old vote, missing congress"),
+      document = billDoc(docType = "S.", docNumber = "1059", docCongress = 0, docTitle = "Old vote, missing congress")
     )
 
     val calls  = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
@@ -284,7 +284,7 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
   it should "treat negative documentCongress identically to 0 (defensive lower-bound check)" in {
     val converter = new SenateVoteConverter[IO](mkLogger, testBaseUrl)
     val dto = senateDto(
-      document = billDoc(docType = "HR.", docNumber = "42", docCongress = -1),
+      document = billDoc(docType = "HR.", docNumber = "42", docCongress = -1)
     )
 
     val calls  = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
