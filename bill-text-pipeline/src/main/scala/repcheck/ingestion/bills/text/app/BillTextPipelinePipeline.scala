@@ -1,5 +1,8 @@
 package repcheck.ingestion.bills.text.app
 
+import java.util.concurrent.TimeoutException
+
+import cats.effect.syntax.temporal._
 import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
@@ -12,7 +15,7 @@ import doobie.util.transactor.Transactor
 import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillTextVersionRepository}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
+import repcheck.ingestion.bills.text.embedding.{CrossBillEmbedder, EmbeddingConfig, OllamaEmbeddingService}
 import repcheck.ingestion.bills.text.extraction.BillTextExtractor
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
@@ -37,12 +40,28 @@ private[app] object BillTextPipelinePipeline {
     failureHandler: PipelineFailureHandlerConfig,
   ) derives pureconfig.ConfigReader
 
-  /** Resource bundle created by `buildResources` — groups all managed dependencies. */
+  /**
+   * Resource bundle created by `buildResources` — groups all managed dependencies.
+   *
+   * Two distinct HTTP clients are intentional, not redundant:
+   *
+   *   - `congressGovClient` is rate-limited (Semaphore + pageDelay) so the per-bill text downloads from
+   *     www.congress.gov and api.congress.gov stay under the published Congress.gov budget.
+   *   - `ollamaClient` has NO rate limit. Ollama is a local sidecar — there's no external quota to honor, and sharing a
+   *     rate-limit budget with Congress.gov caused a deadlock in PR #83 validation: a single leaked permit blocked both
+   *     bill downloads AND embedder `/api/embed` calls, since both were going through the same wrapped client. Embedder
+   *     calls now go through their own unrestricted client.
+   *
+   * Other consumers needing an HTTP client for an external API would get their own (typically rate-limited) client
+   * built into this bundle the same way.
+   */
   final case class PipelineResources[F[_]](
     xa: Transactor[F],
-    httpClient: Client[F],
+    congressGovClient: Client[F],
+    ollamaClient: Client[F],
     pubSubPublisher: PubSubEventPublisher[F],
     pubSubSubscriber: PubSubEventSubscriber[F],
+    embedder: CrossBillEmbedder[F],
   )
 
   private[app] def runWithFactories[F[_]: Async](
@@ -53,6 +72,7 @@ private[app] object BillTextPipelinePipeline {
       Client[F],
       Transactor[F],
       PubSubEventPublisher[F],
+      CrossBillEmbedder[F],
       AppConfig,
       PipelineLogger[F],
     ) => BillTextProcessor[F],
@@ -68,10 +88,14 @@ private[app] object BillTextPipelinePipeline {
       config <- configLoader
       logger <- loggerFactory(PipelineName)
       exitCode <- resourceBuilder(config, logger).use { resources =>
+        // The processor receives the rate-limited Congress.gov client (used by BillTextDownloader for HTTP body
+        // streaming). The Ollama client is wired into the embedder via `buildResources` directly — keep them
+        // physically separate so a stuck rate-limiter permit can never wedge the embedder.
         val processor = processorFactory(
-          resources.httpClient,
+          resources.congressGovClient,
           resources.xa,
           resources.pubSubPublisher,
+          resources.embedder,
           config,
           logger,
         )
@@ -93,6 +117,7 @@ private[app] object BillTextPipelinePipeline {
     httpClient: Client[F],
     xa: Transactor[F],
     pubSubPublisher: PubSubEventPublisher[F],
+    embedder: CrossBillEmbedder[F],
     config: AppConfig,
     logger: PipelineLogger[F],
   ): BillTextProcessor[F] = {
@@ -108,14 +133,13 @@ private[app] object BillTextPipelinePipeline {
       retryWrapper = retryWrapper,
       retryConfig = RetryConfig(),
     )
-    val embeddingService = new OllamaEmbeddingService[F](httpClient, config.embedding, logger)
 
     new BillTextProcessor[F](
       downloader = downloader,
       billRepository = billRepository,
       textVersionRepository = textVersionRepository,
       rawBillTextRepository = rawBillTextRepository,
-      embeddingService = embeddingService,
+      embedder = embedder,
       embeddingConfig = config.embedding,
       eventPublisher = eventPublisher,
       xa = xa,
@@ -125,22 +149,59 @@ private[app] object BillTextPipelinePipeline {
   }
 
   /**
-   * Builds the FS2 result stream from the Pub/Sub subscriber. Pulls a batch of messages, deserializes each into a
-   * `PipelineEvent[BillTextAvailableEvent]`, processes via the `BillTextProcessor`, and acknowledges successfully
-   * processed messages. The correlationId is extracted from each `PipelineEvent` envelope — one correlationId per bill.
+   * Builds the FS2 result stream from the Pub/Sub subscriber. Pulls batches of messages until the subscription drains
+   * (or a pull times out — see below), deserializes each into a `PipelineEvent[BillTextAvailableEvent]`, processes via
+   * the `BillTextProcessor`, and acknowledges successfully processed messages. The correlationId is extracted from each
+   * `PipelineEvent` envelope — one correlationId per bill.
+   *
+   * `repeatEval` + `takeWhile(_.nonEmpty)` keeps issuing Pull RPCs until one returns zero messages, then terminates the
+   * stream. This works around the Pub/Sub emulator's per-RPC cap (100 messages regardless of `maxMessages` requested)
+   * without changing observed behavior on production GCP Pub/Sub: there too we keep pulling as long as messages are
+   * available, only stopping when the subscription is empty. Backpressure flows through `parEvalMap` — pulls happen on
+   * demand as parallelism slots free up, so the next RPC fires before the previous batch's last bill finishes
+   * processing.
+   *
+   * ==Defensive pull timeout==
+   *
+   * Each pull is wrapped in `.timeout(pullTimeout)`; on `TimeoutException` we log a warning and short-circuit the
+   * iteration to an empty list, which `takeWhile` reads as "subscription drained" and terminates the stream cleanly.
+   * Without this guard, an SDK / emulator pull stall (observed in PR #83 validation: a Pull RPC silently failed to
+   * return after the previous batch drained, leaving the JVM idle but unable to exit) would keep the container alive
+   * indefinitely. With the guard, a stuck pull surfaces as one warning log + a clean exit + the next Ofelia tick picks
+   * up where this run left off. The timeout is configurable via `EventSubscriberConfig.pullTimeout`.
    */
   private[app] def buildStream[F[_]: Async](
     subscriber: PubSubEventSubscriber[F],
     processor: BillTextProcessor[F],
     config: AppConfig,
     logger: PipelineLogger[F],
-  ): Stream[F, ProcessingResult] =
+  ): Stream[F, ProcessingResult] = {
+    val pullTimeoutLogCtx = repcheck.ingestion.common.logging.LogContext(
+      runId = "subscriber",
+      stepName = "pubsub-pull",
+    )
+    val pullWithTimeout: F[List[ReceivedEvent]] =
+      subscriber
+        .pull(config.eventSubscriber.maxMessages)
+        .timeout(config.eventSubscriber.pullTimeout)
+        .recoverWith {
+          case _: TimeoutException =>
+            logger
+              .warn(
+                pullTimeoutLogCtx,
+                s"Pub/Sub pull timed out after ${config.eventSubscriber.pullTimeout.toString}; " +
+                  "treating as subscription drained for this run",
+              )
+              .as(List.empty[ReceivedEvent])
+        }
     Stream
-      .eval(subscriber.pull(config.eventSubscriber.maxMessages))
+      .repeatEval(pullWithTimeout)
+      .takeWhile(_.nonEmpty)
       .flatMap(Stream.emits)
       .parEvalMap(config.pipeline.parallelism) { receivedEvent =>
         processAndAck(subscriber, processor, receivedEvent, logger)
       }
+  }
 
   private[app] def processAndAck[F[_]: Async](
     subscriber: PubSubEventSubscriber[F],
@@ -165,19 +226,36 @@ private[app] object BillTextPipelinePipeline {
     }
   }
 
-  private[app] def buildResources[F[_]](
+  private[app] def buildResources[F[_]: Async](
     config: AppConfig,
     logger: PipelineLogger[F],
     transactorFactory: DatabaseConfig => Resource[F, Transactor[F]],
-    httpClientFactory: Resource[F, Client[F]],
+    congressGovClientFactory: Resource[F, Client[F]],
+    ollamaClientFactory: Resource[F, Client[F]],
     pubSubPublisherFactory: EventPublisherConfig => Resource[F, PubSubEventPublisher[F]],
     pubSubSubscriberFactory: (EventSubscriberConfig, PipelineLogger[F]) => Resource[F, PubSubEventSubscriber[F]],
   ): Resource[F, PipelineResources[F]] =
     for {
-      xa               <- transactorFactory(config.database)
-      httpClient       <- httpClientFactory
-      pubSubPublisher  <- pubSubPublisherFactory(config.eventPublisher)
-      pubSubSubscriber <- pubSubSubscriberFactory(config.eventSubscriber, logger)
-    } yield PipelineResources(xa, httpClient, pubSubPublisher, pubSubSubscriber)
+      xa <- transactorFactory(config.database)
+      // congressGovClient is the rate-limited client used by BillTextDownloader for /v3 metadata + bill-text
+      // body streaming. ollamaClient is unrestricted (local sidecar, no external quota); used only by the
+      // embedder. Splitting them prevents a leaked rate-limiter permit from wedging the embedder.
+      congressGovClient <- congressGovClientFactory
+      ollamaClient      <- ollamaClientFactory
+      pubSubPublisher   <- pubSubPublisherFactory(config.eventPublisher)
+      pubSubSubscriber  <- pubSubSubscriberFactory(config.eventSubscriber, logger)
+      embeddingService = new OllamaEmbeddingService[F](ollamaClient, config.embedding, logger)
+      // Foreground-only embedder: no background fiber, no Queue, no timeout. The producer that fills the buffer
+      // to `batchSize` synchronously embeds + persists; the producer whose chunk stream ends force-flushes the
+      // residual via finalizeSubmission. `embedBatchTimeout` and `embedQueueCapacityMultiplier` are no longer
+      // needed at construction time (the buffer is unbounded by Ref semantics; flushes are threshold-triggered).
+      embedder <- CrossBillEmbedder.resource[F](
+        embeddingService = embeddingService,
+        rawBillTextRepository = new DoobieRawBillTextRepository,
+        xa = xa,
+        logger = logger,
+        batchSize = config.embedding.embedBatchSize,
+      )
+    } yield PipelineResources(xa, congressGovClient, ollamaClient, pubSubPublisher, pubSubSubscriber, embedder)
 
 }

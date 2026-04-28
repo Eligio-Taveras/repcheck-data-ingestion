@@ -13,39 +13,43 @@ import doobie._
 
 import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.{any, anyLong, anyString}
-import org.mockito.Mockito.{never, times, verify, when}
+import org.mockito.Mockito.{doAnswer, never, times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.bills.common.persistence.{BillRepository, BillTextVersionRepository}
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{
-  EmbeddingConfig,
-  EmbeddingContextLengthExceeded,
-  EmbeddingGenerationFailed,
-  EmbeddingService,
-}
+import repcheck.ingestion.bills.text.embedding.{BillChunkEmbedder, BillEmbedCtx, EmbeddingConfig}
 import repcheck.ingestion.bills.text.errors.{BillTextProcessingFailed, TextDownloadFailed}
 import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.events.{BillTextAvailableEvent, BillTextIngestedEvent}
 import repcheck.pipeline.models.metadata.ProcessingResult
-import repcheck.shared.models.congress.dos.bill.{BillDO, BillTextVersionDO, RawBillTextDO}
+import repcheck.shared.models.congress.dos.bill.{BillDO, BillTextVersionDO}
 
 /**
- * Unit specs for [[BillTextProcessor]] under the streaming-to-temp-file refactor (Phase 2 of the bill-text-10mb plan).
- * Mocks the new collaborators:
+ * Unit specs for [[BillTextProcessor]] under the cross-bill embedder refactor (Phase 4 of the bill-text-10mb plan).
  *
- *   - `downloader.downloadToTempFile(...)` returns a `Resource[F, Path]` that yields a dummy temp file path; tests
- *     don't actually write a file because the injected `extractText` function returns canned content via
- *     `TestFixture.contentResponseRef`.
- *   - `extractText` is the new constructor-injected function on `BillTextProcessor` (production wiring uses
- *     [[repcheck.ingestion.bills.text.extraction.BillTextExtractor.extract]]). Tests inject a stub via the fixture.
- *   - `rawBillTextRepository.deleteByVersionId` and `insertOne` replace the old `replaceAll` bulk path; the processor
- *     now persists chunks one at a time after the version row is committed.
- *   - `textVersionRepository.markFetched` is the new completion marker — flips `fetched_at = NOW()` after all chunks
- *     INSERT successfully.
+ * The processor's responsibilities, post-Phase-4, are intentionally narrow — most of the per-chunk work moved into
+ * [[repcheck.ingestion.bills.text.embedding.CrossBillEmbedder]] so that chunks from different bills can be batched into
+ * a single Ollama call (the GPU was sitting at ~25% utilization with one-bill-per-batch). What the processor still
+ * owns:
+ *
+ *   - skip-check vs bill_text_versions (`isAlreadyProcessed`)
+ *   - insert the version row with `fetched_at = NULL`
+ *   - clear orphan chunks for retry-safety
+ *   - build the chunk stream (download → extract → strip-null-bytes → chunkPipe)
+ *   - hand the chunk stream off to the embedder via `embedder.processChunks`
+ *   - mark version `fetched` and publish the BillTextIngestedEvent on success
+ *   - propagate the embedder's classified `Failed` result without re-classifying it (the embedder knows whether the
+ *     failure was Transient/Systemic; the processor must not flatten that signal)
+ *
+ * What the processor no longer owns (and what these specs do NOT test — they live in `CrossBillEmbedderSpec`):
+ *
+ *   - calling `embeddingService.generateEmbeddings`
+ *   - inserting individual `RawBillTextDO` rows (now batched into `insertMany` per cross-bill batch)
+ *   - classifying embedding errors as Transient vs Systemic (the embedder does that)
  */
 class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -67,6 +71,8 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     timeoutSeconds = 5,
     maxChunkChars = 30000,
     embedBatchSize = 10,
+    embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+    embedQueueCapacityMultiplier = 10,
   )
 
   private case class TestFixture(
@@ -74,7 +80,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     billRepository: BillRepository[ConnectionIO],
     textVersionRepository: BillTextVersionRepository[ConnectionIO],
     rawBillTextRepository: RawBillTextRepository[ConnectionIO],
-    embeddingService: EmbeddingService[IO],
+    embedder: BillChunkEmbedder[IO],
     eventPublisher: IngestionEventPublisher[IO],
     logger: PipelineLogger[IO],
     contentResponseRef: AtomicReference[IO[String]],
@@ -86,19 +92,17 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
         billRepository = billRepository,
         textVersionRepository = textVersionRepository,
         rawBillTextRepository = rawBillTextRepository,
-        embeddingService = embeddingService,
+        embedder = embedder,
         embeddingConfig = testEmbeddingConfig,
         eventPublisher = eventPublisher,
         xa = testXa,
         logger = logger,
+        // The injected `extractText` ignores the byte stream and yields whatever string is currently in the
+        // contentResponseRef. Tests use this to inject content (or failures) without ever touching real bytes.
         extractText = (_, _) => Stream.eval(contentResponseRef.get()).flatMap(Stream.emit),
       )
 
-    /**
-     * Stub the success path: `streamBody` yields an empty byte stream (the injected `extractText` stub ignores it and
-     * emits `content` directly via `contentResponseRef`). Caller is still responsible for stubbing
-     * `billRepository.findByBillId`, embedding service responses, etc.
-     */
+    /** Stub the success path: byte stream is empty (extractor stub ignores it; emits whatever is in the ref). */
     def stubSuccessfulDownload(content: String): Unit = {
       contentResponseRef.set(IO.pure(content))
       val _ = when(downloader.streamBody(anyString(), anyString(), any[UUID]))
@@ -106,10 +110,9 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     }
 
     /**
-     * Stub a failure during the download phase (the byte stream raises). To make the stubbed `extractText` (which
-     * ignores its byte-stream argument and instead emits from `contentResponseRef`) actually surface the error, we also
-     * flip `contentResponseRef` to raise the same error. In production the byte-stream-level error and the
-     * extractor-level error are the same propagation chain, so this dual-stub matches reality.
+     * Stub a download / extraction failure. The injected `extractText` reads from contentResponseRef, so flipping it to
+     * `IO.raiseError` makes the resulting Stream fail when pulled. We also raise on `streamBody` so the failure is
+     * visible regardless of which stage pulls first.
      */
     def stubDownloadFailure(error: Throwable): Unit = {
       contentResponseRef.set(IO.raiseError[String](error))
@@ -118,14 +121,38 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     }
 
     /**
-     * Stub a failure during the extraction phase (download succeeds but the streaming extractor raises). The injected
-     * `extractText` stub flatMaps the contentResponseRef IO; setting it to `IO.raiseError` makes the resulting Stream
-     * fail when pulled.
+     * Stub the embedder to drain the chunk stream successfully and return Succeeded. Default behavior in
+     * createFixture(); override per-test for failure scenarios. Uses `doAnswer().when()` form (NOT
+     * `when().thenAnswer()`) because the latter invokes the method during stub-registration with null arguments, which
+     * trips the existing default stub's stream-pulling logic.
      */
-    def stubExtractFailure(error: Throwable): Unit = {
-      contentResponseRef.set(IO.raiseError[String](error))
-      val _ = when(downloader.streamBody(anyString(), anyString(), any[UUID]))
-        .thenReturn(Stream.empty.covary[IO])
+    def stubEmbedderSuccess(): Unit = {
+      val _ = doAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
+        val ctx    = invocation.getArgument[BillEmbedCtx](0)
+        val stream = invocation.getArgument[Stream[IO, String]](1)
+        stream.compile.drain.as(ProcessingResult.Succeeded(ctx.naturalKey, eventEmitted = false))
+      }.when(embedder).processChunks(any[BillEmbedCtx], any[Stream[IO, String]])
+    }
+
+    /** Stub the embedder to drain the chunk stream and return a Failed result (preserving errorClass). */
+    def stubEmbedderFailed(reason: String, errorClass: String): Unit = {
+      val _ = doAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
+        val ctx    = invocation.getArgument[BillEmbedCtx](0)
+        val stream = invocation.getArgument[Stream[IO, String]](1)
+        stream.compile.drain.as(ProcessingResult.Failed(ctx.naturalKey, reason, errorClass))
+      }.when(embedder).processChunks(any[BillEmbedCtx], any[Stream[IO, String]])
+    }
+
+    /**
+     * Stub the embedder to RAISE while pulling the chunk stream — i.e., the upstream error surfaces inside the
+     * embedder.
+     */
+    def stubEmbedderPropagatesUpstreamError(): Unit = {
+      val _ = doAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
+        val stream = invocation.getArgument[Stream[IO, String]](1)
+        // Pull the stream so that any upstream raise (download / extract failure) surfaces here as IO.raiseError.
+        stream.compile.drain.flatMap(_ => IO.raiseError[ProcessingResult](new IllegalStateException("unreachable")))
+      }.when(embedder).processChunks(any[BillEmbedCtx], any[Stream[IO, String]])
     }
 
   }
@@ -137,27 +164,33 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     when(loggerMock.error(any[LogContext], anyString(), any[Option[Throwable]])).thenReturn(IO.unit)
     when(loggerMock.debug(any[LogContext], anyString())).thenReturn(IO.unit)
 
-    // New repo methods used by the streaming-INSERT flow: deleteByVersionId clears orphan chunks before insert,
-    // insertOne adds each chunk, and replaceAll is retained for backward-compat callers (none post-Phase 2).
+    // Repo mock — only deleteByVersionId is exercised by the processor now (insertMany lives inside the embedder).
     val rawRepoMock = mock[RawBillTextRepository[ConnectionIO]]
     when(rawRepoMock.deleteByVersionId(anyLong())).thenReturn(doobie.free.connection.unit)
-    when(rawRepoMock.insertOne(any[RawBillTextDO])).thenReturn(doobie.free.connection.unit)
-    when(rawRepoMock.replaceAll(any[Long], any[List[RawBillTextDO]])).thenReturn(doobie.free.connection.unit)
 
-    // Default: bill_text_versions has no row for the (billId, versionCode) pair, so the new `isAlreadyProcessed`
-    // skip-check returns false and processing proceeds. Tests that exercise the "already processed" skip path
-    // override this stub with a list containing a row whose `fetchedAt` is `Some(...)`.
+    // Default: bill_text_versions has no row for the (billId, versionCode) pair, so the skip-check returns false and
+    // processing proceeds. Tests that exercise the "already processed" skip path override this.
     val textVersionRepoMock = mock[BillTextVersionRepository[ConnectionIO]]
     when(textVersionRepoMock.findByBillId(any[Long]))
       .thenReturn(doobie.free.connection.pure(List.empty[BillTextVersionDO]))
     when(textVersionRepoMock.markFetched(anyLong(), any[Instant])).thenReturn(doobie.free.connection.unit)
+
+    val embedderMock = mock[BillChunkEmbedder[IO]]
+    // Default: embedder drains the stream and returns Succeeded. Per-test override via `stubEmbedderFailed` for
+    // failure scenarios. Use `doAnswer().when()` form so subsequent re-stubs (which invoke the method to capture
+    // its argument matchers) don't trigger this default thenAnswer with null args.
+    val _ = doAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
+      val ctx    = invocation.getArgument[BillEmbedCtx](0)
+      val stream = invocation.getArgument[Stream[IO, String]](1)
+      stream.compile.drain.as(ProcessingResult.Succeeded(ctx.naturalKey, eventEmitted = false))
+    }.when(embedderMock).processChunks(any[BillEmbedCtx], any[Stream[IO, String]])
 
     TestFixture(
       downloader = mock[BillTextDownloader[IO]],
       billRepository = mock[BillRepository[ConnectionIO]],
       textVersionRepository = textVersionRepoMock,
       rawBillTextRepository = rawRepoMock,
-      embeddingService = mock[EmbeddingService[IO]],
+      embedder = embedderMock,
       eventPublisher = mock[IngestionEventPublisher[IO]],
       logger = loggerMock,
       contentResponseRef = new AtomicReference[IO[String]](IO.pure("")),
@@ -194,17 +227,16 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   ): Unit = {
     stubBillLookup(f, billId)
     f.stubSuccessfulDownload(content)
-    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
-      .thenAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
-        val texts = invocation.getArgument[List[String]](0)
-        IO.pure(List.fill(texts.size)(None))
-      }
     when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
     val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
       .thenReturn(IO.pure("msg-id-123"))
   }
 
-  "processEvent" should "successfully process event end-to-end (download, store, publish)" in {
+  // ===========================================================================
+  // Happy path
+  // ===========================================================================
+
+  "processEvent" should "successfully process event end-to-end (delegate to embedder, mark fetched, publish)" in {
     val f     = createFixture()
     val event = makeEvent()
     stubSuccessfulFlow(f)
@@ -216,76 +248,53 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     result shouldBe a[ProcessingResult.Succeeded]
   }
 
-  it should "return Failed when bill not found in DB" in {
+  it should "set eventEmitted to true on success" in {
     val f     = createFixture()
-    val event = makeEvent(naturalKey = "999-HR-0")
-    when(f.billRepository.findByBillId("999-HR-0"))
-      .thenReturn(doobie.free.connection.pure(Option.empty[BillDO]))
+    val event = makeEvent()
+    stubSuccessfulFlow(f)
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    val _ = result.isFailed shouldBe true
-    val _ = result.entityId shouldBe "999-HR-0"
     result match {
-      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Systemic"
-      case other                                     => fail(s"Expected Failed but got $other")
+      case ProcessingResult.Succeeded(_, eventEmitted) => eventEmitted shouldBe true
+      case other                                       => fail(s"Expected Succeeded but got $other")
     }
   }
 
-  it should "return Failed when download fails" in {
+  it should "call markFetched on the version repo after successful chunk persistence" in {
     val f     = createFixture()
     val event = makeEvent()
-    stubBillLookup(f)
-    f.stubDownloadFailure(TextDownloadFailed(event.textUrl, event.textFormat, "HTTP 404"))
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+    stubSuccessfulFlow(f)
 
-    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    val _ = result.isFailed shouldBe true
-    val _ = result.entityId shouldBe "118-HR-1"
-    // Download fails AFTER the version row is inserted (so the next pipeline tick can detect the partial state via
-    // `fetched_at IS NULL`), but BEFORE markFetched / event publish run.
-    val _ = verify(f.textVersionRepository, never()).markFetched(anyLong(), any[Instant])
-    verify(f.eventPublisher, never()).billTextIngested(any[BillTextIngestedEvent], any[UUID])
+    verify(f.textVersionRepository, times(1)).markFetched(anyLong(), any[Instant])
   }
 
-  it should "return Failed when DB store fails" in {
+  it should "delegate the chunk stream to the embedder via processChunks" in {
     val f     = createFixture()
     val event = makeEvent()
-    stubBillLookup(f)
-    f.stubSuccessfulDownload("some content")
-    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
-      .thenAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
-        val texts = invocation.getArgument[List[String]](0)
-        IO.pure(List.fill(texts.size)(None))
-      }
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO]))
-      .thenReturn(doobie.free.connection.raiseError(new RuntimeException("DB connection lost")))
+    stubSuccessfulFlow(f)
 
-    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    val _ = result.isFailed shouldBe true
-    result.entityId shouldBe "118-HR-1"
+    val ctxCaptor   = ArgumentCaptor.forClass(classOf[BillEmbedCtx])
+    val _           = verify(f.embedder, times(1)).processChunks(ctxCaptor.capture(), any[Stream[IO, String]])
+    val capturedCtx = ctxCaptor.getValue
+    val _           = capturedCtx.naturalKey shouldBe "118-HR-1"
+    capturedCtx.dbBillId shouldBe testDbBillId
   }
 
-  it should "return Failed when event publish fails after successful store" in {
+  it should "delete orphan chunks before streaming new chunks (idempotent retry)" in {
     val f     = createFixture()
     val event = makeEvent()
-    stubBillLookup(f)
-    f.stubSuccessfulDownload("some content")
-    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
-      .thenAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
-        val texts = invocation.getArgument[List[String]](0)
-        IO.pure(List.fill(texts.size)(None))
-      }
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
-    when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
-      .thenReturn(IO.raiseError(new RuntimeException("Pub/Sub unavailable")))
+    stubSuccessfulFlow(f)
 
-    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
-    val _ = result.isFailed shouldBe true
-    result.entityId shouldBe "118-HR-1"
+    // The deleteByVersionId is the cleanup-before-stream step; without it a retry would hit the (version_id,
+    // chunk_index) unique constraint on duplicate chunk_index values left from the previous attempt.
+    verify(f.rawBillTextRepository, times(1)).deleteByVersionId(anyLong())
   }
 
   it should "populate BillTextVersionDO with correct fields including DB bill ID and fetched_at = None on initial insert" in {
@@ -308,46 +317,8 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = stored.versionCode shouldBe "enr"
     val _ = stored.versionType shouldBe "Formatted XML"
     val _ = stored.url shouldBe Some("https://api.congress.gov/v3/bill/118/s/42/text/enr")
-    // Phase 2 streaming flow inserts the version row with fetched_at = NULL; it gets flipped to NOW() by markFetched
-    // at the end of successful chunk persistence.
-    val _ = stored.fetchedAt shouldBe None
-
-    // Per-chunk INSERTs replaced bulk replaceAll. Capture the chunk argument to insertOne and assert content roundtrip.
-    val rawCaptor = ArgumentCaptor.forClass(classOf[RawBillTextDO])
-    val _         = verify(f.rawBillTextRepository, times(1)).insertOne(rawCaptor.capture())
-    rawCaptor.getValue.content shouldBe "Enrolled bill text"
-  }
-
-  it should "include embedding on raw_bill_text chunk rows when embedding service returns one" in {
-    val f         = createFixture()
-    val event     = makeEvent()
-    val embedding = Array(0.1f, 0.2f, 0.3f)
-    stubBillLookup(f)
-    f.stubSuccessfulDownload("some content")
-    when(f.embeddingService.generateEmbeddings(List("some content"))).thenReturn(IO.pure(List(Some(embedding))))
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
-    val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
-      .thenReturn(IO.pure("msg-id-123"))
-
-    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
-
-    val rawCaptor = ArgumentCaptor.forClass(classOf[RawBillTextDO])
-    val _         = verify(f.rawBillTextRepository, times(1)).insertOne(rawCaptor.capture())
-    val chunk     = rawCaptor.getValue
-
-    chunk.embedding.map(_.toList) shouldBe Some(embedding.toList)
-  }
-
-  it should "set embedding to None on raw_bill_text chunk rows when embedding service returns None" in {
-    val f     = createFixture()
-    val event = makeEvent()
-    stubSuccessfulFlow(f)
-
-    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
-
-    val rawCaptor = ArgumentCaptor.forClass(classOf[RawBillTextDO])
-    val _         = verify(f.rawBillTextRepository, times(1)).insertOne(rawCaptor.capture())
-    rawCaptor.getValue.embedding shouldBe None
+    // The version row goes in with fetched_at = NULL; markFetched flips it to NOW() at the end of the streaming flow.
+    stored.fetchedAt shouldBe None
   }
 
   it should "populate BillTextIngestedEvent with correct fields" in {
@@ -372,7 +343,162 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     published.previousVersionCode shouldBe Some("ih")
   }
 
-  it should "classify IO exceptions as Transient" in {
+  // ===========================================================================
+  // Failure paths — bill not found, downloads, DB, publish
+  // ===========================================================================
+
+  it should "return Failed when bill not found in DB" in {
+    val f     = createFixture()
+    val event = makeEvent(naturalKey = "999-HR-0")
+    when(f.billRepository.findByBillId("999-HR-0"))
+      .thenReturn(doobie.free.connection.pure(Option.empty[BillDO]))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    val _ = result.entityId shouldBe "999-HR-0"
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Systemic"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
+  }
+
+  it should "return Failed when DB store fails" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    f.stubSuccessfulDownload("some content")
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO]))
+      .thenReturn(doobie.free.connection.raiseError(BillTextProcessingFailed("118-HR-1", "DB connection lost")))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    result.entityId shouldBe "118-HR-1"
+  }
+
+  it should "return Failed when event publish fails after successful store" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    f.stubSuccessfulDownload("some content")
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+    when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
+      .thenReturn(IO.raiseError(BillTextProcessingFailed("118-HR-1", "Pub/Sub unavailable")))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    result.entityId shouldBe "118-HR-1"
+  }
+
+  it should "not publish event when download fails" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    f.stubDownloadFailure(TextDownloadFailed(event.textUrl, event.textFormat, "HTTP 404"))
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+
+    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
+    verify(f.eventPublisher, never()).billTextIngested(any[BillTextIngestedEvent], any[UUID])
+  }
+
+  it should "log error when processing fails" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    f.stubDownloadFailure(BillTextProcessingFailed("118-HR-1", "test failure"))
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+
+    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
+    verify(f.logger, times(1)).error(any[LogContext], anyString(), any[Option[Throwable]])
+  }
+
+  // ===========================================================================
+  // Embedder failure propagation — the new contract: don't reclassify the embedder's classification
+  // ===========================================================================
+
+  it should "propagate embedder Failed(Transient) without reclassifying" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    f.stubSuccessfulDownload("some content")
+    f.stubEmbedderFailed("embedding model unavailable", "Transient")
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
+  }
+
+  it should "propagate embedder Failed(Systemic) without reclassifying" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    f.stubSuccessfulDownload("some content")
+    f.stubEmbedderFailed("input length exceeds context length", "Systemic")
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Systemic"
+      case other                                     => fail(s"Expected Failed but got $other")
+    }
+  }
+
+  it should "carry the embedder's failure reason into the propagated Failed result" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    f.stubSuccessfulDownload("some content")
+    f.stubEmbedderFailed("ollama returned 503", "Transient")
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+
+    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    result match {
+      case ProcessingResult.Failed(_, reason, _) => reason shouldBe "ollama returned 503"
+      case other                                 => fail(s"Expected Failed but got $other")
+    }
+  }
+
+  it should "NOT call markFetched when embedder reports Failed" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    f.stubSuccessfulDownload("some content")
+    f.stubEmbedderFailed("embedding service down", "Transient")
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+
+    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    verify(f.textVersionRepository, never()).markFetched(anyLong(), any[Instant])
+  }
+
+  it should "NOT publish event when embedder reports Failed" in {
+    val f     = createFixture()
+    val event = makeEvent()
+    stubBillLookup(f)
+    f.stubSuccessfulDownload("some content")
+    f.stubEmbedderFailed("embedding service down", "Transient")
+    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
+
+    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
+
+    verify(f.eventPublisher, never()).billTextIngested(any[BillTextIngestedEvent], any[UUID])
+  }
+
+  // ===========================================================================
+  // Error classification (for errors that surface BEFORE the embedder — i.e., download / extract / DB stage)
+  // ===========================================================================
+
+  it should "classify IO exceptions during download as Transient" in {
     val f     = createFixture()
     val event = makeEvent()
     stubBillLookup(f)
@@ -409,96 +535,6 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val event = makeEvent(naturalKey = "999-HR-0")
     when(f.billRepository.findByBillId("999-HR-0"))
       .thenReturn(doobie.free.connection.pure(Option.empty[BillDO]))
-
-    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
-
-    val _ = result.isFailed shouldBe true
-    result match {
-      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Systemic"
-      case other                                     => fail(s"Expected Failed but got $other")
-    }
-  }
-
-  it should "not publish event when download fails" in {
-    val f     = createFixture()
-    val event = makeEvent()
-    stubBillLookup(f)
-    f.stubDownloadFailure(new RuntimeException("download failed"))
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
-
-    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
-    verify(f.eventPublisher, never()).billTextIngested(any[BillTextIngestedEvent], any[UUID])
-  }
-
-  it should "log error when processing fails" in {
-    val f     = createFixture()
-    val event = makeEvent()
-    stubBillLookup(f)
-    f.stubDownloadFailure(new RuntimeException("test failure"))
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
-
-    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
-    verify(f.logger, times(1)).error(any[LogContext], anyString(), any[Option[Throwable]])
-  }
-
-  it should "set eventEmitted to true on success" in {
-    val f     = createFixture()
-    val event = makeEvent()
-    stubSuccessfulFlow(f)
-
-    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
-
-    result match {
-      case ProcessingResult.Succeeded(_, eventEmitted) => eventEmitted shouldBe true
-      case other                                       => fail(s"Expected Succeeded but got $other")
-    }
-  }
-
-  it should "return Failed when embedding generation fails" in {
-    val f     = createFixture()
-    val event = makeEvent()
-    stubBillLookup(f)
-    f.stubSuccessfulDownload("some content")
-    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
-      .thenReturn(IO.raiseError(new RuntimeException("embedding model unavailable")))
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
-
-    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
-
-    val _ = result.isFailed shouldBe true
-    result.entityId shouldBe "118-HR-1"
-  }
-
-  it should "classify EmbeddingGenerationFailed as Transient" in {
-    val f     = createFixture()
-    val event = makeEvent()
-    stubBillLookup(f)
-    f.stubSuccessfulDownload("some content")
-    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
-      .thenReturn(IO.raiseError(EmbeddingGenerationFailed("model unavailable", 12)))
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
-
-    val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
-
-    val _ = result.isFailed shouldBe true
-    result match {
-      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
-      case other                                     => fail(s"Expected Failed but got $other")
-    }
-  }
-
-  it should "classify EmbeddingContextLengthExceeded as Systemic" in {
-    val f     = createFixture()
-    val event = makeEvent()
-    stubBillLookup(f)
-    f.stubSuccessfulDownload("some content")
-    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
-      .thenReturn(
-        IO.raiseError(
-          EmbeddingContextLengthExceeded("input length exceeds context length", 30000)
-        )
-      )
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
@@ -557,33 +593,11 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     }
   }
 
-  it should "strip null bytes from content before storing" in {
-    val f                = createFixture()
-    val event            = makeEvent()
-    val contentWithNulls = "Bill text with nulls"
-    stubBillLookup(f)
-    f.stubSuccessfulDownload(contentWithNulls)
-    when(f.embeddingService.generateEmbeddings(any[List[String]]()))
-      .thenAnswer { (invocation: org.mockito.invocation.InvocationOnMock) =>
-        val texts = invocation.getArgument[List[String]](0)
-        IO.pure(List.fill(texts.size)(None))
-      }
-    when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
-    val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
-      .thenReturn(IO.pure("msg-id-123"))
-
-    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
-
-    val rawCaptor = ArgumentCaptor.forClass(classOf[RawBillTextDO])
-    val _         = verify(f.rawBillTextRepository, times(1)).insertOne(rawCaptor.capture())
-    rawCaptor.getValue.content shouldBe "Billtextwithnulls"
-  }
-
   it should "classify unknown exceptions as Systemic by default" in {
     val f     = createFixture()
     val event = makeEvent()
     stubBillLookup(f)
-    f.stubDownloadFailure(new RuntimeException("unexpected error"))
+    f.stubDownloadFailure(BillTextProcessingFailed("118-HR-1", "unexpected error"))
     when(f.textVersionRepository.storeAndUpdateBill(any[BillTextVersionDO])).thenReturn(doobie.free.connection.pure(1L))
 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
@@ -595,41 +609,15 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     }
   }
 
-  it should "call markFetched on the version repo after successful chunk persistence" in {
-    val f     = createFixture()
-    val event = makeEvent()
-    stubSuccessfulFlow(f)
-
-    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
-
-    verify(f.textVersionRepository, times(1)).markFetched(anyLong(), any[Instant])
-  }
-
-  it should "delete orphan chunks before streaming new chunks (idempotent retry)" in {
-    val f     = createFixture()
-    val event = makeEvent()
-    stubSuccessfulFlow(f)
-
-    val _ = f.processor.processEvent(event, correlationId).unsafeRunSync()
-
-    // The deleteByVersionId is the cleanup-before-stream step; without it a retry would hit the (version_id,
-    // chunk_index) unique constraint on duplicate chunk_index values left from the previous attempt.
-    verify(f.rawBillTextRepository, times(1)).deleteByVersionId(anyLong())
-  }
-
-  // ---------------------------------------------------------------------------
-  // isAlreadyProcessed skip path — exercises the TRUE branch of the early skip-check.
-  // Phase 2 update: the skip-check now also requires `fetched_at` to be Some(...) so it only counts COMPLETE
-  // versions as "already processed". A row with fetched_at = None is treated as an in-flight or crashed-mid-flight
-  // run that needs re-processing.
-  // ---------------------------------------------------------------------------
+  // ===========================================================================
+  // isAlreadyProcessed skip path
+  // ===========================================================================
 
   "isAlreadyProcessed skip-check" should "return Skipped(\"already-processed\") when bill_text_versions row matches the event versionCode AND is fetched" in {
     val f     = createFixture()
     val event = makeEvent(naturalKey = "118-HR-1", versionCode = "ih")
     stubBillLookup(f)
 
-    // Override the default empty stub with a row whose versionCode matches AND fetched_at is set.
     val existingVersion = mock[BillTextVersionDO]
     when(existingVersion.versionCode).thenReturn("ih")
     when(existingVersion.fetchedAt).thenReturn(Some(Instant.now()))
@@ -662,14 +650,12 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     // None of the heavy-lifting collaborators should have been touched.
     val _ = verify(f.downloader, never()).streamBody(anyString(), anyString(), any[UUID])
-    val _ = verify(f.embeddingService, never()).generateEmbeddings(any[List[String]]())
+    val _ = verify(f.embedder, never()).processChunks(any[BillEmbedCtx], any[Stream[IO, String]])
     val _ = verify(f.textVersionRepository, never()).storeAndUpdateBill(any[BillTextVersionDO])
-    val _ = verify(f.rawBillTextRepository, never()).insertOne(any[RawBillTextDO])
     verify(f.eventPublisher, never()).billTextIngested(any[BillTextIngestedEvent], any[UUID])
   }
 
   it should "still call processFreshBillText when bill_text_versions has rows for OTHER versionCodes" in {
-    // Multiple stored versions, none matching → exists() is false → not already-processed → process fresh.
     val f     = createFixture()
     val event = makeEvent(naturalKey = "118-HR-1", versionCode = "rh")
     stubSuccessfulFlow(f)
@@ -686,14 +672,11 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val result = f.processor.processEvent(event, correlationId).unsafeRunSync()
 
     val _ = result.isSucceeded shouldBe true
-    // Heavy path WAS exercised because no stored version matched "rh".
     val _ = verify(f.downloader, times(1)).streamBody(anyString(), anyString(), any[UUID])
     verify(f.eventPublisher, times(1)).billTextIngested(any[BillTextIngestedEvent], any[UUID])
   }
 
   it should "REPROCESS when the matching versionCode row exists but fetched_at is None (crashed mid-flight)" in {
-    // This is the new behavior: a row with fetched_at = None signals a crashed-or-in-flight run, and
-    // isAlreadyProcessed returns false so the next pipeline tick re-attempts from scratch.
     val f     = createFixture()
     val event = makeEvent(naturalKey = "118-HR-1", versionCode = "ih")
     stubSuccessfulFlow(f)
@@ -708,6 +691,30 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
 
     val _ = result.isSucceeded shouldBe true
     verify(f.downloader, times(1)).streamBody(anyString(), anyString(), any[UUID])
+  }
+
+  // ===========================================================================
+  // stripNullBytes — pure helper, exercised here at the unit-method level
+  // ===========================================================================
+
+  "stripNullBytes" should "remove all NUL bytes (U+0000) from the input" in {
+    val f         = createFixture()
+    val processor = f.processor
+    val withNuls  = "Bill" + 0.toChar.toString + "text" + 0.toChar.toString + "with" + 0.toChar.toString + "nulls"
+    processor.stripNullBytes(withNuls) shouldBe "Billtextwithnulls"
+  }
+
+  it should "leave inputs without NUL bytes unchanged" in {
+    val f         = createFixture()
+    val processor = f.processor
+    processor.stripNullBytes("Hello, world!") shouldBe "Hello, world!"
+  }
+
+  it should "return empty string for input that is entirely NUL bytes" in {
+    val f         = createFixture()
+    val processor = f.processor
+    val allNuls   = 0.toChar.toString * 5
+    processor.stripNullBytes(allNuls) shouldBe ""
   }
 
 }

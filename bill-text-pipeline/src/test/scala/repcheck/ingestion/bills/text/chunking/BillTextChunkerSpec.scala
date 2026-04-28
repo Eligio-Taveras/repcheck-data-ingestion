@@ -26,9 +26,18 @@ class BillTextChunkerSpec extends AnyFlatSpec with Matchers {
     runPipe(Nil, 1) shouldBe Nil
   }
 
-  it should "produce an empty stream defensively for non-positive maxChunkChars" in {
-    val _ = runPipe(List("any text"), 0) shouldBe Nil
-    runPipe(List("any text"), -5) shouldBe Nil
+  it should "raise InvalidChunkSize when maxChunkChars is zero" in {
+    val raised = intercept[InvalidChunkSize] {
+      runPipe(List("any text"), 0)
+    }
+    raised.maxChunkChars shouldBe 0
+  }
+
+  it should "raise InvalidChunkSize when maxChunkChars is negative" in {
+    val raised = intercept[InvalidChunkSize] {
+      runPipe(List("any text"), -5)
+    }
+    raised.maxChunkChars shouldBe -5
   }
 
   it should "emit a single chunk when the entire input fits inside maxChunkChars" in {

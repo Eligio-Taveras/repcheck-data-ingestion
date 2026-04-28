@@ -23,6 +23,7 @@ import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, Doobie
 import repcheck.ingestion.bills.common.testing.{DockerRequired, PubSubEmulatorFixture, TransactorFixture}
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{
+  CrossBillEmbedder,
   EmbeddingConfig,
   EmbeddingService,
   NoOpEmbeddingService,
@@ -67,6 +68,8 @@ class PipelineIntegrationSpec
     timeoutSeconds = 10,
     maxChunkChars = 30000,
     embedBatchSize = 10,
+    embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+    embedQueueCapacityMultiplier = 10,
   )
 
   private lazy val (httpClient, httpShutdown) = EmberClientBuilder
@@ -88,8 +91,16 @@ class PipelineIntegrationSpec
     wireMock.start()
   }
 
+  // Track CrossBillEmbedder finalizers allocated by `buildProcessor` so we can release them in afterAll.
+  private val embedderFinalizers =
+    new java.util.concurrent.ConcurrentLinkedQueue[IO[Unit]]()
+
   override def afterAll(): Unit = {
     wireMock.stop()
+    embedderFinalizers.forEach { fin =>
+      try fin.unsafeRunSync()
+      catch { case _: Exception => () }
+    }
     try httpShutdown.unsafeRunSync()
     catch { case _: Exception => () }
     super.afterAll()
@@ -120,12 +131,24 @@ class PipelineIntegrationSpec
         RetryConfig(),
       )
 
+    val (embedder, fin) = CrossBillEmbedder
+      .resource[IO](
+        embeddingService = embeddingService,
+        rawBillTextRepository = rawTextRepo,
+        xa = xa,
+        logger = testLogger,
+        batchSize = embeddingConfig.embedBatchSize,
+      )
+      .allocated
+      .unsafeRunSync()
+    val _ = embedderFinalizers.offer(fin)
+
     new BillTextProcessor[IO](
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
       rawBillTextRepository = rawTextRepo,
-      embeddingService = embeddingService,
+      embedder = embedder,
       embeddingConfig = embeddingConfig,
       eventPublisher = eventPublisher,
       xa = xa,
@@ -146,6 +169,8 @@ class PipelineIntegrationSpec
       timeoutSeconds = 10,
       maxChunkChars = 30000,
       embedBatchSize = 10,
+      embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+      embedQueueCapacityMultiplier = 10,
     )
     val ollamaService = new OllamaEmbeddingService[IO](httpClient, embeddingConfig, testLogger)
     buildProcessor(ollamaService, embeddingConfig)

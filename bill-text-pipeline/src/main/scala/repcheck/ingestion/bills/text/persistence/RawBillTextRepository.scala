@@ -39,6 +39,22 @@ trait RawBillTextRepository[F[_]] {
   def insertOne(chunk: RawBillTextDO): F[Unit]
 
   /**
+   * INSERT a batch of chunk rows in a single transaction. Unlike [[replaceAll]] this does NOT delete-then-insert;
+   * unlike [[insertOne]] it batches multiple rows into one round-trip. Designed for the cross-bill embedding pipeline
+   * where a single batch of 50 chunks may span multiple `version_id`s — `replaceAll` can't be used because its DELETE
+   * would clobber chunks of OTHER versions, and `insertOne` is too chatty (50 round-trips per batch).
+   *
+   * Behavior:
+   *   - Empty `rows` list short-circuits to no-op.
+   *   - Same `(version_id, chunk_index)` uniqueness constraint applies; caller is responsible for `clearOrphanChunks`
+   *     having run before chunks are submitted.
+   *   - Rows can have heterogeneous `bill_id` / `version_id` — they're INSERTed in whatever order the underlying
+   *     `Update.updateMany` produces. PostgreSQL doesn't care, and the `ORDER BY chunk_index` query path reconstructs
+   *     document order on read.
+   */
+  def insertMany(rows: List[RawBillTextDO]): F[Unit]
+
+  /**
    * Fetch every chunk attached to the supplied bill version, ordered by `chunk_index` so callers can `mkString` to
    * reconstruct the original document. Returns `Nil` if no chunks exist.
    */

@@ -91,4 +91,36 @@ class DoobieRawBillTextRepositoryUnitSpec extends AnyFlatSpec with Matchers {
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
+  "insertMany" should "produce a no-op ConnectionIO for an empty list (short-circuit branch)" in {
+    val cio = repo.insertMany(List.empty)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "produce a ConnectionIO for a non-empty batch (Update.updateMany path)" in {
+    val rows = (0 until 5).map(idx => sampleChunk(idx, withEmbedding = idx % 2 == 0)).toList
+    val cio  = repo.insertMany(rows)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "accept a single-row batch (lower bound of the non-empty path)" in {
+    val cio = repo.insertMany(List(sampleChunk(0, withEmbedding = true)))
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "accept a batch carrying mixed embedding presence" in {
+    val rows =
+      List(sampleChunk(0, withEmbedding = true), sampleChunk(1, withEmbedding = false), sampleChunk(2))
+    val cio = repo.insertMany(rows)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "accept a batch where some chunks have versionId = None" in {
+    val rows = List(
+      sampleChunk(0).copy(versionId = None),
+      sampleChunk(1).copy(versionId = Some(7L)),
+    )
+    val cio = repo.insertMany(rows)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
 }

@@ -21,7 +21,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.bills.text.app.BillTextPipelinePipeline.{AppConfig, PipelineResources}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
-import repcheck.ingestion.bills.text.embedding.EmbeddingConfig
+import repcheck.ingestion.bills.text.embedding.{CrossBillEmbedder, EmbeddingConfig}
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 import repcheck.ingestion.common.db.DatabaseConfig
@@ -64,6 +64,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       projectId = "repcheck-test",
       subscriptionId = "test-sub",
       maxMessages = 10,
+      pullTimeout = 30.seconds,
     ),
     embedding = EmbeddingConfig(
       baseUrl = "http://localhost:11434",
@@ -72,6 +73,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       timeoutSeconds = 5,
       maxChunkChars = 30000,
       embedBatchSize = 50,
+      embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+      embedQueueCapacityMultiplier = 10,
     ),
     failureHandler = PipelineFailureHandlerConfig(maxRetries = 1),
   )
@@ -108,13 +111,19 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
   }
 
-  private def stubResources(subscriber: PubSubEventSubscriber[IO] = emptySubscriber): PipelineResources[IO] =
+  private val stubEmbedder: CrossBillEmbedder[IO] = mock[CrossBillEmbedder[IO]]
+
+  private def stubResources(subscriber: PubSubEventSubscriber[IO] = emptySubscriber): PipelineResources[IO] = {
+    val noOpClient = Client.fromHttpApp(org.http4s.HttpApp.notFound[IO])
     PipelineResources(
       xa = testXa,
-      httpClient = Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]),
+      congressGovClient = noOpClient,
+      ollamaClient = noOpClient,
       pubSubPublisher = stubPubSub,
       pubSubSubscriber = subscriber,
+      embedder = stubEmbedder,
     )
+  }
 
   "AppConfig" should "load from PureConfig reference configuration" in {
     val result = ConfigSource
@@ -135,7 +144,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         loggerFactory = (_: String) => IO.pure(logger),
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
-        processorFactory = (_, _, _, _, _) => mock[BillTextProcessor[IO]],
+        processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
       )
@@ -153,7 +162,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         loggerFactory = (_: String) => IO.pure(logger),
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
-        processorFactory = (_, _, _, _, _) => mock[BillTextProcessor[IO]],
+        processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
       )
@@ -173,7 +182,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         loggerFactory = (_: String) => IO.pure(logger),
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
-        processorFactory = (_, _, _, _, _) => mock[BillTextProcessor[IO]],
+        processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
       )
@@ -191,6 +200,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       httpClient,
       testXa,
       stubPubSub,
+      stubEmbedder,
       testConfig,
       logger,
     )
@@ -221,9 +231,15 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       source = "test",
     )
 
+    // The new buildStream issues Pull RPCs until one returns empty (drain-until-empty semantics). The stub
+    // returns the test event on the first pull and an empty list thereafter, so the stream terminates after
+    // exactly one event flows through. Without this two-phase stub the test would loop forever.
+    val pullCount = new java.util.concurrent.atomic.AtomicInteger(0)
     val subscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
-      def pull(maxMessages: Int): IO[List[ReceivedEvent]] =
-        IO.pure(List(ReceivedEvent(pipelineEvent, "ack-1")))
+      def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.delay {
+        if (pullCount.getAndIncrement() == 0) List(ReceivedEvent(pipelineEvent, "ack-1"))
+        else List.empty
+      }
       def acknowledge(ackIds: List[String]): IO[Unit] = IO.unit
     }
 
@@ -244,6 +260,61 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     results.headOption.map(_.isSucceeded) shouldBe Some(true)
   }
 
+  it should "drain across multiple pulls until subscription is empty" in {
+    // Verifies the new repeatEval+takeWhile behavior: simulate the Pub/Sub emulator's 100-cap by returning N
+    // events on pull #1, M events on pull #2, then empty on pull #3. The stream should produce N+M results.
+    val logger        = new StubPipelineLogger
+    val correlationId = UUID.randomUUID()
+
+    def evt(naturalKey: String): ReceivedEvent = {
+      val payload = BillTextAvailableEvent(
+        naturalKey = naturalKey,
+        congress = 118,
+        textUrl = s"https://example.com/$naturalKey",
+        textFormat = "Formatted Text",
+        versionCode = "IH",
+        previousVersionCode = None,
+      )
+      val pe = PipelineEvent(
+        eventType = "bill.text.available",
+        payload = payload,
+        timestamp = Instant.now(),
+        eventId = UUID.randomUUID(),
+        correlationId = correlationId,
+        source = "test",
+      )
+      ReceivedEvent(pe, s"ack-$naturalKey")
+    }
+
+    val pullCount = new java.util.concurrent.atomic.AtomicInteger(0)
+    val subscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
+      def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.delay {
+        pullCount.getAndIncrement() match {
+          case 0 => List(evt("118-HR-1"), evt("118-HR-2"), evt("118-HR-3"))
+          case 1 => List(evt("118-HR-4"), evt("118-HR-5"))
+          case _ => List.empty
+        }
+      }
+      def acknowledge(ackIds: List[String]): IO[Unit] = IO.unit
+    }
+
+    val processor = mock[BillTextProcessor[IO]]
+    org.mockito.Mockito
+      .when(
+        processor.processEvent(
+          org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
+          org.mockito.ArgumentMatchers.any[UUID],
+        )
+      )
+      .thenReturn(IO.pure(ProcessingResult.Succeeded("any")))
+
+    val stream  = BillTextPipelinePipeline.buildStream[IO](subscriber, processor, testConfig, logger)
+    val results = stream.compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 5
+    results.forall(_.isSucceeded) shouldBe true
+  }
+
   it should "produce empty stream when subscriber has no messages" in {
     val logger    = new StubPipelineLogger
     val processor = mock[BillTextProcessor[IO]]
@@ -252,6 +323,32 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     val results = stream.compile.toList.unsafeRunSync()
 
     results shouldBe empty
+  }
+
+  it should "treat a Pub/Sub pull timeout as drained — emits empty list, logs warn, terminates cleanly" in {
+    // Defensive guard: when the SDK silently stalls a Pull RPC (observed during PR #83 validation), the
+    // configured `pullTimeout` should fire, surface a warn log, and short-circuit the stream. The next
+    // Ofelia tick re-runs the pipeline, so we don't lose work — we just exit instead of wedging.
+    val logger    = new StubPipelineLogger
+    val processor = mock[BillTextProcessor[IO]]
+
+    // Subscriber whose pull never returns. With pullTimeout=100ms below, the .timeout() will fire.
+    val hangingSubscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
+      def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.never
+      def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
+    }
+
+    val timeoutConfig = testConfig.copy(
+      eventSubscriber = testConfig.eventSubscriber.copy(pullTimeout = 100.millis)
+    )
+
+    val stream  = BillTextPipelinePipeline.buildStream[IO](hangingSubscriber, processor, timeoutConfig, logger)
+    val results = stream.compile.toList.unsafeRunSync()
+
+    val _              = results shouldBe empty
+    val warnedMessages = logger.messages.filter(_.startsWith("WARN: "))
+    val _              = warnedMessages should not be empty
+    warnedMessages.exists(_.contains("Pub/Sub pull timed out")) shouldBe true
   }
 
   "processAndAck" should "acknowledge successfully processed events" in {
@@ -406,7 +503,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         config = testConfig,
         logger = logger,
         transactorFactory = (_: DatabaseConfig) => Resource.pure[IO, Transactor[IO]](testXa),
-        httpClientFactory = Resource.pure[IO, Client[IO]](httpClient),
+        congressGovClientFactory = Resource.pure[IO, Client[IO]](httpClient),
+        ollamaClientFactory = Resource.pure[IO, Client[IO]](httpClient),
         pubSubPublisherFactory = (_: EventPublisherConfig) => Resource.pure[IO, PubSubEventPublisher[IO]](stubPubSub),
         pubSubSubscriberFactory = (_: EventSubscriberConfig, _: PipelineLogger[IO]) =>
           Resource.pure[IO, PubSubEventSubscriber[IO]](emptySubscriber),
@@ -414,7 +512,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       .use { res =>
         IO {
           val _ = res.xa.toString should not be empty
-          val _ = res.httpClient.toString should not be empty
+          val _ = res.congressGovClient.toString should not be empty
+          val _ = res.ollamaClient.toString should not be empty
           val _ = res.pubSubPublisher.toString should not be empty
           res.pubSubSubscriber.toString should not be empty
         }
@@ -437,7 +536,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       )
     val capturedSubscriberConfig =
       new java.util.concurrent.atomic.AtomicReference[EventSubscriberConfig](
-        EventSubscriberConfig("", "", 0)
+        EventSubscriberConfig("", "", 0, 30.seconds)
       )
 
     val httpClient = Client.fromHttpApp[IO](org.http4s.HttpApp.notFound[IO])
@@ -450,7 +549,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
           capturedDbConfig.set(dbCfg)
           Resource.pure[IO, Transactor[IO]](testXa)
         },
-        httpClientFactory = Resource.pure[IO, Client[IO]](httpClient),
+        congressGovClientFactory = Resource.pure[IO, Client[IO]](httpClient),
+        ollamaClientFactory = Resource.pure[IO, Client[IO]](httpClient),
         pubSubPublisherFactory = (pubCfg: EventPublisherConfig) => {
           capturedPublisherConfig.set(pubCfg)
           Resource.pure[IO, PubSubEventPublisher[IO]](stubPubSub)

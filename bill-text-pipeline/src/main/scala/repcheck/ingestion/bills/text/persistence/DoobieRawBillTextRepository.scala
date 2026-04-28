@@ -70,6 +70,17 @@ class DoobieRawBillTextRepository extends RawBillTextRepository[ConnectionIO] {
     Update[(Long, Option[Long], Int, String, Option[Array[Float]])](insertSql).run(row).map(_ => ())
   }
 
+  override def insertMany(rows: List[RawBillTextDO]): ConnectionIO[Unit] =
+    if (rows.isEmpty) {
+      doobie.free.connection.unit
+    } else {
+      val params: List[(Long, Option[Long], Int, String, Option[Array[Float]])] =
+        rows.map(r => (r.billId, r.versionId, r.chunkIndex, r.content, r.embedding))
+      Update[(Long, Option[Long], Int, String, Option[Array[Float]])](insertSql)
+        .updateMany(params)
+        .map(_ => ())
+    }
+
   override def findByVersionId(versionId: Long): ConnectionIO[List[RawBillTextDO]] =
     (fr"SELECT" ++ selectColumns ++
       fr"FROM $table WHERE version_id = $versionId ORDER BY chunk_index ASC")

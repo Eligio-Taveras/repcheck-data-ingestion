@@ -250,6 +250,10 @@ services:
       PUBSUB_PROJECT_ID: repcheck-local
       PUBSUB_TOPIC_NAME: bill-text-available
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      # WARNING: 50ms page-delay = ~20 req/sec ceiling, well above the published Congress.gov
+      # rate budget of 5000 req/hour (≈1.39/sec). Used here to drain the local backfill queue
+      # quickly; expect 429s if sustained beyond ~5 minutes. Override per-run via env if needed.
+      CONGRESS_API_PAGE_DELAY: ${CONGRESS_API_PAGE_DELAY:-50ms}
     restart: "no"
 
   bill-text-pipeline:
@@ -274,7 +278,9 @@ services:
       GCP_PROJECT_ID: repcheck-local
       EVENT_PUBLISHER_TOPIC: bill-text-ingested
       EVENT_SUBSCRIBER_SUBSCRIPTION: bill-text-available-sub
-      EVENT_SUBSCRIBER_MAX_MESSAGES: ${EVENT_SUBSCRIBER_MAX_MESSAGES:-100}
+      # Single Pull RPC drains up to N messages then the stream exits (see BillTextPipelinePipeline.buildStream).
+      # Pub/Sub caps a single Pull at 1000 — set at the cap so backfill drains in fewer Ofelia ticks.
+      EVENT_SUBSCRIBER_MAX_MESSAGES: ${EVENT_SUBSCRIBER_MAX_MESSAGES:-1000}
       OLLAMA_BASE_URL: http://ollama:11434
       # Tuned model variant baked by ollama/Dockerfile (Modelfile-derived from qwen3-embedding:0.6b).
       # The 0.6B model frees ~5 GB of VRAM vs the 4B baseline on an 8 GB GPU, lifting GPU-saturation
@@ -285,7 +291,20 @@ services:
       OLLAMA_TIMEOUT_SECONDS: "60"
       OLLAMA_MAX_CHUNK_CHARS: ${OLLAMA_MAX_CHUNK_CHARS:-12000}
       OLLAMA_EMBED_BATCH_SIZE: ${OLLAMA_EMBED_BATCH_SIZE:-50}
-      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      # Cross-bill embedder timeout: max wall-clock the worker fiber waits to fill a batch of
+      # `OLLAMA_EMBED_BATCH_SIZE` before firing whatever's queued. With sparse traffic (e.g., a single
+      # 1-chunk bill arrives, no others queued) the timeout is what flushes the batch — pick this such
+      # that worst-case latency per bill is acceptable. 1s is a reasonable default; tighten for lower
+      # latency, loosen to maximize cross-bill batching when traffic is steady.
+      OLLAMA_EMBED_BATCH_TIMEOUT: ${OLLAMA_EMBED_BATCH_TIMEOUT:-1s}
+      # Parallelism = how many concurrent bills the processor pulls off the Pub/Sub subscription
+      # and runs through download/extract/chunk in parallel. Each parallel slot feeds chunks into the
+      # cross-bill embedder's queue, so higher parallelism → bigger steady-state batches at Ollama.
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-32}
+      # HikariCP pool sizing: parallelism + 1 embedder worker + headroom for the event publisher's
+      # transactor + transient lookups. AlloyDB Omni default max_connections=100 — leaves comfortable
+      # room for the other 5–6 pipelines also pulling connections concurrently.
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-40}
     restart: "no"
 
   member-profile-pipeline:

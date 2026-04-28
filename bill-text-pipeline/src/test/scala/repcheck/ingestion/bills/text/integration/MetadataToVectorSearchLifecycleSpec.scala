@@ -31,7 +31,12 @@ import repcheck.ingestion.bills.metadata.api.BillsApiClient
 import repcheck.ingestion.bills.metadata.config.BillMetadataConfig
 import repcheck.ingestion.bills.metadata.pipeline.BillMetadataProcessor
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, NoOpEmbeddingService, OllamaEmbeddingService}
+import repcheck.ingestion.bills.text.embedding.{
+  CrossBillEmbedder,
+  EmbeddingConfig,
+  NoOpEmbeddingService,
+  OllamaEmbeddingService,
+}
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.textcheck.api.BillTextApiClient
@@ -85,6 +90,8 @@ class MetadataToVectorSearchLifecycleSpec
     timeoutSeconds = 10,
     maxChunkChars = 30000,
     embedBatchSize = 10,
+    embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+    embedQueueCapacityMultiplier = 10,
   )
 
   private val cosponsorRepo   = new DoobieBillCosponsorRepository()
@@ -130,8 +137,16 @@ class MetadataToVectorSearchLifecycleSpec
     wireMock.start()
   }
 
+  // Track CrossBillEmbedder finalizers allocated by `buildProcessor` so we can release them in afterAll.
+  private val embedderFinalizers =
+    new java.util.concurrent.ConcurrentLinkedQueue[IO[Unit]]()
+
   override def afterAll(): Unit = {
     wireMock.stop()
+    embedderFinalizers.forEach { fin =>
+      try fin.unsafeRunSync()
+      catch { case _: Exception => () }
+    }
     try httpShutdown.unsafeRunSync()
     catch { case _: Exception => () }
     super.afterAll()
@@ -219,6 +234,8 @@ class MetadataToVectorSearchLifecycleSpec
           timeoutSeconds = 10,
           maxChunkChars = 30000,
           embedBatchSize = 10,
+          embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+          embedQueueCapacityMultiplier = 10,
         )
         (new OllamaEmbeddingService[IO](httpClient, cfg, testLogger), cfg)
       } else {
@@ -234,12 +251,24 @@ class MetadataToVectorSearchLifecycleSpec
         testRetryConfig,
       )
 
+    val (embedder, fin) = CrossBillEmbedder
+      .resource[IO](
+        embeddingService = embeddingService,
+        rawBillTextRepository = rawTextRepo,
+        xa = xa,
+        logger = testLogger,
+        batchSize = embeddingConfig.embedBatchSize,
+      )
+      .allocated
+      .unsafeRunSync()
+    val _ = embedderFinalizers.offer(fin)
+
     new BillTextProcessor[IO](
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
       rawBillTextRepository = rawTextRepo,
-      embeddingService = embeddingService,
+      embedder = embedder,
       embeddingConfig = embeddingConfig,
       eventPublisher = eventPublisher,
       xa = xa,

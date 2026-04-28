@@ -2,6 +2,8 @@ package repcheck.ingestion.bills.text.chunking
 
 import scala.annotation.tailrec
 
+import cats.effect.kernel.Async
+
 import fs2.{Chunk, Pipe, Pull, Stream}
 
 /**
@@ -51,13 +53,13 @@ object BillTextChunker {
    * the buffer. An entirely empty input stream produces an empty output stream (no zero-length chunks emitted).
    *
    * @param maxChunkChars
-   *   maximum chunk size in characters. Must be positive. Non-positive values yield an empty output stream defensively;
-   *   pipeline-level callers validate this earlier and raise via the F effect channel
-   *   ([[repcheck.ingestion.bills.text.embedding.InvalidChunkSize]]).
+   *   maximum chunk size in characters. Must be `> 0`. Non-positive values raise [[InvalidChunkSize]] through the F
+   *   effect channel as soon as the pipe is consumed — the chunker fails the run loud rather than silently producing
+   *   zero chunks for non-empty input.
    */
-  def chunkPipe[F[_]](maxChunkChars: Int): Pipe[F, String, String] = { in =>
+  def chunkPipe[F[_]: Async](maxChunkChars: Int): Pipe[F, String, String] = { in =>
     if (maxChunkChars <= 0) {
-      Stream.empty
+      Stream.raiseError[F](InvalidChunkSize(maxChunkChars))
     } else {
       pullFragmentsAndEmitChunks[F](maxChunkChars).apply((in, "")).stream
     }

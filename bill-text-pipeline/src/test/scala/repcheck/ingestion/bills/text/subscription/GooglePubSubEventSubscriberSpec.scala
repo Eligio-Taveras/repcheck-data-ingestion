@@ -124,17 +124,17 @@ class GooglePubSubEventSubscriberSpec extends AnyFlatSpec with Matchers with Moc
   }
 
   "EventSubscriberConfig" should "hold projectId" in {
-    val config = EventSubscriberConfig("proj", "sub", 100)
+    val config = EventSubscriberConfig("proj", "sub", 100, scala.concurrent.duration.DurationInt(30).seconds)
     config.projectId shouldBe "proj"
   }
 
   it should "hold subscriptionId" in {
-    val config = EventSubscriberConfig("proj", "sub", 100)
+    val config = EventSubscriberConfig("proj", "sub", 100, scala.concurrent.duration.DurationInt(30).seconds)
     config.subscriptionId shouldBe "sub"
   }
 
   it should "hold maxMessages" in {
-    val config = EventSubscriberConfig("proj", "sub", 50)
+    val config = EventSubscriberConfig("proj", "sub", 50, scala.concurrent.duration.DurationInt(30).seconds)
     config.maxMessages shouldBe 50
   }
 
@@ -304,7 +304,8 @@ class GooglePubSubEventSubscriberSpec extends AnyFlatSpec with Matchers with Moc
   "PubSubSubscriberResource.make" should "create a PubSubEventSubscriber from a stub factory" in {
     val logger   = new StubPipelineLogger
     val stubMock = mock[SubscriberStub]
-    val config   = EventSubscriberConfig("test-project", "test-subscription", 10)
+    val config =
+      EventSubscriberConfig("test-project", "test-subscription", 10, scala.concurrent.duration.DurationInt(30).seconds)
 
     val pullCallable  = mock[UnaryCallable[PullRequest, PullResponse]]
     val emptyResponse = PullResponse.newBuilder().build()
@@ -323,7 +324,8 @@ class GooglePubSubEventSubscriberSpec extends AnyFlatSpec with Matchers with Moc
   it should "close the stub on resource release" in {
     val logger   = new StubPipelineLogger
     val stubMock = mock[SubscriberStub]
-    val config   = EventSubscriberConfig("test-project", "test-subscription", 10)
+    val config =
+      EventSubscriberConfig("test-project", "test-subscription", 10, scala.concurrent.duration.DurationInt(30).seconds)
 
     val _ = PubSubSubscriberResource
       .make[IO](config, logger, () => stubMock)
@@ -336,7 +338,8 @@ class GooglePubSubEventSubscriberSpec extends AnyFlatSpec with Matchers with Moc
   it should "build correct subscription name from config" in {
     val logger   = new StubPipelineLogger
     val stubMock = mock[SubscriberStub]
-    val config   = EventSubscriberConfig("my-gcp-project", "my-sub-id", 25)
+    val config =
+      EventSubscriberConfig("my-gcp-project", "my-sub-id", 25, scala.concurrent.duration.DurationInt(30).seconds)
 
     val pullCallable  = mock[UnaryCallable[PullRequest, PullResponse]]
     val emptyResponse = PullResponse.newBuilder().build()
