@@ -124,8 +124,13 @@ private[app] object BillTextPipelinePipeline {
     val billRepository        = new DoobieBillRepository
     val textVersionRepository = new DoobieBillTextVersionRepository
     val rawBillTextRepository = new DoobieRawBillTextRepository
-    val downloader            = new BillTextDownloader[F](httpClient, logger)
-    val retryWrapper          = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
+    val downloader = new BillTextDownloader[F](
+      client = httpClient,
+      govInfoApiKey = config.pipeline.govInfoApiKey,
+      govInfoBaseUrl = config.pipeline.govInfoBaseUrl,
+      logger = logger,
+    )
+    val retryWrapper = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
     val eventPublisher = new DefaultIngestionEventPublisher[F](
       publisher = pubSubPublisher,
       topicName = config.eventPublisher.topicName,

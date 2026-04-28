@@ -274,6 +274,14 @@ services:
       DB_NAME: repcheck
       DB_USERNAME: repcheck
       DB_PASSWORD: repcheck
+      # GovInfo API key — required for downloading bill text bodies from api.govinfo.gov (replaces the
+      # Cloudflare-fronted www.congress.gov path that 403s ~30% of raw HTTP requests). Sign up at
+      # https://www.govinfo.gov/api-signup. Same passthrough shape as CONGRESS_GOV_API_KEY: must be set
+      # in the host's shell env.
+      GOVINFO_API_KEY: ${GOVINFO_API_KEY}
+      # Congress.gov API key — kept available for any future calls in this pipeline that need api.congress.gov
+      # (e.g. text-version metadata lookups, bill detail re-fetches). Not consumed by the downloader today.
+      CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: repcheck-local
       EVENT_PUBLISHER_TOPIC: bill-text-ingested

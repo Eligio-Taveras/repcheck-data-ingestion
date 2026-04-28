@@ -54,6 +54,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       parallelism = 1,
       downloadTimeoutSeconds = 5,
       pageDelay = 100.millis,
+      govInfoApiKey = "test-key",
+      govInfoBaseUrl = "https://api.govinfo.gov",
     ),
     eventPublisher = EventPublisherConfig(
       projectId = "repcheck-test",

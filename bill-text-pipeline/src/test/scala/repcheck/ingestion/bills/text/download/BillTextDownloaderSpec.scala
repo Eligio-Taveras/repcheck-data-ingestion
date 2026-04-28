@@ -23,7 +23,13 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
  * stream directly via their respective parsers.
  *
  * Test pattern: a WireMock server bound to `127.0.0.1` with a dynamic port (per memory `feedback_wiremock_localhost`)
- * serves canned responses; tests assert the downloader's behaviour against the streamed bytes.
+ * serves canned responses; tests assert the downloader's behaviour against the streamed bytes. Two URL paths are
+ * exercised:
+ *
+ *   - Generic URLs (e.g. `http://127.0.0.1:port/bill`) — verify status-code handling and pass-through behaviour for
+ *     inputs that don't match the GovInfo rewrite pattern.
+ *   - Congress.gov BILLS-* URLs — verify the rewrite to `/packages/{packageId}/{format}?api_key=...` and that the
+ *     api_key query param actually appears on the outbound request.
  */
 class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
@@ -40,6 +46,8 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
     def error(context: LogContext, message: String, cause: Option[Throwable]): IO[Unit] = IO.unit
     def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
   }
+
+  private val FakeApiKey = "test-api-key"
 
   override def beforeAll(): Unit = {
     super.beforeAll()
@@ -59,7 +67,17 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
   private val correlationId = UUID.randomUUID()
 
   private def downloaderResource =
-    EmberClientBuilder.default[IO].build.map(client => new BillTextDownloader[IO](client, noopLogger))
+    EmberClientBuilder
+      .default[IO]
+      .build
+      .map { client =>
+        new BillTextDownloader[IO](
+          client = client,
+          govInfoApiKey = FakeApiKey,
+          govInfoBaseUrl = wireMock.baseUrl(),
+          logger = noopLogger,
+        )
+      }
 
   private def streamBodyAsString(downloader: BillTextDownloader[IO], url: String, format: String): IO[String] =
     downloader
@@ -129,6 +147,51 @@ class BillTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeAndAft
         .map(_.length)
     }
     program.unsafeRunSync() shouldBe largeBody.getBytes(StandardCharsets.UTF_8).length
+  }
+
+  it should "rewrite a Congress.gov BILLS-* URL to api.govinfo.gov + append the api_key" in {
+    val expectedBody = "Bill text from GovInfo"
+    // The rewriter maps the input URL to `${baseUrl}/packages/BILLS-119hr2384rfs/htm`.
+    // Stub at the rewritten path so the test fails loudly if the rewrite doesn't happen.
+    wireMock.stubFor(
+      get(urlPathEqualTo("/packages/BILLS-119hr2384rfs/htm"))
+        .withQueryParam("api_key", equalTo(FakeApiKey))
+        .willReturn(aResponse().withStatus(200).withBody(expectedBody))
+    )
+
+    val congressGovUrl = "https://www.congress.gov/119/bills/hr2384/BILLS-119hr2384rfs.htm"
+    val program        = downloaderResource.use(d => streamBodyAsString(d, congressGovUrl, "Formatted Text"))
+
+    val _ = program.unsafeRunSync() shouldBe expectedBody
+    wireMock.verify(
+      getRequestedFor(urlPathEqualTo("/packages/BILLS-119hr2384rfs/htm"))
+        .withQueryParam("api_key", equalTo(FakeApiKey))
+    )
+  }
+
+  it should "rewrite XML and PDF Congress.gov bill URLs to their GovInfo format suffixes" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/packages/BILLS-118sjres89pcs/xml"))
+        .withQueryParam("api_key", equalTo(FakeApiKey))
+        .willReturn(aResponse().withStatus(200).withBody("<bill/>"))
+    )
+    wireMock.stubFor(
+      get(urlPathEqualTo("/packages/BILLS-117hr3076enr/pdf"))
+        .withQueryParam("api_key", equalTo(FakeApiKey))
+        .willReturn(aResponse().withStatus(200).withBody("%PDF-1.4 stub"))
+    )
+
+    val xmlBody = downloaderResource
+      .use(d =>
+        streamBodyAsString(d, "https://www.congress.gov/118/bills/sjres89/BILLS-118sjres89pcs.xml", "Formatted XML")
+      )
+      .unsafeRunSync()
+    val pdfBody = downloaderResource
+      .use(d => streamBodyAsString(d, "https://www.congress.gov/117/bills/hr3076/BILLS-117hr3076enr.pdf", "PDF"))
+      .unsafeRunSync()
+
+    val _ = xmlBody shouldBe "<bill/>"
+    pdfBody shouldBe "%PDF-1.4 stub"
   }
 
   "parseUrl" should "raise InvalidTextUrl for malformed URLs" in {
