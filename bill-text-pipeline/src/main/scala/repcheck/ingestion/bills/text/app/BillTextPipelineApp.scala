@@ -46,9 +46,8 @@ object BillTextPipelineApp extends IOApp {
    * cleanup chain. With an Ofelia tick (`job-run` mode), a clean stream completion now leads to JVM exit, container
    * exit, and the next scheduled tick relaunches a fresh container.
    *
-   * Returns `None` when the env var is unset (production GCP), since gRPC's default
-   * `InstantiatingGrpcChannelProvider` manages its own channel lifecycle correctly — only the explicit
-   * `FixedTransportChannelProvider` path leaks.
+   * Returns `None` when the env var is unset (production GCP), since gRPC's default `InstantiatingGrpcChannelProvider`
+   * manages its own channel lifecycle correctly — only the explicit `FixedTransportChannelProvider` path leaks.
    */
   private[app] def emulatorChannelResource[F[_]: Async](
     emulatorHost: Option[String]
