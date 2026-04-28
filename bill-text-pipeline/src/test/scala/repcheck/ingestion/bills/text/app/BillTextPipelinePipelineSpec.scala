@@ -64,6 +64,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       projectId = "repcheck-test",
       subscriptionId = "test-sub",
       maxMessages = 10,
+      pullTimeout = 30.seconds,
     ),
     embedding = EmbeddingConfig(
       baseUrl = "http://localhost:11434",
@@ -504,7 +505,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       )
     val capturedSubscriberConfig =
       new java.util.concurrent.atomic.AtomicReference[EventSubscriberConfig](
-        EventSubscriberConfig("", "", 0)
+        EventSubscriberConfig("", "", 0, 30.seconds)
       )
 
     val httpClient = Client.fromHttpApp[IO](org.http4s.HttpApp.notFound[IO])

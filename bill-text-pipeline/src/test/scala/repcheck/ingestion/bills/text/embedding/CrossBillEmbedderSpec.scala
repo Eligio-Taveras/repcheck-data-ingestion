@@ -356,6 +356,81 @@ class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
   }
 
   // ===========================================================================
+  // Worker-fiber failure surface — guards against the swallowed-error class of bug
+  // ===========================================================================
+
+  it should "Fail pending bills' Deferreds when the worker fiber dies" in {
+    // Pre-fix bug: `.background` discards the worker's Outcome, so a fatal error in `processBatch`
+    // killed the worker silently and bills awaiting their Deferreds hung forever. `failPendingOnWorkerDeath`
+    // is the cleanup invoked from `runWorkerWithFailureHandling` on exception. Driving it directly:
+    // register two bills, simulate worker death, both bills' awaitResult should resolve to Failed (not hang).
+    val embedder = new RecordingEmbeddingService
+    val rawRepo  = new RecordingRawRepo
+
+    val (r1, r2) = CrossBillEmbedder
+      .resource[IO](
+        embeddingService = embedder,
+        rawBillTextRepository = rawRepo,
+        xa = testXa,
+        logger = testLogger,
+        embedBatchSize = 50,
+        embedBatchTimeout = FastBatchTimeout,
+        queueCapacity = 50,
+      )
+      .use { e =>
+        for {
+          a1      <- e.register(ctx(1L, "118-HR-1"))
+          a2      <- e.register(ctx(2L, "118-HR-2"))
+          _       <- e.failPendingOnWorkerDeath(new RuntimeException("simulated worker death"))
+          result1 <- a1
+          result2 <- a2
+        } yield (result1, result2)
+      }
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    val _ = r1 match {
+      case ProcessingResult.Failed(naturalKey, reason, errorClass) =>
+        val _ = naturalKey shouldBe "118-HR-1"
+        val _ = errorClass shouldBe "Systemic"
+        reason should include("Embedder worker died: simulated worker death")
+      case other => fail(s"r1: expected Failed but got $other")
+    }
+    r2 match {
+      case ProcessingResult.Failed(naturalKey, reason, errorClass) =>
+        val _ = naturalKey shouldBe "118-HR-2"
+        val _ = errorClass shouldBe "Systemic"
+        reason should include("Embedder worker died: simulated worker death")
+      case other => fail(s"r2: expected Failed but got $other")
+    }
+  }
+
+  it should "tolerate worker-death cleanup when state is empty" in {
+    // Edge case: worker dies before any bill registered — cleanup must be a safe no-op.
+    val embedder = new RecordingEmbeddingService
+    val rawRepo  = new RecordingRawRepo
+
+    val outcome = CrossBillEmbedder
+      .resource[IO](
+        embeddingService = embedder,
+        rawBillTextRepository = rawRepo,
+        xa = testXa,
+        logger = testLogger,
+        embedBatchSize = 50,
+        embedBatchTimeout = FastBatchTimeout,
+        queueCapacity = 50,
+      )
+      .use { e =>
+        e.failPendingOnWorkerDeath(new RuntimeException("dies before any bill registers"))
+          .as("cleanup-completed")
+      }
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    outcome shouldBe "cleanup-completed"
+  }
+
+  // ===========================================================================
   // Edge cases
   // ===========================================================================
 

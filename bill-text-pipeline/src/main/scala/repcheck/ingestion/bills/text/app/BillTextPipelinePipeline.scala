@@ -1,5 +1,8 @@
 package repcheck.ingestion.bills.text.app
 
+import java.util.concurrent.TimeoutException
+
+import cats.effect.syntax.temporal._
 import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
@@ -128,10 +131,10 @@ private[app] object BillTextPipelinePipeline {
   }
 
   /**
-   * Builds the FS2 result stream from the Pub/Sub subscriber. Pulls batches of messages until the subscription drains,
-   * deserializes each into a `PipelineEvent[BillTextAvailableEvent]`, processes via the `BillTextProcessor`, and
-   * acknowledges successfully processed messages. The correlationId is extracted from each `PipelineEvent` envelope —
-   * one correlationId per bill.
+   * Builds the FS2 result stream from the Pub/Sub subscriber. Pulls batches of messages until the subscription drains
+   * (or a pull times out — see below), deserializes each into a `PipelineEvent[BillTextAvailableEvent]`, processes via
+   * the `BillTextProcessor`, and acknowledges successfully processed messages. The correlationId is extracted from each
+   * `PipelineEvent` envelope — one correlationId per bill.
    *
    * `repeatEval` + `takeWhile(_.nonEmpty)` keeps issuing Pull RPCs until one returns zero messages, then terminates the
    * stream. This works around the Pub/Sub emulator's per-RPC cap (100 messages regardless of `maxMessages` requested)
@@ -139,20 +142,48 @@ private[app] object BillTextPipelinePipeline {
    * available, only stopping when the subscription is empty. Backpressure flows through `parEvalMap` — pulls happen on
    * demand as parallelism slots free up, so the next RPC fires before the previous batch's last bill finishes
    * processing.
+   *
+   * ==Defensive pull timeout==
+   *
+   * Each pull is wrapped in `.timeout(pullTimeout)`; on `TimeoutException` we log a warning and short-circuit the
+   * iteration to an empty list, which `takeWhile` reads as "subscription drained" and terminates the stream cleanly.
+   * Without this guard, an SDK / emulator pull stall (observed in PR #83 validation: a Pull RPC silently failed to
+   * return after the previous batch drained, leaving the JVM idle but unable to exit) would keep the container alive
+   * indefinitely. With the guard, a stuck pull surfaces as one warning log + a clean exit + the next Ofelia tick picks
+   * up where this run left off. The timeout is configurable via `EventSubscriberConfig.pullTimeout`.
    */
   private[app] def buildStream[F[_]: Async](
     subscriber: PubSubEventSubscriber[F],
     processor: BillTextProcessor[F],
     config: AppConfig,
     logger: PipelineLogger[F],
-  ): Stream[F, ProcessingResult] =
+  ): Stream[F, ProcessingResult] = {
+    val pullTimeoutLogCtx = repcheck.ingestion.common.logging.LogContext(
+      runId = "subscriber",
+      stepName = "pubsub-pull",
+    )
+    val pullWithTimeout: F[List[ReceivedEvent]] =
+      subscriber
+        .pull(config.eventSubscriber.maxMessages)
+        .timeout(config.eventSubscriber.pullTimeout)
+        .recoverWith {
+          case _: TimeoutException =>
+            logger
+              .warn(
+                pullTimeoutLogCtx,
+                s"Pub/Sub pull timed out after ${config.eventSubscriber.pullTimeout.toString}; " +
+                  "treating as subscription drained for this run",
+              )
+              .as(List.empty[ReceivedEvent])
+        }
     Stream
-      .repeatEval(subscriber.pull(config.eventSubscriber.maxMessages))
+      .repeatEval(pullWithTimeout)
       .takeWhile(_.nonEmpty)
       .flatMap(Stream.emits)
       .parEvalMap(config.pipeline.parallelism) { receivedEvent =>
         processAndAck(subscriber, processor, receivedEvent, logger)
       }
+  }
 
   private[app] def processAndAck[F[_]: Async](
     subscriber: PubSubEventSubscriber[F],

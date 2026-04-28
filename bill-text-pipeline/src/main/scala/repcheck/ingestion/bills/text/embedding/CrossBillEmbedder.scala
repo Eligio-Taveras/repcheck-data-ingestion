@@ -196,6 +196,72 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
       .compile
       .drain
 
+  /**
+   * Wraps [[runWorker]] with a fail-loud terminal error handler.
+   *
+   * `runWorker` is launched via `.background` in [[CrossBillEmbedder.resource]], which discards the fiber's `Outcome` —
+   * so without this wrapper, any Throwable that escapes `processBatch` (an unexpected NPE, an OOM, a Doobie state error
+   * during `insertMany`, etc.) would silently kill the worker. Pending bills' Deferreds — held in `state` and awaited
+   * by [[processChunks]]'s `awaitResult` — would then hang forever because there is nothing left to resolve them.
+   * Symptom: parEvalMap slots stay locked on dead bills, the outer stream can't drain, the main IO never completes, the
+   * JVM appears alive but is functionally dead.
+   *
+   * This wrapper ensures three things on worker death:
+   *
+   *   1. The cause is logged at ERROR with the full stack — so post-mortem has something to inspect. 2. Every bill
+   *      currently in `state` (i.e. registered via [[register]] but not yet resolved by either [[finalizeSubmission]]
+   *      or [[failBatch]]) has its `Deferred` completed with a Failed result. That unblocks the bill's `processChunks`
+   *      `awaitResult`, parEvalMap can free the slot, and the outer stream makes forward progress (each affected bill
+   *      surfaces as a normal Failed `ProcessingResult`). 3. The error is re-raised so the wrapping `.background`
+   *      Outcome captures it. Today that Outcome is still discarded — but a future refactor that joins the Outcome
+   *      (e.g. via Supervisor) can rely on the error being there to propagate it to the main IO.
+   *
+   * Called by [[CrossBillEmbedder.resource]] in place of bare `runWorker`. Tests of `runWorker` directly can call this
+   * wrapper to assert that the pending-bill cleanup logic fires on simulated worker death.
+   */
+  private[embedding] def runWorkerWithFailureHandling(
+    embedBatchSize: Int,
+    embedBatchTimeout: FiniteDuration,
+  ): F[Unit] =
+    runWorker(embedBatchSize, embedBatchTimeout)
+      .handleErrorWith(error => failPendingOnWorkerDeath(error) *> Async[F].raiseError[Unit](error))
+
+  /**
+   * Cleanup helper invoked from [[runWorkerWithFailureHandling]] when the worker dies. Atomically clears `state` and
+   * Fails every pending bill's Deferred with a Systemic error referencing the worker's exception. Exposed at the
+   * package-private level so unit tests can drive the cleanup directly without having to orchestrate a real
+   * worker-fiber death (which is awkward — `runWorker` would otherwise block on the never-terminating queue stream).
+   */
+  private[embedding] def failPendingOnWorkerDeath(error: Throwable): F[Unit] = {
+    val logCtx = LogContext(
+      runId = "<embedder>",
+      stepName = StepName,
+      correlationId = None,
+      entityId = Some("worker-fiber"),
+    )
+    val errorMessage = Option(error.getMessage).getOrElse(error.getClass.getSimpleName)
+    logger.error(
+      logCtx,
+      s"Cross-bill embedder worker fiber died — failing all in-flight bills: $errorMessage",
+      Some(error),
+    ) *>
+      state
+        .modify(current => (Map.empty, current.values.toList))
+        .flatMap { pending =>
+          pending.traverse_ { progress =>
+            progress.deferred
+              .complete(
+                ProcessingResult.Failed(
+                  progress.ctx.naturalKey,
+                  s"Embedder worker died: $errorMessage",
+                  "Systemic",
+                )
+              )
+              .void
+          }
+        }
+  }
+
   private[embedding] def processBatch(batch: Chunk[ChunkSubmission]): F[Unit] =
     if (batch.isEmpty) {
       Async[F].unit
@@ -332,7 +398,7 @@ object CrossBillEmbedder {
       stateRef <- Resource.eval(Ref.of[F, Map[Long, BillEmbedProgress[F]]](Map.empty))
       queue    <- Resource.eval(Queue.bounded[F, ChunkSubmission](queueCapacity))
       embedder = new CrossBillEmbedder[F](embeddingService, rawBillTextRepository, xa, logger, stateRef, queue)
-      _ <- embedder.runWorker(embedBatchSize, embedBatchTimeout).background
+      _ <- embedder.runWorkerWithFailureHandling(embedBatchSize, embedBatchTimeout).background
     } yield embedder
 
 }
