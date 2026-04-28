@@ -46,13 +46,6 @@ private[app] object BillTextPipelinePipeline {
     embedder: CrossBillEmbedder[F],
   )
 
-  /**
-   * Capacity of the cross-bill embedder's chunk queue. Sized to comfortably hold one batch's worth plus headroom for
-   * upstream extractors to keep producing while the embedder processes a batch. Hardcoded rather than config-exposed
-   * because it doesn't need per-deployment tuning — 10× batch size is a good universal default.
-   */
-  private val EmbedderQueueCapacityMultiplier: Int = 10
-
   private[app] def runWithFactories[F[_]: Async](
     configLoader: F[AppConfig],
     loggerFactory: String => F[PipelineLogger[F]],
@@ -205,7 +198,7 @@ private[app] object BillTextPipelinePipeline {
         logger = logger,
         embedBatchSize = config.embedding.embedBatchSize,
         embedBatchTimeout = config.embedding.embedBatchTimeout,
-        queueCapacity = config.embedding.embedBatchSize * EmbedderQueueCapacityMultiplier,
+        queueCapacity = config.embedding.embedBatchSize * config.embedding.embedQueueCapacityMultiplier,
       )
     } yield PipelineResources(xa, httpClient, pubSubPublisher, pubSubSubscriber, embedder)
 

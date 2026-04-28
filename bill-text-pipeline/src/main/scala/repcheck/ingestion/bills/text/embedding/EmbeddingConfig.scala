@@ -25,6 +25,12 @@ import pureconfig.ConfigReader
  * firing whatever it has. Without this, periods of low traffic (e.g., tail end of a backlog) would deadlock — lone
  * single-chunk bills would wait forever for 49 more chunks to arrive. With it, the worst-case extra latency for a small
  * bill is one timeout-window. Default 1s, tunable via `OLLAMA_EMBED_BATCH_TIMEOUT`.
+ *
+ * `embedQueueCapacityMultiplier` sizes the cross-bill embedder's bounded chunk queue as `embedBatchSize *
+ * embedQueueCapacityMultiplier`. Headroom lets upstream extractors keep producing while the worker fiber is mid-batch —
+ * too small and producers block on `queue.offer` between batches; too large and we accept more memory pressure during
+ * burst traffic. Default 10× batch size is the universal sweet spot identified during the cross-bill embedder rollout.
+ * Must be `> 0`. Tunable via `OLLAMA_EMBED_QUEUE_CAPACITY_MULTIPLIER`.
  */
 final case class EmbeddingConfig(
   baseUrl: String,
@@ -34,4 +40,5 @@ final case class EmbeddingConfig(
   maxChunkChars: Int,
   embedBatchSize: Int,
   embedBatchTimeout: FiniteDuration,
+  embedQueueCapacityMultiplier: Int,
 ) derives ConfigReader

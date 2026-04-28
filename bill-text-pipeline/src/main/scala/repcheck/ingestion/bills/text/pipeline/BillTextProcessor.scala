@@ -11,7 +11,7 @@ import fs2.Stream
 import doobie._
 
 import repcheck.ingestion.bills.common.persistence.{BillRepository, BillTextVersionRepository, TransactionRunner}
-import repcheck.ingestion.bills.text.chunking.{BillTextChunker, InvalidChunkSize}
+import repcheck.ingestion.bills.text.chunking.BillTextChunker
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{
   BillChunkEmbedder,
@@ -220,18 +220,19 @@ class BillTextProcessor[F[_]: Async] private[text] (
     dbBillId: Long,
     versionId: Long,
     correlationId: UUID,
-  ): F[ProcessingResult] =
-    if (embeddingConfig.maxChunkChars <= 0) {
-      Async[F].raiseError(InvalidChunkSize(embeddingConfig.maxChunkChars))
-    } else {
-      val ctx   = BillEmbedCtx(dbBillId = dbBillId, versionId = versionId, naturalKey = event.naturalKey)
-      val bytes = downloader.streamBody(event.textUrl, event.textFormat, correlationId)
-      val chunkStream = extractText(bytes, event.textFormat)
-        .map(stripNullBytes)
-        .filter(_.nonEmpty)
-        .through(BillTextChunker.chunkPipe(embeddingConfig.maxChunkChars))
-      embedder.processChunks(ctx, chunkStream)
-    }
+  ): F[ProcessingResult] = {
+    // No defensive check here for `maxChunkChars > 0` — `BillTextChunker.chunkPipe` is the single source of truth
+    // for that validation. If it's misconfigured, the chunker raises `InvalidChunkSize` through the F effect channel
+    // when the stream is consumed, the embedder's Resource cleanup completes the Deferred as Failed, and the
+    // raise propagates back to processEvent's `handleErrorWith`.
+    val ctx   = BillEmbedCtx(dbBillId = dbBillId, versionId = versionId, naturalKey = event.naturalKey)
+    val bytes = downloader.streamBody(event.textUrl, event.textFormat, correlationId)
+    val chunkStream = extractText(bytes, event.textFormat)
+      .map(stripNullBytes)
+      .filter(_.nonEmpty)
+      .through(BillTextChunker.chunkPipe(embeddingConfig.maxChunkChars))
+    embedder.processChunks(ctx, chunkStream)
+  }
 
   /**
    * Postgres TEXT can't hold null bytes; Congress.gov occasionally serves bills with stray U+0000 chars in the rendered

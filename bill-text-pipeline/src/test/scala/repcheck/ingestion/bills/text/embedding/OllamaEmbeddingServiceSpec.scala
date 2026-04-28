@@ -45,6 +45,7 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
       maxChunkChars = 30000,
       embedBatchSize = 10,
       embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+      embedQueueCapacityMultiplier = 10,
     )
 
   private def service: OllamaEmbeddingService[IO] =

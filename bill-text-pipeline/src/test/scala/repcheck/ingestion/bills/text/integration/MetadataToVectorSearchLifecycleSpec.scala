@@ -91,6 +91,7 @@ class MetadataToVectorSearchLifecycleSpec
     maxChunkChars = 30000,
     embedBatchSize = 10,
     embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+    embedQueueCapacityMultiplier = 10,
   )
 
   private val cosponsorRepo   = new DoobieBillCosponsorRepository()
@@ -234,6 +235,7 @@ class MetadataToVectorSearchLifecycleSpec
           maxChunkChars = 30000,
           embedBatchSize = 10,
           embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+          embedQueueCapacityMultiplier = 10,
         )
         (new OllamaEmbeddingService[IO](httpClient, cfg, testLogger), cfg)
       } else {

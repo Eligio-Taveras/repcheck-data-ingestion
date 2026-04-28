@@ -73,6 +73,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       maxChunkChars = 30000,
       embedBatchSize = 50,
       embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+      embedQueueCapacityMultiplier = 10,
     ),
     failureHandler = PipelineFailureHandlerConfig(maxRetries = 1),
   )

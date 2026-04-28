@@ -69,6 +69,7 @@ class PipelineIntegrationSpec
     maxChunkChars = 30000,
     embedBatchSize = 10,
     embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+    embedQueueCapacityMultiplier = 10,
   )
 
   private lazy val (httpClient, httpShutdown) = EmberClientBuilder
@@ -171,6 +172,7 @@ class PipelineIntegrationSpec
       maxChunkChars = 30000,
       embedBatchSize = 10,
       embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+      embedQueueCapacityMultiplier = 10,
     )
     val ollamaService = new OllamaEmbeddingService[IO](httpClient, embeddingConfig, testLogger)
     buildProcessor(ollamaService, embeddingConfig)

@@ -72,6 +72,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     maxChunkChars = 30000,
     embedBatchSize = 10,
     embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
+    embedQueueCapacityMultiplier = 10,
   )
 
   private case class TestFixture(
