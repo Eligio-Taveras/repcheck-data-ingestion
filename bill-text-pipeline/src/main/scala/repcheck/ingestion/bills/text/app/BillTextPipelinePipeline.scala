@@ -12,7 +12,7 @@ import doobie.util.transactor.Transactor
 import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillTextVersionRepository}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
+import repcheck.ingestion.bills.text.embedding.{CrossBillEmbedder, EmbeddingConfig, OllamaEmbeddingService}
 import repcheck.ingestion.bills.text.extraction.BillTextExtractor
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
@@ -43,7 +43,15 @@ private[app] object BillTextPipelinePipeline {
     httpClient: Client[F],
     pubSubPublisher: PubSubEventPublisher[F],
     pubSubSubscriber: PubSubEventSubscriber[F],
+    embedder: CrossBillEmbedder[F],
   )
+
+  /**
+   * Capacity of the cross-bill embedder's chunk queue. Sized to comfortably hold one batch's worth plus headroom for
+   * upstream extractors to keep producing while the embedder processes a batch. Hardcoded rather than config-exposed
+   * because it doesn't need per-deployment tuning — 10× batch size is a good universal default.
+   */
+  private val EmbedderQueueCapacityMultiplier: Int = 10
 
   private[app] def runWithFactories[F[_]: Async](
     configLoader: F[AppConfig],
@@ -53,6 +61,7 @@ private[app] object BillTextPipelinePipeline {
       Client[F],
       Transactor[F],
       PubSubEventPublisher[F],
+      CrossBillEmbedder[F],
       AppConfig,
       PipelineLogger[F],
     ) => BillTextProcessor[F],
@@ -72,6 +81,7 @@ private[app] object BillTextPipelinePipeline {
           resources.httpClient,
           resources.xa,
           resources.pubSubPublisher,
+          resources.embedder,
           config,
           logger,
         )
@@ -93,6 +103,7 @@ private[app] object BillTextPipelinePipeline {
     httpClient: Client[F],
     xa: Transactor[F],
     pubSubPublisher: PubSubEventPublisher[F],
+    embedder: CrossBillEmbedder[F],
     config: AppConfig,
     logger: PipelineLogger[F],
   ): BillTextProcessor[F] = {
@@ -108,14 +119,13 @@ private[app] object BillTextPipelinePipeline {
       retryWrapper = retryWrapper,
       retryConfig = RetryConfig(),
     )
-    val embeddingService = new OllamaEmbeddingService[F](httpClient, config.embedding, logger)
 
     new BillTextProcessor[F](
       downloader = downloader,
       billRepository = billRepository,
       textVersionRepository = textVersionRepository,
       rawBillTextRepository = rawBillTextRepository,
-      embeddingService = embeddingService,
+      embedder = embedder,
       embeddingConfig = config.embedding,
       eventPublisher = eventPublisher,
       xa = xa,
@@ -165,7 +175,7 @@ private[app] object BillTextPipelinePipeline {
     }
   }
 
-  private[app] def buildResources[F[_]](
+  private[app] def buildResources[F[_]: Async](
     config: AppConfig,
     logger: PipelineLogger[F],
     transactorFactory: DatabaseConfig => Resource[F, Transactor[F]],
@@ -178,6 +188,16 @@ private[app] object BillTextPipelinePipeline {
       httpClient       <- httpClientFactory
       pubSubPublisher  <- pubSubPublisherFactory(config.eventPublisher)
       pubSubSubscriber <- pubSubSubscriberFactory(config.eventSubscriber, logger)
-    } yield PipelineResources(xa, httpClient, pubSubPublisher, pubSubSubscriber)
+      embeddingService = new OllamaEmbeddingService[F](httpClient, config.embedding, logger)
+      embedder <- CrossBillEmbedder.resource[F](
+        embeddingService = embeddingService,
+        rawBillTextRepository = new DoobieRawBillTextRepository,
+        xa = xa,
+        logger = logger,
+        embedBatchSize = config.embedding.embedBatchSize,
+        embedBatchTimeout = config.embedding.embedBatchTimeout,
+        queueCapacity = config.embedding.embedBatchSize * EmbedderQueueCapacityMultiplier,
+      )
+    } yield PipelineResources(xa, httpClient, pubSubPublisher, pubSubSubscriber, embedder)
 
 }

@@ -14,10 +14,11 @@ import repcheck.ingestion.bills.common.persistence.{BillRepository, BillTextVers
 import repcheck.ingestion.bills.text.chunking.{BillTextChunker, InvalidChunkSize}
 import repcheck.ingestion.bills.text.download.BillTextDownloader
 import repcheck.ingestion.bills.text.embedding.{
+  BillChunkEmbedder,
+  BillEmbedCtx,
   EmbeddingConfig,
   EmbeddingContextLengthExceeded,
   EmbeddingGenerationFailed,
-  EmbeddingService,
 }
 import repcheck.ingestion.bills.text.errors.{BillNotFoundForText, BillTextProcessingFailed}
 import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
@@ -26,7 +27,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.events.{BillTextAvailableEvent, BillTextIngestedEvent}
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.common.FormatType
-import repcheck.shared.models.congress.dos.bill.{BillTextVersionDO, RawBillTextDO}
+import repcheck.shared.models.congress.dos.bill.BillTextVersionDO
 
 /**
  * Processes one `BillTextAvailableEvent` end-to-end. Phase 3 of the bill-text streaming refactor (see plan
@@ -67,7 +68,7 @@ class BillTextProcessor[F[_]: Async] private[text] (
   billRepository: BillRepository[ConnectionIO],
   textVersionRepository: BillTextVersionRepository[ConnectionIO],
   rawBillTextRepository: RawBillTextRepository[ConnectionIO],
-  embeddingService: EmbeddingService[F],
+  embedder: BillChunkEmbedder[F],
   embeddingConfig: EmbeddingConfig,
   eventPublisher: IngestionEventPublisher[F],
   xa: Transactor[F],
@@ -134,19 +135,41 @@ class BillTextProcessor[F[_]: Async] private[text] (
     for {
       versionId <- persistPendingVersion(pendingVersion)
       _         <- clearOrphanChunks(versionId)
-      chunkCount <- streamDownloadExtractChunkEmbedAndPersist(
+      embedderResult <- streamDownloadExtractChunkEmbedAndPersist(
         event = event,
         dbBillId = dbBillId,
         versionId = versionId,
         correlationId = correlationId,
       )
-      _ <- markVersionFetched(versionId)
-      _ <- publishEvent(event, correlationId)
-      _ <- logger.info(
-        logCtx,
-        s"Successfully processed bill text for ${event.naturalKey} — version $versionId, $chunkCount chunk(s)",
-      )
-    } yield ProcessingResult.Succeeded(event.naturalKey, eventEmitted = true)
+      finalResult <- embedderResult match {
+        case ProcessingResult.Succeeded(_, _) =>
+          for {
+            _ <- markVersionFetched(versionId)
+            _ <- publishEvent(event, correlationId)
+            _ <- logger.info(
+              logCtx,
+              s"Successfully processed bill text for ${event.naturalKey} — version $versionId",
+            )
+          } yield ProcessingResult.Succeeded(event.naturalKey, eventEmitted = true)
+        case ProcessingResult.Failed(_, reason, errorClass) =>
+          // Embedder already classified the error (Transient vs Systemic) — propagate without
+          // re-classifying. Re-key the entityId to the bill's natural key so downstream
+          // PipelineRunSummary aggregates correctly per-bill.
+          logger
+            .warn(logCtx, s"Cross-bill embedder failed for ${event.naturalKey} (version $versionId): $reason")
+            .as(ProcessingResult.Failed(event.naturalKey, reason, errorClass))
+        case ProcessingResult.Skipped(_, reason) =>
+          // The embedder is not expected to return Skipped — that would indicate a contract
+          // violation (e.g. caller registered a bill but submitted no chunks). Surface as
+          // a Systemic failure for operator attention.
+          Async[F].raiseError[ProcessingResult](
+            BillTextProcessingFailed(
+              event.naturalKey,
+              s"Cross-bill embedder unexpectedly returned Skipped(reason=$reason) for version $versionId",
+            )
+          )
+      }
+    } yield finalResult
   }
 
   private[pipeline] def lookupBillId(billNaturalKey: String): F[Long] =
@@ -174,68 +197,49 @@ class BillTextProcessor[F[_]: Async] private[text] (
     TransactionRunner.run(xa)(rawBillTextRepository.deleteByVersionId(versionId))
 
   /**
-   * The end-to-end streaming pipeline. One fs2 `Stream` runs from temp-file extraction through chunking, batched
-   * embedding, and per-chunk INSERT — backpressure means the slowest stage (embedding) gates the rate of all upstream
-   * stages, keeping heap bounded.
+   * Build the per-bill chunk stream and submit it to the cross-bill embedder. The embedder accumulates this bill's
+   * chunks alongside chunks from other concurrently-processing bills until a batch of `embedBatchSize` is ready, then
+   * embeds + INSERTs the entire batch in one Ollama call + one DB transaction. The result is a `ProcessingResult` that
+   * resolves when ALL of THIS bill's chunks have been INSERTed (success) or when any batch containing one of this
+   * bill's chunks fails (Failed).
    *
-   * Pipeline stages:
+   * Pipeline stages within this method:
    *
-   *   1. `downloader.downloadToTempFile` — `Resource[F, Path]` writing the body to disk in fs2 chunks.
-   *   1. `extractText(tempPath, format)` — `Stream[F, String]` of semantic fragments per the format's natural unit.
+   *   1. `downloader.streamBody` — `Stream[F, Byte]` of HTTP response bytes for the bill's text.
+   *   1. `extractText(bytes, format)` — `Stream[F, String]` of semantic fragments per the format's natural unit.
+   *   1. `stripNullBytes` + `filter(nonEmpty)` — strip null bytes (Postgres TEXT can't hold them) and drop empties.
    *   1. `BillTextChunker.chunkPipe(maxChunkChars)` — accumulate fragments and emit fixed-size chunks.
-   *   1. `chunkN(embedBatchSize)` — group chunks into batches of 50 (default) for the embedding model's batch endpoint.
-   *   1. `evalMap` calls `embeddingService.generateEmbeddings` — `F[List[Option[Array[Float]]]]` per batch.
-   *   1. `flatMap(Stream.emits)` — flatten the batch back to per-chunk emissions.
-   *   1. `zipWithIndex` — assign global `chunk_index` for the DB row.
-   *   1. `evalMap` calls `rawBillTextRepository.insertOne` inside its own transaction — per-chunk commit.
+   *   1. `embedder.processChunks` — submits each chunk to the shared cross-bill queue; awaits the bill's Deferred.
    *
-   * Returns the total chunk count for logging.
+   * The cross-bill batching that produces the actual Ollama call happens INSIDE the embedder's background fiber, NOT
+   * inside this stream. Backpressure flows: if the embedder's queue is full, `offerChunk` blocks, the chunk stream
+   * pauses, the extractor pauses, the byte stream pauses → all the way back to the HTTP socket.
    */
   private[pipeline] def streamDownloadExtractChunkEmbedAndPersist(
     event: BillTextAvailableEvent,
     dbBillId: Long,
     versionId: Long,
     correlationId: UUID,
-  ): F[Long] =
+  ): F[ProcessingResult] =
     if (embeddingConfig.maxChunkChars <= 0) {
       Async[F].raiseError(InvalidChunkSize(embeddingConfig.maxChunkChars))
     } else {
+      val ctx   = BillEmbedCtx(dbBillId = dbBillId, versionId = versionId, naturalKey = event.naturalKey)
       val bytes = downloader.streamBody(event.textUrl, event.textFormat, correlationId)
-      extractText(bytes, event.textFormat)
+      val chunkStream = extractText(bytes, event.textFormat)
         .map(stripNullBytes)
         .filter(_.nonEmpty)
         .through(BillTextChunker.chunkPipe(embeddingConfig.maxChunkChars))
-        .chunkN(embeddingConfig.embedBatchSize)
-        .evalMap { batch =>
-          val texts = batch.toList
-          embeddingService.generateEmbeddings(texts).map(emb => texts.zip(emb))
-        }
-        .flatMap(pairs => Stream.emits(pairs))
-        .zipWithIndex
-        .evalMap {
-          case ((text, embedding), idx) =>
-            val row = RawBillTextDO(
-              id = 0L,
-              billId = dbBillId,
-              versionId = Some(versionId),
-              chunkIndex = idx.toInt,
-              content = text,
-              embedding = embedding,
-              createdAt = None,
-            )
-            TransactionRunner.run(xa)(rawBillTextRepository.insertOne(row))
-        }
-        .compile
-        .count
+      embedder.processChunks(ctx, chunkStream)
     }
 
   /**
-   * Postgres TEXT can't hold null bytes; Congress.gov occasionally serves bills with stray ` ` in the rendered HTML.
-   * The buffered code path scrubbed these once on the whole document; the streaming path scrubs per fragment (cheaper,
-   * local).
+   * Postgres TEXT can't hold null bytes; Congress.gov occasionally serves bills with stray U+0000 chars in the rendered
+   * HTML. The buffered code path scrubbed these once on the whole document; the streaming path scrubs per fragment
+   * (cheaper, local).
    */
   private[pipeline] def stripNullBytes(text: String): String =
-    text.replace(" ", "")
+    text.filter(_.toInt != 0)
 
   /**
    * Mark the version row as fully-fetched by setting `fetched_at = NOW()`. After this UPDATE commits, the skip-check on

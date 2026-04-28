@@ -13,6 +13,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       timeoutSeconds = 30,
       maxChunkChars = 30000,
       embedBatchSize = 50,
+      embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
     )
     config.baseUrl shouldBe "http://localhost:11434"
   }
@@ -25,6 +26,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       timeoutSeconds = 30,
       maxChunkChars = 30000,
       embedBatchSize = 50,
+      embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
     )
     config.modelName shouldBe "qwen3-embedding:0.6b"
   }
@@ -37,6 +39,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       timeoutSeconds = 30,
       maxChunkChars = 30000,
       embedBatchSize = 50,
+      embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
     )
     config.dimensions shouldBe 1024
   }
@@ -49,6 +52,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       timeoutSeconds = 60,
       maxChunkChars = 30000,
       embedBatchSize = 50,
+      embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
     )
     config.timeoutSeconds shouldBe 60
   }
@@ -61,6 +65,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       timeoutSeconds = 30,
       maxChunkChars = 12000,
       embedBatchSize = 50,
+      embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
     )
     config.maxChunkChars shouldBe 12000
   }
@@ -73,6 +78,7 @@ class EmbeddingConfigSpec extends AnyFlatSpec with Matchers {
       timeoutSeconds = 30,
       maxChunkChars = 12000,
       embedBatchSize = 50,
+      embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
     )
     config.embedBatchSize shouldBe 50
   }

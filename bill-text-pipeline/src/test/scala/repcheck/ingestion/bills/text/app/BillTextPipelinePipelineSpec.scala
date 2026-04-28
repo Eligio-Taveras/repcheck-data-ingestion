@@ -21,7 +21,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.bills.text.app.BillTextPipelinePipeline.{AppConfig, PipelineResources}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
-import repcheck.ingestion.bills.text.embedding.EmbeddingConfig
+import repcheck.ingestion.bills.text.embedding.{CrossBillEmbedder, EmbeddingConfig}
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 import repcheck.ingestion.common.db.DatabaseConfig
@@ -72,6 +72,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       timeoutSeconds = 5,
       maxChunkChars = 30000,
       embedBatchSize = 50,
+      embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
     ),
     failureHandler = PipelineFailureHandlerConfig(maxRetries = 1),
   )
@@ -108,12 +109,15 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
   }
 
+  private val stubEmbedder: CrossBillEmbedder[IO] = mock[CrossBillEmbedder[IO]]
+
   private def stubResources(subscriber: PubSubEventSubscriber[IO] = emptySubscriber): PipelineResources[IO] =
     PipelineResources(
       xa = testXa,
       httpClient = Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]),
       pubSubPublisher = stubPubSub,
       pubSubSubscriber = subscriber,
+      embedder = stubEmbedder,
     )
 
   "AppConfig" should "load from PureConfig reference configuration" in {
@@ -135,7 +139,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         loggerFactory = (_: String) => IO.pure(logger),
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
-        processorFactory = (_, _, _, _, _) => mock[BillTextProcessor[IO]],
+        processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
       )
@@ -153,7 +157,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         loggerFactory = (_: String) => IO.pure(logger),
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
-        processorFactory = (_, _, _, _, _) => mock[BillTextProcessor[IO]],
+        processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
       )
@@ -173,7 +177,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         loggerFactory = (_: String) => IO.pure(logger),
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
-        processorFactory = (_, _, _, _, _) => mock[BillTextProcessor[IO]],
+        processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
       )
@@ -191,6 +195,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       httpClient,
       testXa,
       stubPubSub,
+      stubEmbedder,
       testConfig,
       logger,
     )

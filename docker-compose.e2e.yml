@@ -250,6 +250,11 @@ services:
       OLLAMA_MODEL_NAME: bill-text-embedding
       OLLAMA_EMBEDDING_DIMENSIONS: "1024"
       OLLAMA_TIMEOUT_SECONDS: "30"
+      # Cross-bill embedder — small batch size + tight timeout so e2e fixtures land in their own
+      # batches without waiting on cross-bill aggregation that production benefits from but e2e
+      # would just see as latency.
+      OLLAMA_EMBED_BATCH_SIZE: "5"
+      OLLAMA_EMBED_BATCH_TIMEOUT: "200ms"
       PIPELINE_PARALLELISM: "1"
 
   votes-pipeline:

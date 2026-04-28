@@ -33,7 +33,7 @@ import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillTextVersionRepository}
 import repcheck.ingestion.bills.common.testing.{E2ETest, TransactorFixture}
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
+import repcheck.ingestion.bills.text.embedding.{CrossBillEmbedder, EmbeddingConfig, OllamaEmbeddingService}
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.textcheck.api.BillTextApiClient
@@ -160,8 +160,16 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val _ = gcpResources // force lazy initialization
   }
 
+  // Track CrossBillEmbedder finalizers allocated by `buildProcessor` so we can release them in afterAll.
+  private val embedderFinalizers =
+    new java.util.concurrent.ConcurrentLinkedQueue[IO[Unit]]()
+
   override def afterAll(): Unit = {
     wireMock.stop()
+    embedderFinalizers.forEach { fin =>
+      try fin.unsafeRunSync()
+      catch { case _: Exception => () }
+    }
     try httpShutdown.unsafeRunSync()
     catch { case _: Exception => () }
     gcpResources.foreach { r =>
@@ -285,6 +293,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       timeoutSeconds = 10,
       maxChunkChars = 30000,
       embedBatchSize = 10,
+      embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
     )
     val embeddingService = new OllamaEmbeddingService[IO](httpClient, embeddingConfig, testLogger)
     val pubsubPublisher  = new GooglePubSubEventPublisher[IO](r.publisher)
@@ -297,12 +306,26 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
         testRetryConfig,
       )
 
+    val (embedder, fin) = CrossBillEmbedder
+      .resource[IO](
+        embeddingService = embeddingService,
+        rawBillTextRepository = rawTextRepo,
+        xa = xa,
+        logger = testLogger,
+        embedBatchSize = embeddingConfig.embedBatchSize,
+        embedBatchTimeout = embeddingConfig.embedBatchTimeout,
+        queueCapacity = embeddingConfig.embedBatchSize * 10,
+      )
+      .allocated
+      .unsafeRunSync()
+    val _ = embedderFinalizers.offer(fin)
+
     new BillTextProcessor[IO](
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
       rawBillTextRepository = rawTextRepo,
-      embeddingService = embeddingService,
+      embedder = embedder,
       embeddingConfig = embeddingConfig,
       eventPublisher = eventPublisher,
       xa = xa,
