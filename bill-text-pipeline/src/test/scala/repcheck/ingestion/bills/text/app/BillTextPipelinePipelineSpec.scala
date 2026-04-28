@@ -113,14 +113,17 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
 
   private val stubEmbedder: CrossBillEmbedder[IO] = mock[CrossBillEmbedder[IO]]
 
-  private def stubResources(subscriber: PubSubEventSubscriber[IO] = emptySubscriber): PipelineResources[IO] =
+  private def stubResources(subscriber: PubSubEventSubscriber[IO] = emptySubscriber): PipelineResources[IO] = {
+    val noOpClient = Client.fromHttpApp(org.http4s.HttpApp.notFound[IO])
     PipelineResources(
       xa = testXa,
-      httpClient = Client.fromHttpApp(org.http4s.HttpApp.notFound[IO]),
+      congressGovClient = noOpClient,
+      ollamaClient = noOpClient,
       pubSubPublisher = stubPubSub,
       pubSubSubscriber = subscriber,
       embedder = stubEmbedder,
     )
+  }
 
   "AppConfig" should "load from PureConfig reference configuration" in {
     val result = ConfigSource
@@ -474,7 +477,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         config = testConfig,
         logger = logger,
         transactorFactory = (_: DatabaseConfig) => Resource.pure[IO, Transactor[IO]](testXa),
-        httpClientFactory = Resource.pure[IO, Client[IO]](httpClient),
+        congressGovClientFactory = Resource.pure[IO, Client[IO]](httpClient),
+        ollamaClientFactory = Resource.pure[IO, Client[IO]](httpClient),
         pubSubPublisherFactory = (_: EventPublisherConfig) => Resource.pure[IO, PubSubEventPublisher[IO]](stubPubSub),
         pubSubSubscriberFactory = (_: EventSubscriberConfig, _: PipelineLogger[IO]) =>
           Resource.pure[IO, PubSubEventSubscriber[IO]](emptySubscriber),
@@ -482,7 +486,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       .use { res =>
         IO {
           val _ = res.xa.toString should not be empty
-          val _ = res.httpClient.toString should not be empty
+          val _ = res.congressGovClient.toString should not be empty
+          val _ = res.ollamaClient.toString should not be empty
           val _ = res.pubSubPublisher.toString should not be empty
           res.pubSubSubscriber.toString should not be empty
         }
@@ -518,7 +523,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
           capturedDbConfig.set(dbCfg)
           Resource.pure[IO, Transactor[IO]](testXa)
         },
-        httpClientFactory = Resource.pure[IO, Client[IO]](httpClient),
+        congressGovClientFactory = Resource.pure[IO, Client[IO]](httpClient),
+        ollamaClientFactory = Resource.pure[IO, Client[IO]](httpClient),
         pubSubPublisherFactory = (pubCfg: EventPublisherConfig) => {
           capturedPublisherConfig.set(pubCfg)
           Resource.pure[IO, PubSubEventPublisher[IO]](stubPubSub)

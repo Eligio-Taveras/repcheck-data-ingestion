@@ -40,10 +40,25 @@ private[app] object BillTextPipelinePipeline {
     failureHandler: PipelineFailureHandlerConfig,
   ) derives pureconfig.ConfigReader
 
-  /** Resource bundle created by `buildResources` — groups all managed dependencies. */
+  /**
+   * Resource bundle created by `buildResources` — groups all managed dependencies.
+   *
+   * Two distinct HTTP clients are intentional, not redundant:
+   *
+   *   - `congressGovClient` is rate-limited (Semaphore + pageDelay) so the per-bill text downloads from
+   *     www.congress.gov and api.congress.gov stay under the published Congress.gov budget.
+   *   - `ollamaClient` has NO rate limit. Ollama is a local sidecar — there's no external quota to honor, and sharing a
+   *     rate-limit budget with Congress.gov caused a deadlock in PR #83 validation: a single leaked permit blocked both
+   *     bill downloads AND embedder `/api/embed` calls, since both were going through the same wrapped client. Embedder
+   *     calls now go through their own unrestricted client.
+   *
+   * Other consumers needing an HTTP client for an external API would get their own (typically rate-limited) client
+   * built into this bundle the same way.
+   */
   final case class PipelineResources[F[_]](
     xa: Transactor[F],
-    httpClient: Client[F],
+    congressGovClient: Client[F],
+    ollamaClient: Client[F],
     pubSubPublisher: PubSubEventPublisher[F],
     pubSubSubscriber: PubSubEventSubscriber[F],
     embedder: CrossBillEmbedder[F],
@@ -73,8 +88,11 @@ private[app] object BillTextPipelinePipeline {
       config <- configLoader
       logger <- loggerFactory(PipelineName)
       exitCode <- resourceBuilder(config, logger).use { resources =>
+        // The processor receives the rate-limited Congress.gov client (used by BillTextDownloader for HTTP body
+        // streaming). The Ollama client is wired into the embedder via `buildResources` directly — keep them
+        // physically separate so a stuck rate-limiter permit can never wedge the embedder.
         val processor = processorFactory(
-          resources.httpClient,
+          resources.congressGovClient,
           resources.xa,
           resources.pubSubPublisher,
           resources.embedder,
@@ -212,16 +230,21 @@ private[app] object BillTextPipelinePipeline {
     config: AppConfig,
     logger: PipelineLogger[F],
     transactorFactory: DatabaseConfig => Resource[F, Transactor[F]],
-    httpClientFactory: Resource[F, Client[F]],
+    congressGovClientFactory: Resource[F, Client[F]],
+    ollamaClientFactory: Resource[F, Client[F]],
     pubSubPublisherFactory: EventPublisherConfig => Resource[F, PubSubEventPublisher[F]],
     pubSubSubscriberFactory: (EventSubscriberConfig, PipelineLogger[F]) => Resource[F, PubSubEventSubscriber[F]],
   ): Resource[F, PipelineResources[F]] =
     for {
-      xa               <- transactorFactory(config.database)
-      httpClient       <- httpClientFactory
-      pubSubPublisher  <- pubSubPublisherFactory(config.eventPublisher)
-      pubSubSubscriber <- pubSubSubscriberFactory(config.eventSubscriber, logger)
-      embeddingService = new OllamaEmbeddingService[F](httpClient, config.embedding, logger)
+      xa <- transactorFactory(config.database)
+      // congressGovClient is the rate-limited client used by BillTextDownloader for /v3 metadata + bill-text
+      // body streaming. ollamaClient is unrestricted (local sidecar, no external quota); used only by the
+      // embedder. Splitting them prevents a leaked rate-limiter permit from wedging the embedder.
+      congressGovClient <- congressGovClientFactory
+      ollamaClient      <- ollamaClientFactory
+      pubSubPublisher   <- pubSubPublisherFactory(config.eventPublisher)
+      pubSubSubscriber  <- pubSubSubscriberFactory(config.eventSubscriber, logger)
+      embeddingService = new OllamaEmbeddingService[F](ollamaClient, config.embedding, logger)
       embedder <- CrossBillEmbedder.resource[F](
         embeddingService = embeddingService,
         rawBillTextRepository = new DoobieRawBillTextRepository,
@@ -231,6 +254,6 @@ private[app] object BillTextPipelinePipeline {
         embedBatchTimeout = config.embedding.embedBatchTimeout,
         queueCapacity = config.embedding.embedBatchSize * config.embedding.embedQueueCapacityMultiplier,
       )
-    } yield PipelineResources(xa, httpClient, pubSubPublisher, pubSubSubscriber, embedder)
+    } yield PipelineResources(xa, congressGovClient, ollamaClient, pubSubPublisher, pubSubSubscriber, embedder)
 
 }

@@ -34,6 +34,9 @@ object BillTextPipelineApp extends IOApp {
           config,
           logger,
           TransactorResource.make[IO](_),
+          // Congress.gov client: external API, rate-limited per the published 5000-req/hour budget. Wrapping
+          // the underlying Ember client in `RateLimitedHttpClient.make(permits=1, pageDelay=...)` enforces a
+          // single in-flight request + a configurable spacing between releases. Used by BillTextDownloader.
           EmberClientBuilder
             .default[IO]
             .withTimeout(120.seconds)
@@ -42,6 +45,15 @@ object BillTextPipelineApp extends IOApp {
             .flatMap { raw =>
               RateLimitedHttpClient.make[IO](raw, pageDelay = config.pipeline.pageDelay, permits = 1L)
             },
+          // Ollama client: local sidecar over the docker-compose network; no external quota to honor and no
+          // shared throttle so a leaked Congress.gov rate-limiter permit can never block /api/embed. Used
+          // exclusively by the embedder. Tighter idle-connection lifetime than the Congress.gov client because
+          // local connections are cheap to re-establish and we don't want to leak file handles.
+          EmberClientBuilder
+            .default[IO]
+            .withTimeout(120.seconds)
+            .withIdleConnectionTime(60.seconds)
+            .build,
           PubSubPublisherResource.make[IO](_),
           (subConfig, log) =>
             PubSubSubscriberResource.make[IO](
