@@ -3,9 +3,9 @@ package repcheck.ingestion.bills.text.embedding
 import cats.effect.{Async, Deferred, Ref, Resource}
 import cats.syntax.all._
 
-import doobie._
-
 import fs2.Stream
+
+import doobie._
 
 import repcheck.ingestion.bills.common.persistence.TransactionRunner
 import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
