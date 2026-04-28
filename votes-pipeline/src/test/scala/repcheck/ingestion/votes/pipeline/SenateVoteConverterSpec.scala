@@ -252,6 +252,49 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     verify(loggerMock, atLeastOnce()).warn(any[LogContext], anyString())
   }
 
+  it should "produce billId = None and skip billLookup when documentType is a bill but documentCongress is 0" in {
+    // Older Senate-vote XML (109th Congress era and earlier) sometimes emits a fully-populated <document> block —
+    // documentType, documentNumber, documentName all real — but a self-closing or empty <document_congress/>.
+    // SenateVoteXmlDecoder.decodeDocument tolerates this by defaulting documentCongress to 0 (rather than dropping
+    // the whole vote). Without the > 0 gate in classifyDocument, the converter would build a bill natural key like
+    // "0-S-1059" and BillRepository.upsertPlaceholder would create an orphan congress=0 placeholder bill that no
+    // future write can heal (the (congress, bill_type, number) UNIQUE constraint means a later real (118, S, 1059)
+    // upsert lands as a separate row). 909 such orphans surfaced empirically before this gate.
+    val loggerMock = mkLogger
+    val converter  = new SenateVoteConverter[IO](loggerMock, testBaseUrl)
+    val dto = senateDto(
+      document = billDoc(docType = "S.", docNumber = "1059", docCongress = 0, docTitle = "Old vote, missing congress")
+    )
+
+    val calls  = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
+    val result = converter.convert(dto, recordingBillLookup(calls), logCtx).unsafeRunSync()
+
+    val _ = result.billNaturalKey shouldBe None
+    val _ = result.vote.billId shouldBe None
+    val _ = result.vote.legislationType shouldBe None
+    val _ = result.vote.legislationNumber shouldBe None
+    val _ = result.vote.legislationUrl shouldBe None
+    // billLookup must NOT have been invoked — the whole point is to avoid creating the orphan placeholder.
+    val _ = calls.get() shouldBe List.empty
+    // Logged at INFO (expected-for-old-votes case), NOT warn.
+    import org.mockito.Mockito.{atLeastOnce, verify}
+    verify(loggerMock, atLeastOnce()).info(any[LogContext], anyString())
+  }
+
+  it should "treat negative documentCongress identically to 0 (defensive lower-bound check)" in {
+    val converter = new SenateVoteConverter[IO](mkLogger, testBaseUrl)
+    val dto = senateDto(
+      document = billDoc(docType = "HR.", docNumber = "42", docCongress = -1)
+    )
+
+    val calls  = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
+    val result = converter.convert(dto, recordingBillLookup(calls), logCtx).unsafeRunSync()
+
+    val _ = result.billNaturalKey shouldBe None
+    val _ = result.vote.billId shouldBe None
+    calls.get() shouldBe List.empty
+  }
+
   // ------------------------------------------------------------------
   // billLookup error propagation
   // ------------------------------------------------------------------
