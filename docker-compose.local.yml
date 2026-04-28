@@ -224,9 +224,10 @@ services:
       # delta since the prior run's completed_at minus watermark-buffer.
       PIPELINE_INITIAL_LOOKBACK_DAYS: ${PIPELINE_INITIAL_LOOKBACK_DAYS:-3650}
       PIPELINE_WATERMARK_BUFFER: ${PIPELINE_WATERMARK_BUFFER:-5m}
-      # Congress list defaults to the active session [119] from application.conf. PureConfig's HOCON
-      # reader cannot reify a string env-var into List[Int], so for backfill edit application.conf
-      # directly (or add a Scala-level env-var parser like votes-pipeline's resolveCongresses).
+      # Optional comma-separated congress list. Empty/unset = derive from `SELECT DISTINCT congress
+      # FROM bills` (matches votes-pipeline + member-profile-pipeline). Set to e.g. "117,118,119"
+      # to override the DB-derived default for targeted backfill.
+      BILL_SUMMARY_CONGRESSES: ${BILL_SUMMARY_CONGRESSES:-}
     restart: "no"
 
   bill-text-availability-checker:

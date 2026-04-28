@@ -47,13 +47,18 @@ class BillSummaryProcessor[F[_]: Async](
 
   /**
    * Build the result stream for one pipeline run. The stream lazily computes the watermark, then folds across the
-   * configured congresses, emitting one `ProcessingResult` per bill for which we attempted a write.
+   * supplied congresses, emitting one `ProcessingResult` per bill for which we attempted a write.
    *
    * @param runId
    *   run-level identifier sourced by the launcher (`workflow_runs.id` string). Threaded into every log line via
    *   [[LogContext.runId]] so cross-pipeline tracing keys on the same value the launcher created.
+   * @param congresses
+   *   resolved congress list to iterate. Computed by [[BillSummaryPipeline.resolveCongresses]] from (in priority order)
+   *   the `BILL_SUMMARY_CONGRESSES` env var, the `pipeline.congresses` config field, or `SELECT DISTINCT congress FROM
+   *   bills`. Threaded as a parameter rather than read from `config` so tests can inject specific lists without
+   *   rebuilding the full config and so the resolver's three-layer policy stays the single source of truth.
    */
-  def streamAll(runId: String): Stream[F, ProcessingResult] = {
+  def streamAll(runId: String, congresses: List[Int]): Stream[F, ProcessingResult] = {
     val logCtx = LogContext(runId = runId, stepName = config.stepName)
 
     val watermarkProgram: F[(Instant, Instant)] = for {
@@ -72,7 +77,7 @@ class BillSummaryProcessor[F[_]: Async](
     Stream.eval(watermarkProgram).flatMap {
       case (from, to) =>
         Stream
-          .emits(config.congresses)
+          .emits(congresses)
           .flatMap { congress =>
             // Isolate per-congress failures: if a sustained network/API error in one congress
             // exhausts retries, we surface it as a single ProcessingResult.Failed and continue
