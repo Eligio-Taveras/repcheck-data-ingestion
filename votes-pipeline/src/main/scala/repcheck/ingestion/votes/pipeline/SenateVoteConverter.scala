@@ -104,6 +104,17 @@ class SenateVoteConverter[F[_]: Async](
   /**
    * Classify the `<document>` element, log at the appropriate level, and return a [[DocumentClassification]] with the
    * derived bill natural key (for bill-like types) and the normalized [[BillType]] / `legislationNumber`.
+   *
+   * ==Why the documentCongress > 0 gate==
+   *
+   * `SenateVoteXmlDecoder.decodeDocument` is intentionally tolerant of older votes (109th Congress era and earlier)
+   * where senate.gov emits a `<document>` block with bill_type/bill_number populated but a self-closing or empty
+   * `<document_congress/>` — the decoder defaults `documentCongress = 0` rather than failing the whole vote. The
+   * decoder's intent is that those votes route through the non-bill branch (no bill linkage). Without this gate the
+   * classifier would happily build a bill natural key like `"0-S-1059"` and `BillRepository.upsertPlaceholder` would
+   * create an orphan bill row with `congress=0` that no future write can heal (the `(congress, bill_type, number)`
+   * UNIQUE constraint means a later real `(118, S, 1059)` upsert lands as a separate row, not an UPDATE of the
+   * placeholder). Surfaced empirically on the local stack — 909 such orphans accumulated before this gate.
    */
   private[pipeline] def classifyDocument(
     document: SenateVoteDocumentDTO,
@@ -111,7 +122,7 @@ class SenateVoteConverter[F[_]: Async](
     logCtx: LogContext,
   ): F[DocumentClassification] =
     normalizeDocumentType(document.documentType) match {
-      case Right(billType) =>
+      case Right(billType) if document.documentCongress > 0 =>
         val billNK = BillConversions.buildBillNaturalKey(
           congress = document.documentCongress,
           billType = billType.apiValue,
@@ -125,6 +136,17 @@ class SenateVoteConverter[F[_]: Async](
             legislationUrl = buildCongressGovBillUrl(document.documentCongress, billType, document.documentNumber),
           )
         )
+      case Right(billType) =>
+        // documentType parsed to a real BillType but documentCongress is missing/zero — old-vote XML shape
+        // where <document_congress/> is empty. Persist without bill linkage rather than creating an orphan
+        // congress=0 placeholder. See scaladoc above for the full rationale.
+        logger
+          .info(
+            logCtx,
+            s"Senate vote $voteNaturalKey has bill documentType '${billType.apiValue}' but missing or zero " +
+              s"documentCongress (${document.documentCongress}) — persisting with billId=None",
+          )
+          .as(DocumentClassification.empty)
       case Left(NonBillDocument(docType)) =>
         logger
           .info(
