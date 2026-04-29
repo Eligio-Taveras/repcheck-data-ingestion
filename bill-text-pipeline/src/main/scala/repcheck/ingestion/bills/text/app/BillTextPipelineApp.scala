@@ -35,15 +35,22 @@ object BillTextPipelineApp extends IOApp {
           logger,
           TransactorResource.make[IO](_),
           // Congress.gov client: external API, rate-limited per the published 5000-req/hour budget. Wrapping
-          // the underlying Ember client in `RateLimitedHttpClient.make(permits=1, pageDelay=...)` enforces a
-          // single in-flight request + a configurable spacing between releases. Used by BillTextDownloader.
+          // the underlying Ember client in `RateLimitedHttpClient.make(permits=2, pageDelay=...)` enforces at
+          // most two in-flight requests + a configurable spacing between releases. Used by BillTextDownloader.
+          //
+          // permits=2 was empirically chosen (2026-04-29 backfill experiment): permits=1 left the GPU idle
+          // ~50% of the time waiting for the next download, with bursty 21-87% utilization. Bumping to 2
+          // saturated the embedder steadily at 84-89% — sustained throughput rose from ~140 chunks/min to
+          // ~199 chunks/min (+42%) with no observed increase in upstream errors. We are still well under
+          // GovInfo's 5000/hour budget at this rate (peak ~13/sec → ~46k/hour potential, but the embedder
+          // ceiling at ~3-4 downloads/sec keeps actual rate around 12k/hour).
           EmberClientBuilder
             .default[IO]
             .withTimeout(120.seconds)
             .withIdleConnectionTime(120.seconds)
             .build
             .flatMap { raw =>
-              RateLimitedHttpClient.make[IO](raw, pageDelay = config.pipeline.pageDelay, permits = 1L)
+              RateLimitedHttpClient.make[IO](raw, pageDelay = config.pipeline.pageDelay, permits = 2L)
             },
           // Ollama client: local sidecar over the docker-compose network; no external quota to honor and no
           // shared throttle so a leaked Congress.gov rate-limiter permit can never block /api/embed. Used
