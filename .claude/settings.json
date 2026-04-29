@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); if echo \"$input\" | grep -qE 'git rm --cached|git checkout --|git reset --hard|rm -rf|rm -f'; then echo 'WARNING: Read-before-rollback rule — have you read each affected file and summarized for the user before this command? If not, abort and ask first.' >&2; fi",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
