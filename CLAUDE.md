@@ -244,6 +244,7 @@ docs/architecture/SCALA_CODE_PATTERNS.md (index — follow TOC to specific subse
 
 - **Scala style**: Always use traditional curly braces syntax. No Scala 3 braceless/indentation syntax. Use `if (cond) { ... } else { ... }`, not `if cond then ... else ...`. Use `object Foo { }`, not `object Foo:`.
 - **Effect system**: Tagless final `F[_]` everywhere. `Sync[F].delay` for synchronous side effects, `Async[F].blocking` for blocking I/O.
+- **Never bind effectful values to `_`**: `val _ = effect` is a silent no-op in cats-effect (and ZIO/Monix). The effect is never run — only its description is discarded. Treat any `val _ = io.Something(...)`, `val _ = ref.complete(...)`, `val _ = stream.compile.drain`, or `val _ = deferred.complete(...)` as a bug. Use `_ <- effect` inside a for-comprehension, or `effect.void` followed by sequencing. The bill-text-pipeline hung for 25 minutes on `val _ = progress.deferred.complete(...)` because the IO description was discarded; the Deferred never resolved.
 - **Errors**: Flat, unique exception per failure case. No sealed hierarchies. Context implied by the executing application. `ErrorClassifier` per subsystem: `Transient` (continue) vs `Systemic` (halt).
 - **Streaming**: Always use `parEvalMap(config.parallelism)`. Sequential = parallelism 1.
 - **Retry**: Centralized `RetryWrapper[F]` with per-subsystem `RetryConfig`. Exponential backoff (10ms initial, 2x multiplier, 60s cap, 3 retries default).
