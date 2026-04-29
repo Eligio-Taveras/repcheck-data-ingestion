@@ -6,7 +6,13 @@
 # Cloud Scheduler would in GCP.
 #
 # Prerequisites:
-#   1. Copy .env.example to .env and set CONGRESS_GOV_API_KEY
+#   1. Provide CONGRESS_GOV_API_KEY + GOVINFO_API_KEY to the launching shell.
+#      Two supported paths (see .env.example for full details):
+#        a. Windows User env + helper (recommended):
+#             source scripts/ci-functions.sh && loadDevSecrets
+#        b. Copy .env.example to .env and fill in literal values (gitignored).
+#      Compose substitutes ${VAR} from the launching shell at up-time — keys
+#      with empty values produce 401 errors mid-stream (api.govinfo.gov etc).
 #   2. Docker Desktop running
 #   3. Build fat JARs and Docker images:
 #        sbt "billMetadataPipeline/assembly" "billTextAvailabilityChecker/assembly" "billTextPipeline/assembly"

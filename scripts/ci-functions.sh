@@ -317,3 +317,75 @@ votr repo at commit \`$(cd "$votr_root" && git rev-parse --short HEAD)\`"
   echo ""
   echo "✓ Docs synced and PR created in repcheck-g8."
 }
+
+# ---------------------------------------------------------------------------
+# loadDevSecrets
+#
+# Read pipeline API keys from the Windows User environment (where they live
+# for IDE + shell access) and export them into the current bash session so
+# `docker compose up` can substitute them into the local stack's compose file.
+#
+# Compose-side substitutions (`${VAR}` in docker-compose.local.yml) only resolve
+# from the LAUNCHING shell's env at compose-up time — not from Windows User env
+# directly. Without this loader, a shell that doesn't have the keys exported
+# launches the stack with empty values, and pipelines that need the keys (e.g.
+# bill-text-pipeline → api.govinfo.gov) get 401s on every request.
+#
+# Never prints key values — only the variable name + length. Safe to share
+# terminal output. The keys themselves stay in Windows User env (read-only
+# from this script's perspective) and never land in the repo.
+#
+# Required for the local stack:
+#   - CONGRESS_GOV_API_KEY  (every pipeline that calls api.congress.gov)
+#   - GOVINFO_API_KEY       (bill-text-pipeline body downloads from api.govinfo.gov)
+#
+# Optional (won't fail if missing):
+#   - ANTHROPIC_API_KEY     (doc compressor + future LLM pipelines)
+#
+# Usage:
+#   source scripts/ci-functions.sh
+#   loadDevSecrets
+#   docker compose -f docker-compose.local.yml up -d
+#
+# To set the keys in Windows User env (one time, in PowerShell):
+#   [System.Environment]::SetEnvironmentVariable('CONGRESS_GOV_API_KEY', '...', 'User')
+#   [System.Environment]::SetEnvironmentVariable('GOVINFO_API_KEY',     '...', 'User')
+# ---------------------------------------------------------------------------
+loadDevSecrets() {
+  local missing=0
+  local required_keys=(CONGRESS_GOV_API_KEY GOVINFO_API_KEY)
+  local optional_keys=(ANTHROPIC_API_KEY)
+
+  echo "▸ Loading dev secrets from Windows User env (values not printed)"
+
+  for var_name in "${required_keys[@]}"; do
+    local value
+    value="$(powershell.exe -Command "[System.Environment]::GetEnvironmentVariable('$var_name', 'User')" | tr -d '\r\n')"
+    if [ -n "$value" ]; then
+      export "$var_name=$value"
+      echo "    ✓ $var_name (length=${#value})"
+    else
+      echo "    ✗ $var_name NOT SET — required, stack will fail"
+      missing=1
+    fi
+  done
+
+  for var_name in "${optional_keys[@]}"; do
+    local value
+    value="$(powershell.exe -Command "[System.Environment]::GetEnvironmentVariable('$var_name', 'User')" | tr -d '\r\n')"
+    if [ -n "$value" ]; then
+      export "$var_name=$value"
+      echo "    ✓ $var_name (length=${#value})"
+    else
+      echo "    · $var_name not set (optional)"
+    fi
+  done
+
+  if [ "$missing" -ne 0 ]; then
+    echo ""
+    echo "  Set missing keys via PowerShell, then re-run loadDevSecrets:"
+    echo "    [System.Environment]::SetEnvironmentVariable('CONGRESS_GOV_API_KEY', '...', 'User')"
+    echo "    [System.Environment]::SetEnvironmentVariable('GOVINFO_API_KEY',     '...', 'User')"
+    return 1
+  fi
+}
