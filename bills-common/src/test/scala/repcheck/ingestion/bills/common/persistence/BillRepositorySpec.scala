@@ -19,7 +19,7 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
 
     override def findByBillIds(billIds: List[String]): IO[List[BillDO]] = IO.pure(List.empty)
 
-    override def findBillsNeedingTextCheck(): IO[List[BillDO]] = IO.pure(List.empty)
+    override def findBillsNeedingTextCheck(congresses: List[Int]): IO[List[BillDO]] = IO.pure(List.empty)
 
     override def updateTextFields(
       billId: String,
@@ -85,7 +85,7 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
   }
 
   it should "return empty list from findBillsNeedingTextCheck for a stub" in {
-    stubRepo.findBillsNeedingTextCheck().unsafeRunSync() shouldBe List.empty
+    stubRepo.findBillsNeedingTextCheck(List.empty).unsafeRunSync() shouldBe List.empty
   }
 
   it should "return Unit from updateTextFields for a stub" in {

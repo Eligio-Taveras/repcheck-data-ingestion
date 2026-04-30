@@ -35,12 +35,18 @@ class BillTextAvailabilityChecker[F[_]: Async](
   private val StepName = "bill-text-availability-check"
 
   def checkAll(runId: Long): Stream[F, ProcessingResult] = {
-    val logCtx = LogContext(runId = runId.toString, stepName = StepName)
+    val logCtx     = LogContext(runId = runId.toString, stepName = StepName)
+    val congresses = config.congressList
 
     Stream
       .eval(
-        logger.info(logCtx, "Starting bill text availability check") *>
-          TransactionRunner.run(xa)(billRepo.findBillsNeedingTextCheck())
+        logger.info(
+          logCtx,
+          s"Starting bill text availability check (congresses=${
+              if (congresses.isEmpty) "<all>" else congresses.mkString(",")
+            })",
+        ) *>
+          TransactionRunner.run(xa)(billRepo.findBillsNeedingTextCheck(congresses))
       )
       .flatMap { bills =>
         Stream

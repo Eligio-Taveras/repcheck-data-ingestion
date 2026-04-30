@@ -177,7 +177,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     // hasn't been touched by either bill-metadata-pipeline (introduced floor) or bill-summary-pipeline
     // (advancing writer) yet — fail-safe: don't sweep it.
     val _     = repo.upsert(makeBill(number = "1")).transact(xa).unsafeRunSync()
-    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck(List.empty).transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should not contain "118-HR-1"
   }
 
@@ -187,7 +187,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     val _ = repo.upsert(makeBill(number = "10")).transact(xa).unsafeRunSync()
     val _ = repo.updateExpectedVersion("118-HR-10", TextVersionCode.IH).transact(xa).unsafeRunSync()
 
-    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck(List.empty).transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should contain("118-HR-10")
   }
 
@@ -205,7 +205,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
       .transact(xa)
       .unsafeRunSync()
 
-    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck(List.empty).transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should not contain "118-HR-20"
   }
 
@@ -224,7 +224,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
       .transact(xa)
       .unsafeRunSync()
 
-    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck(List.empty).transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should contain("118-HR-30")
   }
 
@@ -241,7 +241,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
       .transact(xa)
       .unsafeRunSync()
 
-    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck(List.empty).transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should not contain "118-HR-40"
   }
 

@@ -218,7 +218,7 @@ class MetadataToVectorSearchLifecycleSpec
       eventPublisher = eventPublisher,
       retryWrapper = retryWrapper,
       xa = xa,
-      config = BillTextCheckerConfig(parallelism = 1, eventPublishRetry = testRetryConfig),
+      config = BillTextCheckerConfig(parallelism = 1, eventPublishRetry = testRetryConfig, congresses = ""),
       logger = testLogger,
     )
   }

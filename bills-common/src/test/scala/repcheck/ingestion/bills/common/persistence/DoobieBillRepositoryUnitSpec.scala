@@ -72,8 +72,10 @@ class DoobieBillRepositoryUnitSpec extends AnyFlatSpec with Matchers {
   }
 
   "findBillsNeedingTextCheck" should "produce a ConnectionIO for the query" in {
-    val cio = repo.findBillsNeedingTextCheck()
-    cio shouldBe a[doobie.ConnectionIO[?]]
+    val cioAll      = repo.findBillsNeedingTextCheck(List.empty)
+    val cioFiltered = repo.findBillsNeedingTextCheck(List(118, 119))
+    val _           = cioAll shouldBe a[doobie.ConnectionIO[?]]
+    cioFiltered shouldBe a[doobie.ConnectionIO[?]]
   }
 
   "updateTextFields" should "produce a ConnectionIO for the update" in {
