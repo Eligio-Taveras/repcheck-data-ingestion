@@ -44,7 +44,13 @@ class BillTextAvailabilityChecker[F[_]: Async](
       )
       .flatMap { bills =>
         Stream
-          .eval(logger.info(logCtx, s"Found ${bills.size} bills needing text check"))
+          .eval(
+            logger.info(logCtx, s"Found ${bills.size} bills needing text check") *>
+              logger.info(
+                logCtx,
+                s"Beginning per-bill processing (parallelism=${config.parallelism})",
+              )
+          )
           .drain ++
           Stream
             .emits(bills)
@@ -62,8 +68,14 @@ class BillTextAvailabilityChecker[F[_]: Async](
     )
 
     val check: F[ProcessingResult] = for {
+      _        <- logger.info(logCtx, s"Checking bill $billId")
+      _        <- logger.info(logCtx, s"Fetching text versions for $billId from Congress.gov")
       selected <- fetchBestVersion(bill)
-      result   <- evaluateAndEmit(selected, bill, correlationId, logCtx)
+      _ <- logger.info(
+        logCtx,
+        s"Got ${selected.fold("0")(_ => "1+")} selected version for $billId, evaluating",
+      )
+      result <- evaluateAndEmit(selected, bill, correlationId, logCtx)
     } yield result
 
     check.handleErrorWith(error => handleCheckError(billId, error, logCtx))
@@ -88,7 +100,7 @@ class BillTextAvailabilityChecker[F[_]: Async](
     selected match {
       case None =>
         logger
-          .debug(logCtx, s"No text versions found for bill $billId")
+          .info(logCtx, s"No text versions found for bill $billId (skip)")
           .as(ProcessingResult.Skipped(entityId = billId, reason = "No text versions available"))
 
       case Some(sv) =>
@@ -120,7 +132,7 @@ class BillTextAvailabilityChecker[F[_]: Async](
 
     if (!isNew && !changed) {
       logger
-        .debug(logCtx, s"Text unchanged for bill $billId")
+        .info(logCtx, s"Text unchanged for bill $billId (skip)")
         .as(ProcessingResult.Skipped(entityId = billId, reason = "Text version unchanged"))
     } else {
       emitEvent(bill, sv, versionCode, correlationId, logCtx)

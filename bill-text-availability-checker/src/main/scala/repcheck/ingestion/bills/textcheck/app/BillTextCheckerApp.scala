@@ -1,5 +1,7 @@
 package repcheck.ingestion.bills.textcheck.app
 
+import scala.concurrent.duration._
+
 import cats.effect.{ExitCode, IO, IOApp, Sync}
 
 import org.http4s.ember.client.EmberClientBuilder
@@ -24,9 +26,18 @@ object BillTextCheckerApp extends IOApp {
           config,
           logger,
           TransactorResource.make[IO](_),
-          EmberClientBuilder.default[IO].build.flatMap { raw =>
-            RateLimitedHttpClient.make[IO](raw, pageDelay = config.congressApi.pageDelay, permits = 1L)
-          },
+          // withTimeout(30s) + withIdleConnectionTime(60s): without these, a stuck request can hang
+          // indefinitely on a half-open connection (no timeout = unbounded wait). 30s is generous
+          // for Congress.gov's slow responses; 60s pool eviction stops stale connections from
+          // accumulating across long-running runs and silently failing on first reuse.
+          EmberClientBuilder
+            .default[IO]
+            .withTimeout(30.seconds)
+            .withIdleConnectionTime(60.seconds)
+            .build
+            .flatMap { raw =>
+              RateLimitedHttpClient.make[IO](raw, pageDelay = config.congressApi.pageDelay, permits = 1L)
+            },
           PubSubPublisherResource.make[IO](_),
         ),
       checkerFactory = BillTextCheckerPipeline.buildChecker[IO],
