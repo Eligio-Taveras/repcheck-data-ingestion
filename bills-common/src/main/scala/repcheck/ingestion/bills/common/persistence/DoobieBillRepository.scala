@@ -1,5 +1,6 @@
 package repcheck.ingestion.bills.common.persistence
 
+import cats.data.NonEmptyList
 import cats.syntax.all._
 
 import doobie._
@@ -127,24 +128,36 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         .to[List]
     }
 
-  override def findBillsNeedingTextCheck(): ConnectionIO[List[BillDO]] =
-    // Stage-aware filter (post-migration 032). Returns bills whose stage has moved past the version we
-    // already have stored — i.e. `expected_text_version_code` (set by bill-metadata-pipeline as the
-    // introduced floor and/or bill-summary-pipeline as it advances from CRS summary versionCodes) does
-    // not match `text_version_type` (set by bill-text-pipeline after a successful download).
+  override def findBillsNeedingTextCheck(congresses: List[Int]): ConnectionIO[List[BillDO]] = {
+    // Stage-aware filter. Returns bills whose stored stage doesn't match the expected stage, ordered
+    // so genuinely pending bills (no text downloaded yet) come before "upgrade-bucket" bills (text
+    // downloaded but at a different version code).
     //
-    //   * `expected_text_version_code IS NOT NULL` — fail-safe: bills with no stage signal yet stay out
-    //     of the sweep. This keeps the query bounded as bill-metadata-pipeline's first 10-year backfill
-    //     populates floors.
+    //   * `expected_text_version_code IS NOT NULL` — fail-safe: bills with no stage signal yet stay
+    //     out of the sweep.
     //   * `text_version_type IS DISTINCT FROM expected_text_version_code` — handles both "stored is
-    //     NULL" and "stored != expected" with one operator. Bill enters the sweep, /text gets called,
-    //     bill-text-pipeline downloads the matching version, `text_version_type` is bumped, and the
-    //     bill exits the sweep until the next stage transition.
-    (fr"SELECT" ++ selectColumns ++ fr"""FROM $table
-      WHERE expected_text_version_code IS NOT NULL
-        AND text_version_type IS DISTINCT FROM expected_text_version_code""")
+    //     NULL" and "stored != expected" with one operator.
+    //   * `congress = ANY($congresses)` — operator-controlled allow-list. Pre-103 bills have
+    //     `expected_text_version_code` populated by the metadata pipeline's chamber-floor write,
+    //     but Congress.gov has no text body for them. Empty list = no congress filter (sweep all).
+    //     Default in `BillTextCheckerConfig.congresses` is "103,104,...,119".
+    //
+    // ORDER BY (latest_text_version_id IS NULL) DESC: prioritize never-downloaded bills over upgrade-
+    // bucket bills. The upgrade bucket can otherwise starve the pending work — a single per-run scan
+    // is rate-limited by Congress.gov, so processing "Text unchanged" no-ops first leaves no budget
+    // for the actual backfill.
+    val congressFilter = congresses match {
+      case Nil          => Fragment.empty
+      case head :: tail => fr"AND" ++ Fragments.in(fr"congress", NonEmptyList(head, tail))
+    }
+    (fr"SELECT" ++ selectColumns ++ fr"FROM $table" ++
+      fr"WHERE expected_text_version_code IS NOT NULL" ++
+      fr"AND text_version_type IS DISTINCT FROM expected_text_version_code" ++
+      congressFilter ++
+      fr"ORDER BY (latest_text_version_id IS NULL) DESC, congress DESC, id ASC")
       .query[BillDO]
       .to[List]
+  }
 
   override def updateTextFields(
     billId: String,
@@ -155,7 +168,7 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     latestTextVersionId: Long,
   ): ConnectionIO[Unit] = {
     val (congress, billType, number) = parseNaturalKey(billId)
-    sql"""
+    val updateText: ConnectionIO[Unit] = sql"""
       UPDATE $table SET
         text_url = $textUrl,
         text_format = $textFormat::format_type_enum,
@@ -165,6 +178,32 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         updated_at = NOW()
       WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int
     """.update.run.void
+
+    // Cooperative-write contract repair: when a successfully-downloaded text version's progressionOrder
+    // exceeds the current `expected_text_version_code`, bump expected to match. Without this, bills can
+    // end up stuck in `findBillsNeedingTextCheck`'s `IS DISTINCT FROM` filter forever — the metadata or
+    // summary pipeline set expected to some early stage (e.g. IH), bill-text-pipeline downloaded a later
+    // stage (e.g. ATS), the SQL filter keeps surfacing the bill, the runtime check decides "Text
+    // unchanged" because Congress.gov's latest matches what we have. Self-heals here so freshly-
+    // downloaded rows escape the loop on the next text-pipeline pass; new rows never enter the broken
+    // state.
+    val maybeBumpExpected: ConnectionIO[Unit] = TextVersionCode.fromString(textVersionType) match {
+      case Left(_) =>
+        // textVersionType doesn't parse to a known TextVersionCode. The Postgres enum cast above
+        // will fail anyway, so the whole transaction aborts; nothing to do here.
+        doobie.free.connection.unit
+      case Right(downloaded) =>
+        findExpectedVersion(billId).flatMap { existing =>
+          val shouldBump = existing match {
+            case None          => true
+            case Some(current) => downloaded.progressionOrder > current.progressionOrder
+          }
+          if (shouldBump) updateExpectedVersion(billId, downloaded)
+          else doobie.free.connection.unit
+        }
+    }
+
+    updateText *> maybeBumpExpected
   }
 
   private[persistence] def parseNaturalKey(naturalKey: String): (Int, String, String) = {

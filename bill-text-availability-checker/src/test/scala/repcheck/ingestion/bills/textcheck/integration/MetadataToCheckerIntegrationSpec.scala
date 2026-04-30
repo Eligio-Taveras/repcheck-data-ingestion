@@ -52,7 +52,8 @@ class MetadataToCheckerIntegrationSpec
   private val testRetryConfig =
     RetryConfig(maxRetries = 1, initialBackoffMs = 1L, maxBackoffMs = 10L, backoffMultiplier = 1.0)
 
-  private val checkerConfig = BillTextCheckerConfig(parallelism = 1, eventPublishRetry = testRetryConfig)
+  private val checkerConfig =
+    BillTextCheckerConfig(parallelism = 1, eventPublishRetry = testRetryConfig, congresses = "")
 
   private lazy val (httpClient, httpShutdown) = EmberClientBuilder
     .default[IO]
