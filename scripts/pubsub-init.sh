@@ -36,11 +36,24 @@ create_resource() {
 echo "Creating topic: bill-text-available"
 create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/bill-text-available"
 
+# Topic: bill-text-available-dead-letter (for messages that exceed max delivery attempts)
+echo "Creating topic: bill-text-available-dead-letter"
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/bill-text-available-dead-letter"
+
 # Subscription: bill-text-available-sub (text pipeline reads from this)
+# Dead-letter after 5 nacks (the cloud Pub/Sub minimum): TextDownloadFailed for old congresses
+# (e.g., 102-HR-3412 returning HTTP 400 because the bill text was never digitized) was previously
+# redelivered indefinitely, blocking the queue. Sticky failures now exit to bill-text-available-dead-letter
+# instead of looping forever.
+#
+# retryPolicy 2s/30s rather than the 10s/600s used for bill-events/vote-events: bill-text failures
+# are mostly deterministic (govinfo 400 for missing texts), so long backoffs don't help — they just
+# delay the inevitable DLQ exit. 5 attempts at 2-30s ≈ ~60s wall-clock to dead-letter, vs ~5+ minutes
+# under the default 10s/600s.
 echo "Creating subscription: bill-text-available-sub"
 create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions/bill-text-available-sub" \
   -H "Content-Type: application/json" \
-  -d "{\"topic\":\"projects/${PROJECT_ID}/topics/bill-text-available\",\"ackDeadlineSeconds\":60}"
+  -d "{\"topic\":\"projects/${PROJECT_ID}/topics/bill-text-available\",\"ackDeadlineSeconds\":60,\"deadLetterPolicy\":{\"deadLetterTopic\":\"projects/${PROJECT_ID}/topics/bill-text-available-dead-letter\",\"maxDeliveryAttempts\":5},\"retryPolicy\":{\"minimumBackoff\":\"2s\",\"maximumBackoff\":\"30s\"}}"
 
 # Topic: bill-text-ingested (text pipeline publishes downstream events)
 echo "Creating topic: bill-text-ingested"
