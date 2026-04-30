@@ -36,6 +36,11 @@ object BillTextCheckerApp extends IOApp {
             .withIdleConnectionTime(60.seconds)
             .build
             .flatMap { raw =>
+              // permits=1L is the right default after a brief 2026-04 experiment that bumped to 3
+              // and triggered a sustained Congress.gov 429 throttle (the per-key bucket couldn't
+              // refill fast enough across all three pipelines sharing the key). With the 750ms
+              // pageDelay this gives ~80 req/min ≈ 4800 req/hr — comfortably under the 5K/hr
+              // free-tier limit when the metadata + member-profile pipelines are also active.
               RateLimitedHttpClient.make[IO](raw, pageDelay = config.congressApi.pageDelay, permits = 1L)
             },
           PubSubPublisherResource.make[IO](_),
