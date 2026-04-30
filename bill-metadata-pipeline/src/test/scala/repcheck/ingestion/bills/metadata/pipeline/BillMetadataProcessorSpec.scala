@@ -518,13 +518,19 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     results.headOption.map(_.entityId) shouldBe Some("118-HR-5")
   }
 
-  it should "log error and return empty stream when page fetch fails" in {
-    val f = createFixture()
+  it should "log error and re-raise when page fetch fails (fail-loud, do not swallow)" in {
+    // Earlier behavior: handleErrorWith returned Stream.empty, so a paginated backfill
+    // crash looked like a successful run with partial results (exit code 0). That masked
+    // real failures. Now the stream re-raises so the IOApp run exits non-zero and the
+    // operator sees the truncation.
+    val f    = createFixture()
+    val boom = new RuntimeException("network timeout")
     when(f.apiClient.fetchAll(any[FetchParams]))
-      .thenReturn(fs2.Stream.raiseError[IO](new RuntimeException("network timeout")))
+      .thenReturn(fs2.Stream.raiseError[IO](boom))
 
-    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
-    val _       = results shouldBe empty
+    val attempt = f.processor.streamAll(runId).compile.toList.attempt.unsafeRunSync()
+    val _       = attempt.isLeft shouldBe true
+    val _       = attempt.left.toOption.map(_.getMessage) shouldBe Some("network timeout")
     verify(f.logger, times(1)).error(
       any[LogContext],
       org.mockito.ArgumentMatchers.contains("Page fetch failed"),

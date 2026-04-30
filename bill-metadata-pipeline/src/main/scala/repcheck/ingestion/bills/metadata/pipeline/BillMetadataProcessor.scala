@@ -60,9 +60,21 @@ class BillMetadataProcessor[F[_]: Async](
     apiClient
       .fetchAll(params)
       .handleErrorWith { e =>
+        // Page-level fetch failures used to be silently swallowed here (the stream returned
+        // `Stream.empty` and the pipeline reported "completing with partial results" + exit code 0).
+        // That made every transient connection drop look like a successful run, which masked a
+        // real backfill abandonment for hours of expected work — most recent observation: a 13-year
+        // lookback crashed at offset=4250 (page 18 of ~hundreds), pipeline reported
+        // "4250 succeeded, 0 failed" and exited 0 despite leaving every older bill unenriched.
+        //
+        // Now we log + re-raise so the failure propagates to the IOApp `run` method's exit code,
+        // making the run visibly fail. Per-bill failures (below) are still recovered to
+        // `ProcessingResult.Failed` so a single bad row doesn't kill the whole stream — that's
+        // the right per-item posture. Page-level failures are different: they truncate the entire
+        // remaining backfill and must surface.
         Stream.eval(
-          logger.error(logCtx, s"Page fetch failed, completing with partial results: ${e.getMessage}", Some(e))
-        ) *> Stream.empty
+          logger.error(logCtx, s"Page fetch failed, aborting run: ${e.getMessage}", Some(e))
+        ) *> Stream.raiseError[F](e)
       }
       .parEvalMap(config.parallelism) { listItem =>
         val naturalKey    = buildNaturalKey(listItem)
