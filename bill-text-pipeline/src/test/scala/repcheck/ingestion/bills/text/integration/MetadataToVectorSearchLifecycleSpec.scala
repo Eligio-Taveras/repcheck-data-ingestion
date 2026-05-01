@@ -175,7 +175,7 @@ class MetadataToVectorSearchLifecycleSpec
       pageDelay = Duration.Zero,
       retry = testRetryConfig,
     )
-    val apiClient = BillsApiClient[IO](congressConfig, httpClient, retryWrapper)
+    val apiClient = BillsApiClient[IO](congressConfig, httpClient, retryWrapper, testLogger)
 
     new BillMetadataProcessor[IO](
       apiClient = apiClient,

@@ -290,6 +290,39 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     result.isSkipped shouldBe true
   }
 
+  it should "backfill a placeholder bill even if API updateDate is older than stored" in {
+    // Placeholder rows from bill-text-availability-checker / bill-summary-pipeline carry a stored
+    // update_date set to their insertion time, which is by definition newer than the API's real
+    // updateDate for any older bill. BillPlaceholder.isPlaceholder is the canonical detector. This
+    // test pins the behavior: a stored bill matching the placeholder shape MUST be routed through
+    // the update path regardless of the date comparison so the detail fields get backfilled.
+    val f        = createFixture()
+    val listItem = makeListItem(updateDate = Some("2023-06-01T00:00:00Z"))
+    // A canonical placeholder: every detail field empty/None, only natural-key + update_date set.
+    val placeholderStored =
+      repcheck.shared.models.placeholder
+        .HasPlaceholder[BillDO]
+        .placeholder("118-HR-1")
+        .copy(
+          billId = 42L,
+          congress = 118,
+          billType = repcheck.shared.models.congress.common.BillType.HR,
+          number = "1",
+          updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")),
+        )
+    val detail = makeDetailDTO()
+
+    stubBasicRepos(f, storedBill = Some(placeholderStored))
+    when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(detail))
+
+    val result = f.processor.processListItem(listItem, correlationId).unsafeRunSync()
+
+    val _ = result.isSucceeded shouldBe true
+    // Detail fetch happened (slow path), proving the placeholder branch was taken.
+    val _ = verify(f.apiClient, times(1)).fetchDetail(anyString())
+    verify(f.logger, times(1)).info(any[LogContext], org.mockito.ArgumentMatchers.contains("Placeholder bill detected"))
+  }
+
   it should "not fetch detail for unchanged bills" in {
     val f          = createFixture()
     val listItem   = makeListItem(updateDate = Some("2024-01-01T00:00:00Z"))
@@ -545,6 +578,98 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
 
     val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
     results shouldBe empty
+  }
+
+  private def processorWithConfig(f: TestFixture, cfg: BillMetadataConfig): BillMetadataProcessor[IO] =
+    new BillMetadataProcessor[IO](
+      apiClient = f.apiClient,
+      billRepo = f.billRepo,
+      cosponsorRepo = f.cosponsorRepo,
+      subjectRepo = f.subjectRepo,
+      historyArchiver = f.historyArchiver,
+      memberRepo = f.memberRepo,
+      placeholderCreator = f.stubPlaceholderCreator,
+      memberEntityRepo = f.memberEntityRepo,
+      xa = testXa,
+      config = cfg,
+      logger = f.logger,
+    )
+
+  it should "drop bills below minCongress before any detail fetch" in {
+    val f = createFixture()
+    val processor =
+      processorWithConfig(f, BillMetadataConfig(lookbackDays = 30, parallelism = 1, minCongress = Some(102)))
+    val oldBill    = makeListItem(congress = 27, billType = "hjres", number = "5")
+    val recentBill = makeListItem(congress = 118, billType = "hr", number = "1")
+
+    stubBasicRepos(f)
+    when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emits(List(oldBill, recentBill)))
+    when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(makeDetailDTO()))
+
+    val results = processor.streamAll(runId).compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 1
+    val _ = results.headOption.map(_.entityId) shouldBe Some("118-HR-1")
+    verify(f.apiClient, never()).fetchDetail(org.mockito.ArgumentMatchers.contains("bill/27/"))
+  }
+
+  it should "let bills through when their congress equals minCongress (boundary inclusive)" in {
+    val f = createFixture()
+    val processor =
+      processorWithConfig(f, BillMetadataConfig(lookbackDays = 30, parallelism = 1, minCongress = Some(102)))
+    val boundary = makeListItem(congress = 102, billType = "hr", number = "1", title = "Boundary")
+
+    stubBasicRepos(f)
+    when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emit(boundary))
+    when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(makeDetailDTO(congress = 102, title = "Boundary")))
+
+    val results = processor.streamAll(runId).compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 1
+    results.headOption.map(_.entityId) shouldBe Some("102-HR-1")
+  }
+
+  it should "not filter any bills when minCongress is None" in {
+    val f         = createFixture()
+    val processor = processorWithConfig(f, BillMetadataConfig(lookbackDays = 30, parallelism = 1, minCongress = None))
+    val oldBill   = makeListItem(congress = 27, billType = "hjres", number = "5", title = "Old")
+
+    stubBasicRepos(f)
+    when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emit(oldBill))
+    when(f.apiClient.fetchDetail(anyString()))
+      .thenReturn(IO.pure(makeDetailDTO(congress = 27, billType = "hjres", number = "5", title = "Old")))
+
+    val results = processor.streamAll(runId).compile.toList.unsafeRunSync()
+
+    results.size shouldBe 1
+  }
+
+  it should "log a Sweep progress checkpoint at every 250 results" in {
+    val f     = createFixture()
+    val items = (1 to 250).map(i => makeListItem(number = i.toString, updateDate = Some("2024-06-01T00:00:00Z"))).toList
+    val storedBill = makeStoredBill(updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
+
+    when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emits(items))
+    when(f.billRepo.findByBillId(anyString())).thenReturn(doobie.free.connection.pure(Some(storedBill)))
+
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 250
+    verify(f.logger, times(1)).info(any[LogContext], org.mockito.ArgumentMatchers.contains("Sweep progress: 250"))
+  }
+
+  it should "emit a debug log when a bill is filtered by minCongress" in {
+    val f = createFixture()
+    val processor =
+      processorWithConfig(f, BillMetadataConfig(lookbackDays = 30, parallelism = 1, minCongress = Some(102)))
+    val oldBill = makeListItem(congress = 27, billType = "hjres", number = "5")
+
+    when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emit(oldBill))
+
+    val _ = processor.streamAll(runId).compile.toList.unsafeRunSync()
+
+    verify(f.logger, times(1))
+      .debug(any[LogContext], org.mockito.ArgumentMatchers.contains("Filtered by minCongress=102"))
   }
 
 }

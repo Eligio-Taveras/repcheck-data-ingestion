@@ -5,4 +5,5 @@ import pureconfig.ConfigReader
 final case class BillMetadataConfig(
   lookbackDays: Int,
   parallelism: Int,
+  minCongress: Option[Int] = None,
 ) derives ConfigReader
