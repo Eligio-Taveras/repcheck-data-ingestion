@@ -45,12 +45,24 @@ private[app] object BillMetadataPipeline {
   import MemberWriteInstances._
 
   def run[F[_]: Async: Network](args: List[String]): F[ExitCode] = {
-    val _ = args // args reserved for future CLI config override support
+    val _       = args // args reserved for future CLI config override support
+    val bootCtx = LogContext("0", "bill-metadata-boot")
     for {
       config <- Sync[F].delay {
         ConfigSource.default.loadOrThrow[AppConfig]
       }
       logger <- PipelineLoggerFactory.make[F](PipelineName)
+      _ <- logger.info(
+        bootCtx,
+        s"App boot: db=${config.database.host}:${config.database.port.toString}/${config.database.database} " +
+          s"congressBaseUrl=${config.congressApi.baseUrl} pageSize=${config.congressApi.pageSize.toString} " +
+          s"pageDelay=${config.congressApi.pageDelay.toString} " +
+          s"retry.max=${config.congressApi.retry.maxRetries.toString} " +
+          s"pipeline.lookbackDays=${config.pipeline.lookbackDays.toString} " +
+          s"pipeline.parallelism=${config.pipeline.parallelism.toString} " +
+          s"pipeline.minCongress=${config.pipeline.minCongress.fold("none")(_.toString)}",
+      )
+      _ <- logger.info(bootCtx, s"App boot: building resources (transactor + ember client)")
       exitCode <- buildResources[F](config).use {
         case (xa, httpClient) =>
           val billRepo         = new DoobieBillRepository
@@ -95,7 +107,10 @@ private[app] object BillMetadataPipeline {
           // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
           val runId        = 0L
           val resultStream = processor.streamAll(runId)
-          PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId)
+          logger.info(
+            bootCtx,
+            s"App boot: resources built, processor wired, handing off to PipelineExecutor (runId=${runId.toString})",
+          ) *> PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId)
       }
     } yield exitCode
   }

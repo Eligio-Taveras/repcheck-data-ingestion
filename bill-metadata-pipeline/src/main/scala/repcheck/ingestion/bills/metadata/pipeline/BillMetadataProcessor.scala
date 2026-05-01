@@ -50,7 +50,7 @@ class BillMetadataProcessor[F[_]: Async](
     new MemberResolver[F](memberRepo, placeholderCreator, memberEntityRepo, xa, logger)
 
   private val billPersister =
-    new BillPersister[F](billRepo, cosponsorRepo, subjectRepo, historyArchiver, xa)
+    new BillPersister[F](billRepo, cosponsorRepo, subjectRepo, historyArchiver, xa, logger)
 
   def streamAll(runId: Long): Stream[F, ProcessingResult] = {
     val fromDateTime = Instant.now().minus(config.lookbackDays.toLong, ChronoUnit.DAYS)
@@ -85,11 +85,20 @@ class BillMetadataProcessor[F[_]: Async](
           ) *> Stream.raiseError[F](e)
         }
         // Drop bills from congresses below the configured floor before they reach the parallel stage.
-        // A 30-day production sweep can surface 19th-century bills when Congress.gov republishes them
-        // with fresh updateDate values; their detail-level schema (object-vs-array `bill` form, missing
-        // required fields, fractional bill numbers like `1025½` that fail PG INTEGER inserts) cannot
-        // be deserialized reliably. Filtering at the list-item level — where `congress` is a stable
-        // Int — avoids the wasted detail fetch + retry budget and keeps per-item Failed counts clean.
+        // The DEBUG log below makes filtered bills inspectable when log level is bumped to DEBUG;
+        // suppressed by default to avoid log spam during a backfill that drops tens of thousands.
+        .evalTap { li =>
+          config.minCongress match {
+            case Some(min) if li.congress < min =>
+              logger.debug(
+                logCtx,
+                s"Filtered by minCongress=${min.toString}: " +
+                  s"${li.congress.toString}-${li.billType.toUpperCase}-${li.number} " +
+                  s"updateDate=${li.updateDate.fold("none")(identity)}",
+              )
+            case _ => Async[F].unit
+          }
+        }
         .filter(li => config.minCongress.forall(min => li.congress >= min))
         .parEvalMap(config.parallelism) { listItem =>
           val naturalKey    = buildNaturalKey(listItem)
@@ -138,9 +147,27 @@ class BillMetadataProcessor[F[_]: Async](
     val logCtx     = LogContext(correlationId.toString, stepName, Some(correlationId), Some(naturalKey))
 
     for {
+      _ <- logger.debug(
+        logCtx,
+        s"[$naturalKey] processListItem.start url=${listItem.url} listUpdateDate=${listItem.updateDate.fold("none")(identity)}",
+      )
+      _      <- logger.debug(logCtx, s"[$naturalKey] processListItem.findByBillId.start")
       stored <- TransactionRunner.run(xa)(billRepo.findByBillId(naturalKey))
+      _ <- logger.debug(
+        logCtx,
+        s"[$naturalKey] processListItem.findByBillId.done found=${stored.isDefined.toString} " +
+          s"storedBillId=${stored.fold("none")(b => b.billId.toString)} " +
+          s"storedUpdateDate=${stored.flatMap(_.updateDate).fold("none")(_.toString)}",
+      )
       result <- evaluateAndProcess(listItem, naturalKey, stored, correlationId, logCtx)
+      _      <- logger.debug(logCtx, s"[$naturalKey] processListItem.done resultType=${resultTypeName(result)}")
     } yield result
+  }
+
+  private def resultTypeName(r: ProcessingResult): String = r match {
+    case _: ProcessingResult.Succeeded => "Succeeded"
+    case _: ProcessingResult.Skipped   => "Skipped"
+    case _: ProcessingResult.Failed    => "Failed"
   }
 
   private def evaluateAndProcess(
@@ -153,22 +180,31 @@ class BillMetadataProcessor[F[_]: Async](
     val incomingDate = listItem.updateDate.flatMap(s => parseInstantStr(s))
     val storedDate   = stored.flatMap(_.updateDate)
 
-    stored match {
-      case None =>
-        logger.info(logCtx, s"New bill detected: $naturalKey") *>
-          processBill(listItem, naturalKey, isNew = true, stored, correlationId, logCtx)
+    for {
+      _ <- logger.debug(
+        logCtx,
+        s"[$naturalKey] evaluateAndProcess incomingDate=${incomingDate.fold("none")(_.toString)} " +
+          s"storedDate=${storedDate.fold("none")(_.toString)} " +
+          s"isNew=${stored.isEmpty.toString}",
+      )
+      result <- stored match {
+        case None =>
+          logger.info(logCtx, s"New bill detected: $naturalKey") *>
+            processBill(listItem, naturalKey, isNew = true, stored, correlationId, logCtx)
 
-      case Some(_) if incomingDate.exists(inc => storedDate.forall(sd => inc.isAfter(sd))) =>
-        logger.info(logCtx, s"Updated bill detected: $naturalKey") *>
-          processBill(listItem, naturalKey, isNew = false, stored, correlationId, logCtx)
+        case Some(_) if incomingDate.exists(inc => storedDate.forall(sd => inc.isAfter(sd))) =>
+          logger.info(
+            logCtx,
+            s"Updated bill detected: $naturalKey (incoming=${incomingDate
+                .fold("none")(_.toString)} > stored=${storedDate.fold("none")(_.toString)})",
+          ) *>
+            processBill(listItem, naturalKey, isNew = false, stored, correlationId, logCtx)
 
-      case Some(_) =>
-        // INFO so the skip path is visible during a sweep — without it, an operator can't tell
-        // whether the pipeline is processing slowly or churning through unchanged-bill no-ops.
-        // Mirrors the diagnostic-logs treatment in the bill-text-availability-checker (PR #99).
-        logger.info(logCtx, s"Bill unchanged: $naturalKey") *>
-          Async[F].pure(ProcessingResult.Skipped(naturalKey, "unchanged"))
-    }
+        case Some(_) =>
+          logger.info(logCtx, s"Bill unchanged: $naturalKey") *>
+            Async[F].pure[ProcessingResult](ProcessingResult.Skipped(naturalKey, "unchanged"))
+      }
+    } yield result
   }
 
   private[pipeline] def processBill(
@@ -223,10 +259,14 @@ class BillMetadataProcessor[F[_]: Async](
     val cosponsorUrl = detail.cosponsors.flatMap(_.url)
     cosponsorUrl match {
       case Some(url) =>
-        logger.debug(logCtx, s"Fetching cosponsors from $url") *>
-          apiClient.fetchCosponsors(url)
+        for {
+          _      <- logger.debug(logCtx, s"fetchCosponsorsFromDetail.url=$url")
+          result <- apiClient.fetchCosponsors(url)
+          _      <- logger.debug(logCtx, s"fetchCosponsorsFromDetail.done count=${result.size.toString}")
+        } yield result
       case None =>
-        Async[F].pure(List.empty[CoSponsorDTO])
+        logger.debug(logCtx, s"fetchCosponsorsFromDetail.skip (no cosponsors URL on detail)") *>
+          Async[F].pure(List.empty[CoSponsorDTO])
     }
   }
 
