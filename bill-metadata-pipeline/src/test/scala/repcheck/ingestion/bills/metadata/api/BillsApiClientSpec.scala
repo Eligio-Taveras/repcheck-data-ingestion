@@ -163,6 +163,44 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     wireMock.verify(getRequestedFor(urlPathEqualTo("/v3/bill")).withQueryParam("api_key", equalTo("test-api-key")))
   }
 
+  it should "pass congress as a query param when FetchParams.congress is set" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill"))
+        .withQueryParam("congress", equalTo("119"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(billListJson(List.empty))
+        )
+    )
+    val client = makeClient()
+    val _      = client.fetchPage(FetchParams(congress = Some(119), pageSize = 250)).unsafeRunSync()
+    wireMock.verify(getRequestedFor(urlPathEqualTo("/v3/bill")).withQueryParam("congress", equalTo("119")))
+  }
+
+  it should "pass only fromDateTime when toDateTime is None" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill"))
+        .withQueryParam("fromDateTime", equalTo("2024-01-01T00:00:00Z"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(billListJson(List.empty))
+        )
+    )
+    val client = makeClient()
+    val _ = client
+      .fetchPage(
+        FetchParams(fromDateTime = Some(Instant.parse("2024-01-01T00:00:00Z")), pageSize = 250)
+      )
+      .unsafeRunSync()
+    wireMock.verify(
+      getRequestedFor(urlPathEqualTo("/v3/bill")).withQueryParam("fromDateTime", equalTo("2024-01-01T00:00:00Z"))
+    )
+  }
+
   "fetchAll" should "paginate across multiple pages" in {
     val page1Bills = (1 to 250).map(i => singleBillJson(118, "hr", i.toString, s"Bill $i")).toList
     val page2Bills = (251 to 300).map(i => singleBillJson(118, "hr", i.toString, s"Bill $i")).toList

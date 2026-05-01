@@ -611,4 +611,32 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     results.size shouldBe 1
   }
 
+  it should "log a Sweep progress checkpoint at every 250 results" in {
+    val f     = createFixture()
+    val items = (1 to 250).map(i => makeListItem(number = i.toString, updateDate = Some("2024-06-01T00:00:00Z"))).toList
+    val storedBill = makeStoredBill(updateDate = Some(Instant.parse("2024-06-01T00:00:00Z")))
+
+    when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emits(items))
+    when(f.billRepo.findByBillId(anyString())).thenReturn(doobie.free.connection.pure(Some(storedBill)))
+
+    val results = f.processor.streamAll(runId).compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 250
+    verify(f.logger, times(1)).info(any[LogContext], org.mockito.ArgumentMatchers.contains("Sweep progress: 250"))
+  }
+
+  it should "emit a debug log when a bill is filtered by minCongress" in {
+    val f = createFixture()
+    val processor =
+      processorWithConfig(f, BillMetadataConfig(lookbackDays = 30, parallelism = 1, minCongress = Some(102)))
+    val oldBill = makeListItem(congress = 27, billType = "hjres", number = "5")
+
+    when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emit(oldBill))
+
+    val _ = processor.streamAll(runId).compile.toList.unsafeRunSync()
+
+    verify(f.logger, times(1))
+      .debug(any[LogContext], org.mockito.ArgumentMatchers.contains("Filtered by minCongress=102"))
+  }
+
 }
