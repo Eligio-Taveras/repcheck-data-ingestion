@@ -25,7 +25,7 @@ import repcheck.ingestion.bills.metadata.config.BillMetadataConfig
 import repcheck.ingestion.bills.metadata.pipeline.BillMetadataProcessor
 import repcheck.ingestion.common.api.{CongressGovClientConfig, RateLimitedHttpClient}
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
-import repcheck.ingestion.common.logging.PipelineLoggerFactory
+import repcheck.ingestion.common.logging.{LogContext, PipelineLoggerFactory}
 import repcheck.ingestion.common.placeholders.{DefaultPlaceholderCreator, DoobieEntityRepository}
 import repcheck.members.common.MemberInsertSql
 import repcheck.members.common.persistence.{DoobieMemberRepository, MemberWriteInstances}
@@ -60,8 +60,22 @@ private[app] object BillMetadataPipeline {
           val memberRepo       = new DoobieMemberRepository
           val placeholder      = new DefaultPlaceholderCreator[F]
           val memberEntityRepo = new DoobieEntityRepository[F, MemberDO](xa, MemberInsertSql.value)
-          val retryWrapper     = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
-          val apiClient        = BillsApiClient[F](config.congressApi, httpClient, retryWrapper)
+          // Surface every retry attempt as a structured WARN log. Without this, an extended Ember-
+          // timeout-and-back-off cycle (e.g., a Congress.gov page that hangs into the 30s timeout,
+          // then retries with up to ~330s of cumulative backoff) presents to operators as a frozen
+          // pipeline — no log line is emitted between attempts, so it's indistinguishable from a
+          // genuine deadlock. The previous `(_, _, _, _, _, _) => Async[F].unit` callback silently
+          // swallowed retry signals; this version preserves the correlationId so a single retried
+          // request's lifecycle is traceable across attempts.
+          val retryLogCtx = LogContext("0", "bill-metadata")
+          val retryWrapper = new RetryWrapper[F]((attempt, maxRetries, delayMs, errorClass, message, correlationId) =>
+            logger.warn(
+              retryLogCtx.copy(correlationId = Some(correlationId)),
+              s"Retry $attempt/$maxRetries scheduled in ${delayMs.toString}ms " +
+                s"(errorClass=${errorClass.toString}): $message",
+            )
+          )
+          val apiClient = BillsApiClient[F](config.congressApi, httpClient, retryWrapper)
 
           val processor = new BillMetadataProcessor[F](
             apiClient = apiClient,
