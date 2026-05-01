@@ -290,16 +290,27 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     result.isSkipped shouldBe true
   }
 
-  it should "backfill a placeholder bill (title='') even if API updateDate is older than stored" in {
+  it should "backfill a placeholder bill even if API updateDate is older than stored" in {
     // Placeholder rows from bill-text-availability-checker / bill-summary-pipeline carry a stored
     // update_date set to their insertion time, which is by definition newer than the API's real
-    // updateDate for any older bill. The empty title is the canonical placeholder marker. This
-    // test pins the behavior: a stored bill with title='' MUST be routed through the update path
-    // regardless of the date comparison so the detail fields get backfilled.
-    val f                 = createFixture()
-    val listItem          = makeListItem(updateDate = Some("2023-06-01T00:00:00Z"))
-    val placeholderStored = makeStoredBill(updateDate = Some(Instant.parse("2024-01-01T00:00:00Z"))).copy(title = "")
-    val detail            = makeDetailDTO()
+    // updateDate for any older bill. BillPlaceholder.isPlaceholder is the canonical detector. This
+    // test pins the behavior: a stored bill matching the placeholder shape MUST be routed through
+    // the update path regardless of the date comparison so the detail fields get backfilled.
+    val f        = createFixture()
+    val listItem = makeListItem(updateDate = Some("2023-06-01T00:00:00Z"))
+    // A canonical placeholder: every detail field empty/None, only natural-key + update_date set.
+    val placeholderStored =
+      repcheck.shared.models.placeholder
+        .HasPlaceholder[BillDO]
+        .placeholder("118-HR-1")
+        .copy(
+          billId = 42L,
+          congress = 118,
+          billType = repcheck.shared.models.congress.common.BillType.HR,
+          number = "1",
+          updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")),
+        )
+    val detail = makeDetailDTO()
 
     stubBasicRepos(f, storedBill = Some(placeholderStored))
     when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(detail))

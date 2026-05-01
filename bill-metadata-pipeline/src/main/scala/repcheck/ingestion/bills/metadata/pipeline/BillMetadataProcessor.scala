@@ -11,6 +11,7 @@ import fs2.Stream
 
 import doobie._
 
+import repcheck.ingestion.bills.common.BillPlaceholder
 import repcheck.ingestion.bills.common.persistence.{
   BillCosponsorRepository,
   BillHistoryArchiver,
@@ -196,18 +197,21 @@ class BillMetadataProcessor[F[_]: Async](
         //
         // Other pipelines (bill-text-availability-checker, bill-summary-pipeline) can insert a
         // placeholder bill row when they need to reference a bill that the metadata pipeline
-        // hasn't ingested yet. The placeholder has natural-key fields populated, `title` empty,
-        // every detail Option = None, and `update_date` set to its insertion timestamp. That
-        // insertion time is by definition newer than the API's real updateDate for any bill
-        // that hasn't been modified recently — which means the date-comparison guard below
-        // would mark the row "Bill unchanged" and the placeholder would never be backfilled.
-        // Routing empty-title rows through the update path forces a detail fetch that fills
-        // title, sponsor, dates, and the rest. Empty title is the canonical placeholder marker:
-        // legitimately-ingested bills always have a non-empty title (Congress.gov populates it
-        // from the bill's official title even when other fields are sparse). 161,721 such rows
-        // existed in the local dev DB at the time this branch was added, ~67% of all bills, all
-        // stuck on the unchanged path until this fix.
-        case Some(s) if s.title.isEmpty =>
+        // hasn't ingested yet. The placeholder has the natural-key fields populated, every
+        // detail field empty, and `update_date` set to its insertion timestamp. That insertion
+        // time is by definition newer than the API's real updateDate for any bill not modified
+        // recently, which means the date-comparison guard below would mark the row "Bill
+        // unchanged" and the placeholder would never be backfilled.
+        //
+        // The canonical "is this a placeholder" check lives in `BillPlaceholder.isPlaceholder`
+        // (in `bills-common`), where an invariant test pins it to the same shape produced by
+        // `HasPlaceholder[BillDO].placeholder(...)` in shared-models. All bill-pipelines that
+        // create placeholders go through the shared-models factory; this branch detects the
+        // resulting rows by the same field-set definition.
+        //
+        // 161,721 such rows existed in the local dev DB at the time this branch was added
+        // (~67% of all bills), all stuck on the unchanged path until this fix landed.
+        case Some(s) if BillPlaceholder.isPlaceholder(s) =>
           logger.info(logCtx, s"Placeholder bill detected, backfilling: $naturalKey") *>
             processBill(listItem, naturalKey, isNew = false, stored, correlationId, logCtx)
 
