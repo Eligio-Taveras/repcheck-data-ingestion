@@ -47,14 +47,23 @@ object DockerPostgres {
   // AND the sbt-forked JVM child's search PATH is not always the same as the launching bash's. `Seq("docker", ...).!`
   // resolves to the bash wrapper that CreateProcess can't execute. Portable fix: respect a `DOCKER_BIN` env var
   // override, fall back to the Windows-default Docker Desktop absolute path, fall back to bare `docker` on Linux/macOS.
-  // CI on Linux picks `docker` unchanged.
-  private val dockerBin: String = {
-    val isWindows = sys.props.get("os.name").exists(_.toLowerCase.contains("windows"))
-    sys.env.getOrElse(
-      "DOCKER_BIN",
-      if (isWindows) """C:\Program Files\Docker\Docker\resources\bin\docker.exe""" else "docker",
-    )
-  }
+  // CI on Linux picks `docker` unchanged. Pure logic extracted into `resolveDockerBin` for testability.
+  private val dockerBin: String =
+    resolveDockerBin(sys.props.get("os.name"), sys.env.get("DOCKER_BIN"))
+
+  private[testing] def resolveDockerBin(osName: Option[String], envOverride: Option[String]): String =
+    envOverride.getOrElse {
+      val isWindows = osName.exists(_.toLowerCase.contains("windows"))
+      if (isWindows) """C:\Program Files\Docker\Docker\resources\bin\docker.exe""" else "docker"
+    }
+
+  /** Parse `docker port <name> 5432` output (e.g., `0.0.0.0:54321`) into the host port. */
+  private[testing] def parseHostPort(portOutput: String): Int =
+    portOutput.trim
+      .split(':')
+      .lastOption
+      .getOrElse(sys.error(s"Unexpected docker port output: $portOutput"))
+      .toInt
 
   final private case class ContainerHandle(name: String, info: PostgresContainerInfo)
 
@@ -103,12 +112,7 @@ object DockerPostgres {
       sys.error("Failed to start Docker container. Is Docker running?")
     }
 
-    val portOutput = Seq(dockerBin, "port", containerName, "5432").!!.trim
-    portOutput
-      .split(':')
-      .lastOption
-      .getOrElse(sys.error(s"Unexpected docker port output: $portOutput"))
-      .toInt
+    parseHostPort(Seq(dockerBin, "port", containerName, "5432").!!)
   }
 
   @tailrec
