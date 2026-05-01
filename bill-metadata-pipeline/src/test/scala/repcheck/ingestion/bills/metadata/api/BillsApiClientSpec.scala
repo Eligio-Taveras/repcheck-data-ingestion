@@ -18,6 +18,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.bills.metadata.errors.BillFetchFailed
 import repcheck.ingestion.common.api.{CongressGovClientConfig, FetchParams}
+import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 
 class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
@@ -39,6 +40,13 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
 
   private lazy val retryWrapper = new RetryWrapper[IO]((_, _, _, _, _, _) => IO.unit)
 
+  private val noOpLogger: PipelineLogger[IO] = new PipelineLogger[IO] {
+    def info(context: LogContext, message: String): IO[Unit]                            = IO.unit
+    def warn(context: LogContext, message: String): IO[Unit]                            = IO.unit
+    def error(context: LogContext, message: String, cause: Option[Throwable]): IO[Unit] = IO.unit
+    def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
+  }
+
   private def makeClient(
     retryConfig: RetryConfig = RetryConfig(maxRetries = 1, initialBackoffMs = 10L)
   ): BillsApiClient[IO] = {
@@ -49,7 +57,7 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
       pageDelay = Duration.Zero,
       retry = retryConfig,
     )
-    BillsApiClient[IO](config, httpClient, retryWrapper)
+    BillsApiClient[IO](config, httpClient, retryWrapper, noOpLogger)
   }
 
   override def beforeAll(): Unit = {

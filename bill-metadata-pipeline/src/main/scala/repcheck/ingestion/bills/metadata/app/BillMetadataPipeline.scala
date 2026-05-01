@@ -75,7 +75,7 @@ private[app] object BillMetadataPipeline {
                 s"(errorClass=${errorClass.toString}): $message",
             )
           )
-          val apiClient = BillsApiClient[F](config.congressApi, httpClient, retryWrapper)
+          val apiClient = BillsApiClient[F](config.congressApi, httpClient, retryWrapper, logger)
 
           val processor = new BillMetadataProcessor[F](
             apiClient = apiClient,
