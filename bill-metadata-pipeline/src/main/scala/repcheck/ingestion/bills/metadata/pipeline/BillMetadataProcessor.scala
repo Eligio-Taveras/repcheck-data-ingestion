@@ -57,7 +57,13 @@ class BillMetadataProcessor[F[_]: Async](
     val params       = repcheck.ingestion.common.api.FetchParams(fromDateTime = Some(fromDateTime))
     val logCtx       = LogContext(runId.toString, stepName)
 
-    apiClient
+    Stream.eval(
+      logger.info(
+        logCtx,
+        s"Starting metadata sweep (lookbackDays=${config.lookbackDays.toString}, " +
+          s"parallelism=${config.parallelism.toString}, fromDateTime=${fromDateTime.toString})",
+      )
+    ) *> apiClient
       .fetchAll(params)
       .handleErrorWith { e =>
         // Page-level fetch failures used to be silently swallowed here (the stream returned
@@ -123,7 +129,10 @@ class BillMetadataProcessor[F[_]: Async](
           processBill(listItem, naturalKey, isNew = false, stored, correlationId, logCtx)
 
       case Some(_) =>
-        logger.debug(logCtx, s"Bill unchanged: $naturalKey") *>
+        // INFO so the skip path is visible during a sweep — without it, an operator can't tell
+        // whether the pipeline is processing slowly or churning through unchanged-bill no-ops.
+        // Mirrors the diagnostic-logs treatment in the bill-text-availability-checker (PR #99).
+        logger.info(logCtx, s"Bill unchanged: $naturalKey") *>
           Async[F].pure(ProcessingResult.Skipped(naturalKey, "unchanged"))
     }
   }

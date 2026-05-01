@@ -1,5 +1,7 @@
 package repcheck.ingestion.bills.metadata.app
 
+import scala.concurrent.duration._
+
 import cats.effect.{Async, ExitCode, Resource, Sync}
 import cats.syntax.all._
 
@@ -88,8 +90,18 @@ private[app] object BillMetadataPipeline {
     config: AppConfig
   ): Resource[F, (Transactor[F], Client[F])] =
     for {
-      xa        <- TransactorResource.make[F](config.database)
-      rawClient <- EmberClientBuilder.default[F].build
+      xa <- TransactorResource.make[F](config.database)
+      // withTimeout(30s) + withIdleConnectionTime(60s): without these, Ember's connection pool
+      // happily reuses a TCP connection that Congress.gov has already closed (server-side keep-
+      // alive expiry, ~30-90s idle). The next request through the half-closed socket gets
+      // ReachedEndOfStream, which the fail-loud path then surfaces as an aborted run. Mirroring
+      // bill-text-availability-checker (PR #99): 30s on a stuck request, 60s pool eviction so
+      // we never reuse a connection past the upstream's close window.
+      rawClient <- EmberClientBuilder
+        .default[F]
+        .withTimeout(30.seconds)
+        .withIdleConnectionTime(60.seconds)
+        .build
       throttledClient <- RateLimitedHttpClient.make[F](
         rawClient,
         pageDelay = config.congressApi.pageDelay,
