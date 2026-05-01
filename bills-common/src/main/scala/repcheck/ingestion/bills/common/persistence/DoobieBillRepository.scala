@@ -241,10 +241,33 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
   override def upsertPlaceholder(naturalKey: String): ConnectionIO[Unit] =
     parsePlaceholderNaturalKey(naturalKey) match {
       case Right((congress, billType, number)) =>
-        // `title` NOT NULL on bills → empty string stub; bills-pipeline overwrites it on enrichment.
-        // `update_date` NOT NULL → NOW() stub; also overwritten on enrichment.
-        sql"""INSERT INTO $table (congress, bill_type, number, title, update_date)
-              VALUES ($congress, $billType, $number, '', NOW())
+        // Canonical placeholder shape, matched against `HasPlaceholder[BillDO].placeholder(...)` in
+        // shared-models. The factory there sets `updateDate = None` and every detail field to None;
+        // `BillPlaceholder.isPlaceholder` (in bills-common) is the inverse predicate and pins the
+        // contract via an invariant test in `BillPlaceholderSpec`.
+        //
+        // We insert ONLY `(congress, bill_type, number, title)` and let every other column take its
+        // declared default — NULL for `update_date`, `update_date_including_text`, every Option-
+        // backed detail column, and `now()` for `created_at` / `updated_at` (those are NOT NULL with
+        // a `now()` default; that's fine, they're DB row metadata, not API content).
+        //
+        // `title` is included as the empty string because `BillDO.title: String` is NOT an Option —
+        // Doobie's auto-derived `Read[BillDO]` would crash on a NULL value when this row is later
+        // read back. The empty string is also what the canonical factory uses, and `BillPlaceholder
+        // .isPlaceholder` treats `title.isEmpty` as a placeholder marker.
+        //
+        // The previous version of this method was `INSERT (congress, bill_type, number, title,
+        // update_date) VALUES (?, ?, ?, '', NOW())`. The author assumed `title` and `update_date`
+        // were NOT NULL on the schema (they aren't — both are nullable; `title` is in our DO model
+        // for a different reason as noted above). The `NOW()` stub silently broke the metadata
+        // pipeline's `incoming.updateDate > stored.updateDate` comparison forever after: every
+        // placeholder got stamped with the writer's wall-clock time, which is by definition newer
+        // than any actual API `updateDate`, so `evaluateAndProcess` routed every placeholder to the
+        // "Bill unchanged" path on the next sweep instead of the backfill path. Defense-in-depth
+        // coverage exists in `BillMetadataProcessor` (it detects placeholders by the field-set
+        // shape regardless of stored `updateDate`), but the root-cause fix is here.
+        sql"""INSERT INTO $table (congress, bill_type, number, title)
+              VALUES ($congress, $billType, $number, '')
               ON CONFLICT (congress, bill_type, number) DO NOTHING""".update.run.void
 
       case Left(err) =>
