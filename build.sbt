@@ -55,7 +55,7 @@ lazy val commonSettings = Seq(
   libraryDependencies ++= Seq(
     "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.21",
     "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.27",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.29" % Test,
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.31" % Test,
     "com.repcheck" %% "repchecksharedmodels"          % "0.1.39",
   ),
   semanticdbEnabled := true,
