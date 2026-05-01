@@ -30,8 +30,17 @@ class DoobieMemberHistoryArchiver extends MemberHistoryArchiver[ConnectionIO] {
     val termsTable     = Fragment.const(Tables.MemberTerms)
     val termHistoryTbl = Fragment.const(Tables.MemberTermHistory)
 
+    // Look up the row by natural_key, regardless of whether it's a placeholder. Earlier this query
+    // included `AND update_date IS NOT NULL` to skip placeholders (under the theory that archiving a
+    // row of NULLs added no audit value). That broke the round-trip contract: a member_history audit
+    // log should record EVERY state transition, including placeholder→real, otherwise the history
+    // is lossy at the most interesting moment of a member's lifecycle (when we first learn about
+    // them via a sponsorship reference). Mirrors `BillHistoryArchiver`'s behavior, which now archives
+    // placeholder snapshots since migration 034 made `bill_history.update_date` nullable. Members
+    // requires the same — see the companion db-migrations PR that makes
+    // `member_history.{update_date,first_name,last_name}` nullable.
     val existsQuery =
-      sql"SELECT id FROM $membersTable WHERE natural_key = $bioguideId AND update_date IS NOT NULL"
+      sql"SELECT id FROM $membersTable WHERE natural_key = $bioguideId"
         .query[Long]
         .option
 

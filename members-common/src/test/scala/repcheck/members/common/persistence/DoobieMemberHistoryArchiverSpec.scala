@@ -3,6 +3,7 @@ package repcheck.members.common.persistence
 import cats.effect.unsafe.implicits.global
 
 import doobie.implicits._
+import doobie.postgres.implicits._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -140,7 +141,15 @@ class DoobieMemberHistoryArchiverSpec extends AnyFlatSpec with Matchers with Tra
     historyCount shouldBe 0L
   }
 
-  it should "be a no-op for a placeholder member (update_date IS NULL, no rows inserted)" taggedAs DockerRequired in {
+  // Placeholder transitions get archived alongside real-state transitions — every member-state change
+  // is a meaningful audit event, including the moment we first learn about a member via a sponsorship
+  // reference and then enrich them. Earlier this archiver short-circuited placeholders via
+  // `WHERE update_date IS NOT NULL` in the existence query; that hid the most interesting transition
+  // in a member's lifecycle from the audit log. Mirrors `BillHistoryArchiver` post-migration-034.
+  // Schema requirement: `member_history.{update_date, first_name, last_name}` must be nullable
+  // (companion db-migrations PR — migration 035 — extends migration 034's pattern from bills to
+  // members).
+  it should "archive a placeholder member (writes one history row with all profile fields NULL)" taggedAs DockerRequired in {
     val _ = sql"""INSERT INTO members (natural_key) VALUES ('PLACEHOLDER-001')""".update.run
       .transact(xa)
       .unsafeRunSync()
@@ -152,7 +161,21 @@ class DoobieMemberHistoryArchiverSpec extends AnyFlatSpec with Matchers with Tra
       .unique
       .transact(xa)
       .unsafeRunSync()
-    historyCount shouldBe 0L
+    val _ = historyCount shouldBe 1L
+
+    // The archived row should mirror the placeholder's NULL-ness: every profile field is None,
+    // including update_date. Locks the contract — if the writer accidentally starts coercing
+    // NULLs into `''` or NOW() (the bug we just fixed in BillRepository.upsertPlaceholder), this
+    // assertion catches it.
+    val snapshot = sql"""SELECT mh.first_name, mh.last_name, mh.current_party, mh.update_date
+                         FROM member_history mh
+                         JOIN members m ON m.id = mh.member_id
+                         WHERE m.natural_key = 'PLACEHOLDER-001'"""
+      .query[(Option[String], Option[String], Option[String], Option[java.time.Instant])]
+      .unique
+      .transact(xa)
+      .unsafeRunSync()
+    snapshot shouldBe ((None, None, None, None))
   }
 
 }

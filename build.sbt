@@ -55,7 +55,7 @@ lazy val commonSettings = Seq(
   libraryDependencies ++= Seq(
     "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.21",
     "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.27",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.31" % Test,
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.33" % Test,
     "com.repcheck" %% "repchecksharedmodels"          % "0.1.39",
   ),
   semanticdbEnabled := true,
@@ -119,6 +119,7 @@ lazy val pipelineSettings = commonSettings ++ Seq(
 
 lazy val root = (project in file("."))
   .aggregate(
+    commonTesting,
     billsCommon,
     membersCommon,
     billMetadataPipeline,
@@ -137,8 +138,24 @@ lazy val root = (project in file("."))
     publish / skip := true,
   )
 
+// Shared Docker-backed Postgres test fixture, consumed by every common module's `% Test` config.
+// Lives in `src/main/scala` so dependents can pull it as a normal classpath dep (typed `% Test`); this is the standard
+// sbt pattern for cross-project test utilities. The module's own `Test` config is empty (the fixture has no tests of
+// its own; it's exercised end-to-end by every DockerRequired spec across the repo). Sole external dep: the
+// db-migrations-runner artifact, used to apply the canonical Liquibase changelog against the spawned postgres.
+lazy val commonTesting = (project in file("common-testing"))
+  .settings(commonSettings)
+  .settings(
+    name := "common-testing",
+    libraryDependencies ++= catsEffect ++ doobie ++ Seq(
+      "org.scalatest" %% "scalatest"                     % "3.2.18",
+      "com.repcheck"  %% "repcheck-db-migrations-runner" % "0.1.33",
+    ),
+  )
+
 lazy val billsCommon = (project in file("bills-common"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(commonTesting % "test->compile")
   .settings(commonSettings)
   .settings(
     name := "bills-common",
@@ -153,6 +170,7 @@ lazy val billsCommon = (project in file("bills-common"))
 
 lazy val membersCommon = (project in file("members-common"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(commonTesting % "test->compile")
   .settings(commonSettings)
   .settings(
     name := "members-common",
