@@ -547,4 +547,68 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     results shouldBe empty
   }
 
+  private def processorWithConfig(f: TestFixture, cfg: BillMetadataConfig): BillMetadataProcessor[IO] =
+    new BillMetadataProcessor[IO](
+      apiClient = f.apiClient,
+      billRepo = f.billRepo,
+      cosponsorRepo = f.cosponsorRepo,
+      subjectRepo = f.subjectRepo,
+      historyArchiver = f.historyArchiver,
+      memberRepo = f.memberRepo,
+      placeholderCreator = f.stubPlaceholderCreator,
+      memberEntityRepo = f.memberEntityRepo,
+      xa = testXa,
+      config = cfg,
+      logger = f.logger,
+    )
+
+  it should "drop bills below minCongress before any detail fetch" in {
+    val f = createFixture()
+    val processor =
+      processorWithConfig(f, BillMetadataConfig(lookbackDays = 30, parallelism = 1, minCongress = Some(102)))
+    val oldBill    = makeListItem(congress = 27, billType = "hjres", number = "5")
+    val recentBill = makeListItem(congress = 118, billType = "hr", number = "1")
+
+    stubBasicRepos(f)
+    when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emits(List(oldBill, recentBill)))
+    when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(makeDetailDTO()))
+
+    val results = processor.streamAll(runId).compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 1
+    val _ = results.headOption.map(_.entityId) shouldBe Some("118-HR-1")
+    verify(f.apiClient, never()).fetchDetail(org.mockito.ArgumentMatchers.contains("bill/27/"))
+  }
+
+  it should "let bills through when their congress equals minCongress (boundary inclusive)" in {
+    val f = createFixture()
+    val processor =
+      processorWithConfig(f, BillMetadataConfig(lookbackDays = 30, parallelism = 1, minCongress = Some(102)))
+    val boundary = makeListItem(congress = 102, billType = "hr", number = "1", title = "Boundary")
+
+    stubBasicRepos(f)
+    when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emit(boundary))
+    when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(makeDetailDTO(congress = 102, title = "Boundary")))
+
+    val results = processor.streamAll(runId).compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 1
+    results.headOption.map(_.entityId) shouldBe Some("102-HR-1")
+  }
+
+  it should "not filter any bills when minCongress is None" in {
+    val f         = createFixture()
+    val processor = processorWithConfig(f, BillMetadataConfig(lookbackDays = 30, parallelism = 1, minCongress = None))
+    val oldBill   = makeListItem(congress = 27, billType = "hjres", number = "5", title = "Old")
+
+    stubBasicRepos(f)
+    when(f.apiClient.fetchAll(any[FetchParams])).thenReturn(fs2.Stream.emit(oldBill))
+    when(f.apiClient.fetchDetail(anyString()))
+      .thenReturn(IO.pure(makeDetailDTO(congress = 27, billType = "hjres", number = "5", title = "Old")))
+
+    val results = processor.streamAll(runId).compile.toList.unsafeRunSync()
+
+    results.size shouldBe 1
+  }
+
 }

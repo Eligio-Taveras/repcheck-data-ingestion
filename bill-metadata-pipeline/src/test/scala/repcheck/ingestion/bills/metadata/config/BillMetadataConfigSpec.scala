@@ -16,4 +16,14 @@ class BillMetadataConfigSpec extends AnyFlatSpec with Matchers {
     config.parallelism shouldBe 1
   }
 
+  it should "default minCongress to None (no floor applied)" in {
+    val config = BillMetadataConfig(lookbackDays = 30, parallelism = 4)
+    config.minCongress shouldBe None
+  }
+
+  it should "accept a minCongress floor when set" in {
+    val config = BillMetadataConfig(lookbackDays = 30, parallelism = 4, minCongress = Some(102))
+    config.minCongress shouldBe Some(102)
+  }
+
 }

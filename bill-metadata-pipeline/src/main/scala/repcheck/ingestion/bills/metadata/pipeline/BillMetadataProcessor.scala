@@ -61,7 +61,8 @@ class BillMetadataProcessor[F[_]: Async](
       logger.info(
         logCtx,
         s"Starting metadata sweep (lookbackDays=${config.lookbackDays.toString}, " +
-          s"parallelism=${config.parallelism.toString}, fromDateTime=${fromDateTime.toString})",
+          s"parallelism=${config.parallelism.toString}, fromDateTime=${fromDateTime.toString}, " +
+          s"minCongress=${config.minCongress.fold("none")(_.toString)})",
       )
     ) *> apiClient
       .fetchAll(params)
@@ -82,6 +83,13 @@ class BillMetadataProcessor[F[_]: Async](
           logger.error(logCtx, s"Page fetch failed, aborting run: ${e.getMessage}", Some(e))
         ) *> Stream.raiseError[F](e)
       }
+      // Drop bills from congresses below the configured floor before they reach the parallel stage.
+      // A 30-day production sweep can surface 19th-century bills when Congress.gov republishes them
+      // with fresh updateDate values; their detail-level schema (object-vs-array `bill` form, missing
+      // required fields, fractional bill numbers like `1025½` that fail PG INTEGER inserts) cannot
+      // be deserialized reliably. Filtering at the list-item level — where `congress` is a stable
+      // Int — avoids the wasted detail fetch + retry budget and keeps per-item Failed counts clean.
+      .filter(li => config.minCongress.forall(min => li.congress >= min))
       .parEvalMap(config.parallelism) { listItem =>
         val naturalKey    = buildNaturalKey(listItem)
         val correlationId = UUID.randomUUID()
