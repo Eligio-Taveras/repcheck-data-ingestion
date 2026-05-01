@@ -290,6 +290,28 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     result.isSkipped shouldBe true
   }
 
+  it should "backfill a placeholder bill (title='') even if API updateDate is older than stored" in {
+    // Placeholder rows from bill-text-availability-checker / bill-summary-pipeline carry a stored
+    // update_date set to their insertion time, which is by definition newer than the API's real
+    // updateDate for any older bill. The empty title is the canonical placeholder marker. This
+    // test pins the behavior: a stored bill with title='' MUST be routed through the update path
+    // regardless of the date comparison so the detail fields get backfilled.
+    val f                 = createFixture()
+    val listItem          = makeListItem(updateDate = Some("2023-06-01T00:00:00Z"))
+    val placeholderStored = makeStoredBill(updateDate = Some(Instant.parse("2024-01-01T00:00:00Z"))).copy(title = "")
+    val detail            = makeDetailDTO()
+
+    stubBasicRepos(f, storedBill = Some(placeholderStored))
+    when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(detail))
+
+    val result = f.processor.processListItem(listItem, correlationId).unsafeRunSync()
+
+    val _ = result.isSucceeded shouldBe true
+    // Detail fetch happened (slow path), proving the placeholder branch was taken.
+    val _ = verify(f.apiClient, times(1)).fetchDetail(anyString())
+    verify(f.logger, times(1)).info(any[LogContext], org.mockito.ArgumentMatchers.contains("Placeholder bill detected"))
+  }
+
   it should "not fetch detail for unchanged bills" in {
     val f          = createFixture()
     val listItem   = makeListItem(updateDate = Some("2024-01-01T00:00:00Z"))

@@ -192,6 +192,25 @@ class BillMetadataProcessor[F[_]: Async](
           logger.info(logCtx, s"New bill detected: $naturalKey") *>
             processBill(listItem, naturalKey, isNew = true, stored, correlationId, logCtx)
 
+        // Placeholder detection — ignore the updateDate comparison for stub rows.
+        //
+        // Other pipelines (bill-text-availability-checker, bill-summary-pipeline) can insert a
+        // placeholder bill row when they need to reference a bill that the metadata pipeline
+        // hasn't ingested yet. The placeholder has natural-key fields populated, `title` empty,
+        // every detail Option = None, and `update_date` set to its insertion timestamp. That
+        // insertion time is by definition newer than the API's real updateDate for any bill
+        // that hasn't been modified recently — which means the date-comparison guard below
+        // would mark the row "Bill unchanged" and the placeholder would never be backfilled.
+        // Routing empty-title rows through the update path forces a detail fetch that fills
+        // title, sponsor, dates, and the rest. Empty title is the canonical placeholder marker:
+        // legitimately-ingested bills always have a non-empty title (Congress.gov populates it
+        // from the bill's official title even when other fields are sparse). 161,721 such rows
+        // existed in the local dev DB at the time this branch was added, ~67% of all bills, all
+        // stuck on the unchanged path until this fix.
+        case Some(s) if s.title.isEmpty =>
+          logger.info(logCtx, s"Placeholder bill detected, backfilling: $naturalKey") *>
+            processBill(listItem, naturalKey, isNew = false, stored, correlationId, logCtx)
+
         case Some(_) if incomingDate.exists(inc => storedDate.forall(sd => inc.isAfter(sd))) =>
           logger.info(
             logCtx,
