@@ -60,6 +60,14 @@ jobs:
       # filter to include DockerRequired.
       # ----------------------------------------------------------------------
 
+      - name: Run commonTesting non-Docker tests
+        # commonTesting holds the shared DockerPostgres fixture + a unit suite
+        # for its pure helpers (resolveDockerBin, parseHostPort). Without this
+        # step those helpers' coverage is invisible to scoverage and patch
+        # coverage flags the file even though the helpers ARE tested.
+        timeout-minutes: 5
+        run: sbt coverage 'commonTesting/test'
+
       - name: Run billsCommon non-Docker tests
         timeout-minutes: 7
         run: sbt coverage 'billsCommon/test'
@@ -158,6 +166,7 @@ jobs:
             bill-metadata-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-text-availability-checker/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-text-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
+            common-testing/target/scala-3.7.3/scoverage-report/scoverage.xml
             lis-mapping-refresher/target/scala-3.7.3/scoverage-report/scoverage.xml
             member-profile-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
             members-common/target/scala-3.7.3/scoverage-report/scoverage.xml
