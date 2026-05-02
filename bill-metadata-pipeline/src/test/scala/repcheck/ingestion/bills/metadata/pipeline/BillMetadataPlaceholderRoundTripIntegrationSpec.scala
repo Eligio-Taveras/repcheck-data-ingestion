@@ -29,7 +29,7 @@ import repcheck.members.common.MemberInsertSql
 import repcheck.members.common.persistence.{DoobieMemberRepository, MemberWriteInstances}
 import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.dos.member.MemberDO
-import repcheck.shared.models.congress.dto.bill.{BillDetailDTO, BillListItemDTO}
+import repcheck.shared.models.congress.dto.bill.{BillDetailDTO, BillListItemDTO, LatestActionDTO, SponsorDTO}
 import repcheck.shared.models.congress.dto.common.PaginationInfoDTO
 
 /**
@@ -116,22 +116,41 @@ class BillMetadataPlaceholderRoundTripIntegrationSpec
     )
   }
 
+  // Detail DTO with the four metadata-owned fields populated (introducedDate, latestAction's text,
+  // a sponsor for sponsor_member_id resolution, and updateDate). After enrichment the resulting
+  // bill row should have all four columns set so `BillPlaceholder.isPlaceholder(b)` returns false
+  // and the unchanged-skip path becomes reachable on the next sweep.
   private def makeDetailDTO(naturalKey: String, title: String, updateDate: String): BillDetailDTO = {
     val parts = naturalKey.split('-')
     BillDetailDTO(
       congress = parts(0).toInt,
       number = parts(2),
       billType = parts(1).toLowerCase,
-      latestAction = None,
+      latestAction =
+        Some(LatestActionDTO(actionDate = "2025-08-01", text = "Referred to the House Committee on Rules.")),
       originChamber = Some("House"),
       originChamberCode = Some("H"),
       title = title,
       updateDate = Some(updateDate),
       updateDateIncludingText = Some(updateDate),
       url = s"https://api.congress.gov/v3/bill/${parts(0)}/${parts(1).toLowerCase}/${parts(2)}",
-      introducedDate = None,
+      introducedDate = Some("2025-07-15"),
       policyArea = None,
-      sponsors = None,
+      sponsors = Some(
+        List(
+          SponsorDTO(
+            bioguideId = "T000001",
+            firstName = Some("Test"),
+            lastName = Some("Sponsor"),
+            fullName = Some("Rep. Test Sponsor"),
+            middleName = None,
+            isByRequest = None,
+            party = None,
+            state = None,
+            url = None,
+          )
+        )
+      ),
       cosponsors = Some(PaginationInfoDTO(count = Some(0), url = None)),
       subjects = None,
       summaries = None,

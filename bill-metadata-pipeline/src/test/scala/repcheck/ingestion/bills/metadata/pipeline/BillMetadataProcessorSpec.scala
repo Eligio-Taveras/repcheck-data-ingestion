@@ -165,6 +165,11 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
       updateDateIncludingText = None,
     )
 
+  // Hydrated stored bill: every metadata-pipeline-owned field (sponsor_member_id, introduced_date,
+  // latest_action_text, update_date) is populated so `BillPlaceholder.isPlaceholder` returns false
+  // and the date-comparison branches in `evaluateAndProcess` are reachable. Tests that want to
+  // exercise the placeholder branch construct rows from `HasPlaceholder[BillDO].placeholder(...)`
+  // directly instead of using this helper.
   private def makeStoredBill(
     naturalKey: String = "118-HR-1",
     billId: Long = 42L,
@@ -179,12 +184,12 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
       title = "Old Title",
       originChamber = Some(Chamber.House),
       originChamberCode = Some("H"),
-      introducedDate = None,
+      introducedDate = Some(java.time.LocalDate.of(2024, 1, 1)),
       policyArea = None,
       latestActionDate = None,
-      latestActionText = None,
+      latestActionText = Some("Referred to committee"),
       constitutionalAuthorityText = None,
-      sponsorMemberId = None,
+      sponsorMemberId = Some(100L),
       textUrl = None,
       textFormat = None,
       textVersionType = None,
