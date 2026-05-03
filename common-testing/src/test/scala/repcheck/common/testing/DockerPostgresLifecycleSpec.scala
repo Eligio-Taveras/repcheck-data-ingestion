@@ -40,4 +40,17 @@ class DockerPostgresLifecycleSpec extends AnyFlatSpec with Matchers {
     program.unsafeRunSync()
   }
 
+  // SharedDockerPostgres is the JVM-shared variant of the same fixture: a single container per JVM via a lazy val plus a
+  // shutdown hook for finalization. Its acquire path runs `DockerPostgres.resource.allocated.unsafeRunSync()` on first
+  // access — separate code path from the `Resource.use` flow exercised above. Touching `info` here brings the lazy-val
+  // initializer + addShutdownHook registration into commonTesting's own scoverage; the shutdown-hook body itself only
+  // runs at JVM exit so the inner finalizer line stays uncovered (acceptable — that line is shutdown plumbing, not
+  // test-time logic).
+  it should "expose a lazily-initialized PostgresContainerInfo via SharedDockerPostgres.info" taggedAs DockerRequired in {
+    val info = SharedDockerPostgres.info
+    val _    = info.jdbcUrl should startWith("jdbc:postgresql://localhost:")
+    val _    = info.user should not be empty
+    info.password should not be empty
+  }
+
 }
