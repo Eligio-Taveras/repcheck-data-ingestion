@@ -100,6 +100,22 @@ jobs:
         timeout-minutes: 7
         run: sbt coverage 'votesPipeline/test'
 
+      - name: Run commonTesting Docker tests
+        # Drives DockerPostgres.resource through its full IO lifecycle once via
+        # DockerPostgresLifecycleSpec so commonTesting's own scoverage.xml records
+        # hits on the acquire/release/startContainer/waitForReady/applyMigrations/
+        # connectWithRetry paths. Without this, those paths are only hit by
+        # DockerRequired specs in other subprojects (billsCommon, membersCommon,
+        # pipelines), where the coverage data lands in the *consumer's* scoverage
+        # output — codecov merges per-file across uploads but each subproject's
+        # report only lists files compiled by that subproject, so commonTesting's
+        # DockerPostgres.scala patch coverage stalled at ~85% (helpers only).
+        timeout-minutes: 10
+        run: |
+          sbt coverage \
+            'set commonTesting / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
+            'commonTesting/test'
+
       - name: Run billsCommon Docker tests
         timeout-minutes: 10
         run: |
