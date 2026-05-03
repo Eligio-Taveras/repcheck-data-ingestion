@@ -65,6 +65,21 @@ object DockerPostgres {
       .getOrElse(sys.error(s"Unexpected docker port output: $portOutput"))
       .toInt
 
+  // Error-branch helpers extracted from the IO methods so the failure paths can be unit-tested without
+  // standing up a container or mocking docker. Each is invoked exactly once from its host method below;
+  // the inline code is the same as before but factored out so codecov can register both branches via the
+  // unit suite. Without these the failure lines stayed at 0 invocations on PR #107.
+
+  private[testing] def requireContainerStartSucceeded(exitCode: Int): Unit =
+    if (exitCode != 0) {
+      sys.error("Failed to start Docker container. Is Docker running?")
+    }
+
+  private[testing] def failOnReadinessExhaustion(cleanup: () => Unit, maxAttempts: Int): Nothing = {
+    cleanup()
+    sys.error(s"PostgreSQL container did not become ready after $maxAttempts attempts")
+  }
+
   final private case class ContainerHandle(name: String, info: PostgresContainerInfo)
 
   val resource: Resource[IO, PostgresContainerInfo] =
@@ -108,9 +123,7 @@ object DockerPostgres {
       image,
     ).!
 
-    if (exitCode != 0) {
-      sys.error("Failed to start Docker container. Is Docker running?")
-    }
+    requireContainerStartSucceeded(exitCode)
 
     parseHostPort(Seq(dockerBin, "port", containerName, "5432").!!)
   }
@@ -118,8 +131,10 @@ object DockerPostgres {
   @tailrec
   private def waitForReady(containerName: String, remaining: Int = maxReadyAttempts): Unit = {
     if (remaining <= 0) {
-      val _ = Seq(dockerBin, "rm", "-f", containerName).!
-      sys.error(s"PostgreSQL container did not become ready after $maxReadyAttempts attempts")
+      failOnReadinessExhaustion(
+        cleanup = () => { val _ = Seq(dockerBin, "rm", "-f", containerName).!; () },
+        maxAttempts = maxReadyAttempts,
+      )
     }
 
     val ready = Try {
@@ -138,8 +153,13 @@ object DockerPostgres {
     finally conn.close()
   }
 
+  // Scoped `private[testing]` so the failure-branch unit suite can exercise both the retry path
+  // (`Failure(_) if remaining > 1`) and the exhaustion path (`Failure(ex) =>`) without standing up a
+  // container — passing a bad port fails the JDBC connect immediately and forces the desired branch.
+  // Without test access these branches stayed at 0 invocations on codecov; reaching them via a real
+  // container requires inducing a Postgres-side failure mid-startup, which is fragile.
   @tailrec
-  private def connectWithRetry(port: Int, remaining: Int): Connection = {
+  private[testing] def connectWithRetry(port: Int, remaining: Int): Connection = {
     val result = Try {
       DriverManager.getConnection(
         s"jdbc:postgresql://localhost:$port/$dbName?sslmode=disable",
