@@ -138,6 +138,7 @@ The `member_bill_stances` table is a materialized cache — the stance materiali
 | 11.9 Stance Materializer | `stance-materializer` | New | Scheduled DB scanner. Polls `stance_materialization_status` for ready bills. Materializes per-topic stances with reasoning/embedding. |
 | 11.10 User-Bill Alignment | `stance-materializer` | New | Scheduled job. Pre-computes per-bill, per-topic alignment between users and bills. Writes `user_bill_alignments`. |
 | 11.11 Score Refresh Notifier | `scoring-pipeline` | New | Publishes `scoring.user.completed` event on ad-hoc completion. |
+| 11.12 Amendment Scoring Integration | `stance-materializer` + `scoring-pipeline` | New | **Net-additions** for amendment-typed votes. **Bill-driven scan via denormalized `effective_bill_id` cache** — §7.3 resolves the sub-amendment → bill chain at ingest time (with end-of-run sweep retry for sub-amendments whose parents weren't yet hydrated). §11.12 then queries `findByEffectiveBillId(billId)` (simple WHERE, no recursion at scoring time) for transitive children. **Daily `AmendmentBackfillScanner`** finds amendments with `effective_bill_id IS NOT NULL`, votes, findings, no stances, and triggers `materializeBill(effective_bill_id)`. NO `amendment_materialization_status` table (per Q8). New `member_amendment_stances` / `member_amendment_stance_topics` / `user_amendment_alignments` tables. §11.2 profile construction unions amendment stances. New vote_weight_type values: `AMENDMENT_SUBSTANTIVE` (0.7) / `AMENDMENT_PROCEDURAL` (0.2). **Sub-amendments scored via the eagerly-resolved `effective_bill_id` cache** (per user direction this turn). Treaty + procedural amendments skipped with observability counters. Driven by Component 7 §7.4 + §7.6 + Component 10 §10.11. |
 
 ## Component Routing Table
 
@@ -154,6 +155,7 @@ The `member_bill_stances` table is a materialized cache — the stance materiali
 | Stance materialization from DB scanner | [11.9 Stance Materializer](11-scoring-engine/11.9-stance-materializer.md) |
 | Pre-computed user-bill alignment | [11.10 User-Bill Alignment](11-scoring-engine/11.10-user-bill-alignment.md) |
 | Ad-hoc scoring completion notification | [11.11 Score Refresh Notifier](11-scoring-engine/11.11-score-refresh-notifier.md) |
+| Amendment-typed vote scoring: stance materialization, profile union, weight rules, user-amendment alignment | [11.12 Amendment Scoring Integration](11-scoring-engine/11.12-amendment-scoring-integration.md) |
 
 ---
 

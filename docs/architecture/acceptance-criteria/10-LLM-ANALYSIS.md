@@ -162,10 +162,11 @@ A second container in the **decomposition pipeline** Cloud Run Job:
 | 10.4 Decomposition Orchestrator | `bill-decomposition-pipeline` | New | Orchestrates the full decomposition pipeline: Ollama parsing → DJL embedding → Smile clustering → persistence → Haiku simplification → embedding |
 | 10.5 In-Process ML (DJL + Smile) | `bill-decomposition-pipeline` | New | DJL/ONNX embedding (both search embeddings and clustering embeddings) and Smile clustering — all local, no external API dependencies |
 | 10.6 Multi-Pass Analysis Orchestrator | `bill-analysis-pipeline` | New | Runs Pass 1/2/3 analysis chain using prompt profiles from Component 8 and LLM providers from 10.1, with pass routing logic. Includes finding type descriptions in prompts. |
-| 10.7 Analysis Result Persistence | `bill-analysis-pipeline` | New | Maps LLM output schemas to DOs and persists to AlloyDB analysis layer tables |
+| 10.7 Analysis Result Persistence | `bill-analysis-pipeline` | New | Maps LLM output schemas to DOs and persists to AlloyDB analysis layer tables. **Routing/complexity scores moved from denormalized columns on `bill_analyses` to a dedicated `bill_complexity_scores` table** (per Q3 of the planning turn — symmetric with `amendment_complexity_scores` from §10.11) |
 | 10.8 Embedding Generation Service | Shared (both pipelines) | New | Local DJL/ONNX utility service for generating search embeddings at each pipeline stage — sections (after parsing), concept groups (after simplification), and analysis findings (after each pass). All local, zero API cost. |
 | 10.9 Decomposition Pipeline Entry Point | `bill-decomposition-pipeline` | New | Cloud Run Job entry point, Pub/Sub subscriber for `bill.text.ingested`, event emission for `bill.decomposition.completed` |
 | 10.10 Analysis Pipeline Entry Point | `bill-analysis-pipeline` | New | Cloud Run Job entry point, Pub/Sub subscriber for `bill.decomposition.completed`, event emission for `analysis.completed` |
+| 10.11 Amendment Text Integration | `bill-analysis-pipeline` | New | **Net-additions** to bill-analysis-pipeline only. Subscribes to `amendment.text.ingested`. **Multi-pass LLM analysis with complexity-based routing** on whole amendment text (no decomposition step): Pass 1 (Haiku) always runs and emits a complexity score (gates Pass 2); Pass 2 (Sonnet) re-scores complexity (gates Pass 3); Pass 3 (Opus) is terminal. Findings persist to denormalized `amendment_findings` table; complexity scores persist to **dedicated `amendment_complexity_scores` table** (per Q3 of this turn — separate from findings). Emits extended `analysis.completed` with `entityType="amendment"` and `passesRun`. Driven by Component 7 §7.6 |
 
 ## Component Routing Table
 
@@ -181,6 +182,7 @@ A second container in the **decomposition pipeline** Cloud Run Job:
 | Local DJL/ONNX embedding generation service (called at each pipeline stage) | [10.8 Embedding Generation Service](10-llm-analysis/10.8-embedding-generation-service.md) |
 | Decomposition pipeline entry point, Pub/Sub subscriber (`bill.text.ingested`), event emission | [10.9 Decomposition Pipeline Entry Point](10-llm-analysis/10.9-decomposition-pipeline-entry-point.md) |
 | Analysis pipeline entry point, Pub/Sub subscriber, event emission | [10.10 Analysis Pipeline Entry Point](10-llm-analysis/10.10-analysis-pipeline-entry-point.md) |
+| Amendment text integration: decomposition + analysis of amendment text alongside bills | [10.11 Amendment Text Integration](10-llm-analysis/10.11-amendment-text-integration.md) |
 
 ---
 
