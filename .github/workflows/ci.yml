@@ -76,6 +76,10 @@ jobs:
         timeout-minutes: 7
         run: sbt coverage 'membersCommon/test'
 
+      - name: Run textExtractionCommon non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'textExtractionCommon/test'
+
       - name: Run billMetadataPipeline non-Docker tests
         timeout-minutes: 7
         run: sbt coverage 'billMetadataPipeline/test'
@@ -186,6 +190,7 @@ jobs:
             lis-mapping-refresher/target/scala-3.7.3/scoverage-report/scoverage.xml
             member-profile-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
             members-common/target/scala-3.7.3/scoverage-report/scoverage.xml
+            text-extraction-common/target/scala-3.7.3/scoverage-report/scoverage.xml
             votes-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
 
       - name: Enforce per-file coverage threshold

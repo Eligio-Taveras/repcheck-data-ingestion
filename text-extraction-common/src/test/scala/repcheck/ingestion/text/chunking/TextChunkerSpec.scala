@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.chunking
+package repcheck.ingestion.text.chunking
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
@@ -9,19 +9,19 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 /**
- * Specs for the streaming `BillTextChunker.chunkPipe` Pipe. Phase 3 of the bill-text-10mb plan replaces the buffered
+ * Specs for the streaming `TextChunker.chunkPipe` Pipe. Phase 3 of the bill-text-10mb plan replaces the buffered
  * `chunk(text, max)` function with a `Stream[F, String] => Stream[F, String]` Pipe that accumulates incoming fragments
  * into a buffer and emits fixed-size chunks as the buffer fills.
  *
  * Tests materialize streams via `compile.toList` so we can assert the full chunk sequence; in production usage the
  * stream is consumed lazily (one chunk pulled per embedding-batch demand).
  */
-class BillTextChunkerSpec extends AnyFlatSpec with Matchers {
+class TextChunkerSpec extends AnyFlatSpec with Matchers {
 
   private def runPipe(input: List[String], maxChunkChars: Int): List[String] =
-    Stream.emits(input).covary[IO].through(BillTextChunker.chunkPipe(maxChunkChars)).compile.toList.unsafeRunSync()
+    Stream.emits(input).covary[IO].through(TextChunker.chunkPipe(maxChunkChars)).compile.toList.unsafeRunSync()
 
-  "BillTextChunker.chunkPipe" should "produce an empty stream for an empty input stream regardless of size" in {
+  "TextChunker.chunkPipe" should "produce an empty stream for an empty input stream regardless of size" in {
     val _ = runPipe(Nil, 100) shouldBe Nil
     runPipe(Nil, 1) shouldBe Nil
   }

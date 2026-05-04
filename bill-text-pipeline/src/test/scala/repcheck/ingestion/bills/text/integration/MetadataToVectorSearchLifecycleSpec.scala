@@ -31,12 +31,7 @@ import repcheck.ingestion.bills.metadata.api.BillsApiClient
 import repcheck.ingestion.bills.metadata.config.BillMetadataConfig
 import repcheck.ingestion.bills.metadata.pipeline.BillMetadataProcessor
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{
-  CrossBillEmbedder,
-  EmbeddingConfig,
-  NoOpEmbeddingService,
-  OllamaEmbeddingService,
-}
+import repcheck.ingestion.bills.text.embedding.CrossBillEmbedder
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.textcheck.api.BillTextApiClient
@@ -46,6 +41,7 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, GooglePubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
+import repcheck.ingestion.text.embedding.{EmbeddingConfig, NoOpEmbeddingService, OllamaEmbeddingService}
 import repcheck.members.common.persistence.DoobieMemberRepository
 import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
@@ -279,7 +275,7 @@ class MetadataToVectorSearchLifecycleSpec
       xa = xa,
       logger = testLogger,
       extractText = (bytes, format) =>
-        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](bytes, format),
+        repcheck.ingestion.text.extraction.TextExtractor.extractStream[IO](bytes, format),
     )
   }
 

@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.embedding
+package repcheck.ingestion.text.embedding
 
 import scala.concurrent.duration._
 

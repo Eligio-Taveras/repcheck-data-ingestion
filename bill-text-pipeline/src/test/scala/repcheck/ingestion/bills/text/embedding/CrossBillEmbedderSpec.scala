@@ -16,6 +16,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.ingestion.text.embedding.{EmbeddingContextLengthExceeded, EmbeddingGenerationFailed, EmbeddingService}
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.dos.bill.RawBillTextDO
 

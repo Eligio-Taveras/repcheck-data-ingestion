@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.extraction
+package repcheck.ingestion.text.extraction
 
 import fs2.Stream
 
@@ -36,7 +36,7 @@ object PlainTextStreamExtractor {
   def extract[F[_]](bytes: Stream[F, Byte]): Stream[F, String] =
     bytes
       .through(fs2.text.utf8.decode)
-      .map(BillTextExtractor.collapseWhitespace)
+      .map(TextExtractor.collapseWhitespace)
       .filter(_.nonEmpty)
 
 }

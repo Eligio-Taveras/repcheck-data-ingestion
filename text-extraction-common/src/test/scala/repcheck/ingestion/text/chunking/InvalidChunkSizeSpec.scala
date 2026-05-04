@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.chunking
+package repcheck.ingestion.text.chunking
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -15,7 +15,7 @@ class InvalidChunkSizeSpec extends AnyFlatSpec with Matchers {
 
   it should "be a Throwable usable with Async[F].raiseError" in {
     val ex: Throwable = InvalidChunkSize(0)
-    ex.getMessage shouldBe "BillTextChunker requires maxChunkChars > 0, got 0"
+    ex.getMessage shouldBe "TextChunker requires maxChunkChars > 0, got 0"
   }
 
 }

@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.embedding
+package repcheck.ingestion.text.embedding
 
 import cats.effect.Async
 import cats.syntax.all._
@@ -23,7 +23,7 @@ import repcheck.ingestion.common.logging.PipelineLogger
  * qwen3-embedding:0.6b (current default) is batch=50 — the smaller model frees ~5 GB of VRAM vs the 4B baseline,
  * lifting GPU-saturation batch size from ~10 to ~50.
  */
-class OllamaEmbeddingService[F[_]: Async] private[text] (
+class OllamaEmbeddingService[F[_]: Async](
   client: Client[F],
   config: EmbeddingConfig,
   logger: PipelineLogger[F],
@@ -94,8 +94,7 @@ class OllamaEmbeddingService[F[_]: Async] private[text] (
             nonEmpty.zip(embeddings).map { case ((_, originalIdx), emb) => originalIdx -> emb }.toMap
           Async[F].pure(texts.indices.toList.map(i => withResult.get(i)))
         // EmbeddingContextLengthExceeded is NOT swallowed: retrying the same oversized input always fails the same
-        // way, so propagate it so the pipeline can mark the bill Failed-Systemic. See
-        // BillTextProcessor.classifyError for the routing.
+        // way, so propagate it so the pipeline can mark the bill Failed-Systemic. Callers classify the error.
         case Left(error: EmbeddingContextLengthExceeded) => Async[F].raiseError(error)
         case Left(error) =>
           logger

@@ -2,6 +2,7 @@ package repcheck.ingestion.bills.text.errors
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import repcheck.ingestion.text.extraction.PdfExtractionFailed
 
 class PdfExtractionFailedSpec extends AnyFlatSpec with Matchers {
 

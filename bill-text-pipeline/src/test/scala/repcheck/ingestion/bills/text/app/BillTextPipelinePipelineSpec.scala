@@ -21,13 +21,14 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.bills.text.app.BillTextPipelinePipeline.{AppConfig, PipelineResources}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
-import repcheck.ingestion.bills.text.embedding.{CrossBillEmbedder, EmbeddingConfig}
+import repcheck.ingestion.bills.text.embedding.CrossBillEmbedder
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.execution.PipelineFailureHandlerConfig
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.ingestion.text.embedding.EmbeddingConfig
 import repcheck.pipeline.models.events.{BillTextAvailableEvent, PipelineEvent}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
@@ -192,6 +193,21 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
 
     val summaryLogs = logger.messages.filter(_.contains("Pipeline completed"))
     summaryLogs should not be empty
+  }
+
+  "extractTextFn" should "delegate to TextExtractor.extractStream for the configured format" in {
+    val bytes = Stream.emits(
+      "<html><body><pre>SECTION 1. Test bill body.</pre></body></html>".getBytes(
+        java.nio.charset.StandardCharsets.UTF_8
+      )
+    )
+    val fragments = BillTextPipelinePipeline
+      .extractTextFn[IO](bytes.covary[IO], "Formatted Text")
+      .compile
+      .toList
+      .unsafeRunSync()
+
+    fragments.mkString.replaceAll("\\s+", " ") should include("SECTION 1. Test bill body.")
   }
 
   "buildProcessor" should "construct a BillTextProcessor with all dependencies" in {

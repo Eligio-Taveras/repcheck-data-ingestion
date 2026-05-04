@@ -15,8 +15,7 @@ import doobie.util.transactor.Transactor
 import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillTextVersionRepository}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{CrossBillEmbedder, EmbeddingConfig, OllamaEmbeddingService}
-import repcheck.ingestion.bills.text.extraction.BillTextExtractor
+import repcheck.ingestion.bills.text.embedding.CrossBillEmbedder
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
@@ -24,6 +23,8 @@ import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.execution.{PipelineFailureHandlerConfig, WorkflowStateUpdater}
 import repcheck.ingestion.common.logging.PipelineLogger
+import repcheck.ingestion.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
+import repcheck.ingestion.text.extraction.TextExtractor
 import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
@@ -149,9 +150,14 @@ private[app] object BillTextPipelinePipeline {
       eventPublisher = eventPublisher,
       xa = xa,
       logger = logger,
-      extractText = (bytes, format) => BillTextExtractor.extractStream[F](bytes, format),
+      extractText = extractTextFn[F],
     )
   }
+
+  // Extracted so unit tests can exercise the production extractText wiring without
+  // needing to construct a full BillTextProcessor + drive processEvent.
+  private[app] def extractTextFn[F[_]: Async]: (Stream[F, Byte], String) => Stream[F, String] =
+    (bytes, format) => TextExtractor.extractStream[F](bytes, format)
 
   /**
    * Builds the FS2 result stream from the Pub/Sub subscriber. Pulls batches of messages until the subscription drains

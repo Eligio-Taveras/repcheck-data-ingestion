@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.embedding
+package repcheck.ingestion.text.embedding
 
 /**
  * Raised when the embedding model rejects an input because it exceeds the model's context window.

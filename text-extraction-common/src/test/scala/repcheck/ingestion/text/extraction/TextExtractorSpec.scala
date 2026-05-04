@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.extraction
+package repcheck.ingestion.text.extraction
 
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
@@ -13,18 +13,17 @@ import org.apache.pdfbox.pdmodel.font.{PDType1Font, Standard14Fonts}
 import org.apache.pdfbox.pdmodel.{PDDocument, PDPage, PDPageContentStream}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.ingestion.bills.text.errors.PdfExtractionFailed
 
 /**
- * Specs for the streaming [[BillTextExtractor]] dispatcher. Phase 3 of the bill-text-10mb plan: the dispatcher consumes
- * a `Stream[F, Byte]` directly, so HTML / XML / plain-text bytes flow from the HTTP socket through the parser without
+ * Specs for the streaming [[TextExtractor]] dispatcher. Phase 3 of the bill-text-10mb plan: the dispatcher consumes a
+ * `Stream[F, Byte]` directly, so HTML / XML / plain-text bytes flow from the HTTP socket through the parser without
  * ever touching disk. PDF is the one exception: it spools to a temp file inside `PdfStreamExtractor`.
  *
  * Tests construct in-memory byte streams from string fixtures (UTF-8 encoded) and consume the resulting `Stream[IO,
  * String]` via `compile.toList`. We don't assert exact fragment counts — those are parser-implementation details that
  * vary between StAX, TagSoup, and PDFBox, and asserting them would couple tests to internals.
  */
-class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
+class TextExtractorSpec extends AnyFlatSpec with Matchers {
 
   private def bytesOf(content: String): Stream[IO, Byte] =
     Stream.emits(content.getBytes(StandardCharsets.UTF_8))
@@ -52,7 +51,7 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
   }
 
   private def joined(bytes: Stream[IO, Byte], format: String): String =
-    BillTextExtractor
+    TextExtractor
       .extractStream[IO](bytes, format)
       .compile
       .toList
@@ -121,7 +120,7 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
       """<?xml version="1.0" encoding="UTF-8"?>
         |<bill><document>Old-format content here.</document></bill>""".stripMargin
 
-    val emitted = BillTextExtractor.extractStream[IO](bytesOf(xml), "Formatted XML").compile.toList.unsafeRunSync()
+    val emitted = TextExtractor.extractStream[IO](bytesOf(xml), "Formatted XML").compile.toList.unsafeRunSync()
     // No <legis-body> => extractor emits nothing. Downstream chunker emits nothing. The processor
     // logs "0 chunks" — a loud signal that the document didn't conform to expected USLM shape.
     emitted shouldBe Nil
@@ -135,7 +134,7 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
 
   it should "surface PdfExtractionFailed from PdfStreamExtractor when the 'PDF' dispatch hits invalid PDF bytes" in {
     val notAPdf = bytesOf("this is not a PDF")
-    val attempt = BillTextExtractor.extractStream[IO](notAPdf, "PDF").compile.toList.attempt.unsafeRunSync()
+    val attempt = TextExtractor.extractStream[IO](notAPdf, "PDF").compile.toList.attempt.unsafeRunSync()
     attempt match {
       case Left(_: PdfExtractionFailed) => succeed
       case other                        => fail(s"Expected PdfExtractionFailed, got $other")
@@ -152,7 +151,7 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
   it should "collapse whitespace runs across all formats" in {
     val htmlWithLotsOfWhitespace = "<html><body><pre>  Section\t\t1.\n\n\n  Title.   </pre></body></html>"
     val result =
-      BillTextExtractor
+      TextExtractor
         .extractStream[IO](bytesOf(htmlWithLotsOfWhitespace), "Formatted Text")
         .compile
         .toList
@@ -165,24 +164,24 @@ class BillTextExtractorSpec extends AnyFlatSpec with Matchers {
   }
 
   "collapseWhitespace" should "collapse runs of whitespace to single spaces" in {
-    BillTextExtractor.collapseWhitespace("Section\t\n  1.\r\n\t Title") shouldBe "Section 1. Title"
+    TextExtractor.collapseWhitespace("Section\t\n  1.\r\n\t Title") shouldBe "Section 1. Title"
   }
 
   it should "preserve a single leading or trailing space (does not trim)" in {
-    val _ = BillTextExtractor.collapseWhitespace("  Section 1. Title  ") shouldBe " Section 1. Title "
-    BillTextExtractor.collapseWhitespace("\nSection 1.") shouldBe " Section 1."
+    val _ = TextExtractor.collapseWhitespace("  Section 1. Title  ") shouldBe " Section 1. Title "
+    TextExtractor.collapseWhitespace("\nSection 1.") shouldBe " Section 1."
   }
 
   it should "preserve interior single spaces" in {
-    BillTextExtractor.collapseWhitespace("a b c d") shouldBe "a b c d"
+    TextExtractor.collapseWhitespace("a b c d") shouldBe "a b c d"
   }
 
   it should "collapse whitespace-only input to a single space" in {
-    BillTextExtractor.collapseWhitespace("   \n\t  \r\n   ") shouldBe " "
+    TextExtractor.collapseWhitespace("   \n\t  \r\n   ") shouldBe " "
   }
 
   it should "return empty string for empty input" in {
-    BillTextExtractor.collapseWhitespace("") shouldBe ""
+    TextExtractor.collapseWhitespace("") shouldBe ""
   }
 
 }

@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.extraction
+package repcheck.ingestion.text.extraction
 
 import java.io.InputStream
 import javax.xml.stream.{XMLInputFactory, XMLStreamConstants, XMLStreamReader}
@@ -48,7 +48,7 @@ object XmlStreamExtractor {
   /**
    * Walk the supplied byte stream as XML via StAX and emit its prose text as a stream of fragments. Each fragment is
    * the text payload of one `CHARACTERS` event, with internal whitespace runs collapsed (no trim — see
-   * [[BillTextExtractor.collapseWhitespace]] for the rationale).
+   * [[TextExtractor.collapseWhitespace]] for the rationale).
    *
    * The InputStream and the StAX reader are both held in `Resource`s so the JVM resources release deterministically
    * even on stream cancellation or error.
@@ -113,7 +113,7 @@ object XmlStreamExtractor {
             }
 
           case XMLStreamConstants.CHARACTERS | XMLStreamConstants.CDATA =>
-            val collapsed = BillTextExtractor.collapseWhitespace(reader.getText)
+            val collapsed = TextExtractor.collapseWhitespace(reader.getText)
             if (s.legisBodyDepth > 0 && collapsed.nonEmpty) {
               Some((collapsed, s))
             } else {

@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.extraction
+package repcheck.ingestion.text.extraction
 
 import java.io.InputStream
 import java.util.concurrent.LinkedBlockingQueue
@@ -44,8 +44,17 @@ import org.xml.sax.{Attributes, ContentHandler, InputSource, Locator}
  * Text content from inside `<body>`, excluding `<script>` and `<style>` subtrees. This covers the Congress.gov
  * `<body><pre>...bill text...</pre></body>` shape and also any future format change that drops the `<pre>` (in which
  * case we'd extract whatever is in the body). Sibling content of `<body>` (`<head>`, `<title>`, etc.) is ignored.
+ *
+ * ==Subclassing hooks==
+ *
+ * Concrete extractors override:
+ *
+ *   - [[shouldKeepNode]] to skip subtrees by element name (e.g. CREC headers/footers in the amendments pipeline).
+ *   - [[transformText]] to apply per-fragment text rewriting before whitespace collapse (e.g. strip page numbers).
+ *
+ * The default no-op overrides preserve the bill-text behavior unchanged.
  */
-object HtmlStreamExtractor {
+trait HtmlStreamExtractorBase[F[_]] {
 
   /**
    * Streaming extraction of HTML body text from an upstream byte stream. Spawns a parser fiber that walks the HTML and
@@ -56,9 +65,9 @@ object HtmlStreamExtractor {
    *   the byte stream to parse. UTF-8 expected; TagSoup detects encoding from `<meta>` tags or falls back to UTF-8 —
    *   Congress.gov is consistently UTF-8.
    */
-  def extract[F[_]: Async](bytes: Stream[F, Byte]): Stream[F, String] =
+  def extract(bytes: Stream[F, Byte])(implicit F: Async[F]): Stream[F, String] =
     Stream.resource(fs2.io.toInputStreamResource(bytes)).flatMap { is =>
-      Stream.resource(queueResource[F]).flatMap { queue =>
+      Stream.resource(queueResource).flatMap { queue =>
         val parser =
           Stream
             .eval(Async[F].blocking(runParser(is, queue)))
@@ -75,7 +84,25 @@ object HtmlStreamExtractor {
       }
     }
 
-  private def queueResource[F[_]: Async]: Resource[F, LinkedBlockingQueue[Option[String]]] =
+  /**
+   * Override to skip subtrees by element name. Default: keep everything (consistent with the bill-text extractor's
+   * historical behavior). Returning `false` for a tag name causes the SAX handler to suppress its character events and
+   * those of its descendants until the matching close tag is seen.
+   */
+  protected def shouldKeepNode(name: String): Boolean = true
+
+  /**
+   * Override to rewrite text fragments before whitespace collapse. Default: identity.
+   */
+  protected def transformText(text: String): String = text
+
+  // Test-visible so HtmlStreamExtractorBaseSpec can drive SAX events that TagSoup doesn't emit for
+  // typical Congress.gov HTML (ignorableWhitespace, processingInstruction, skippedEntity, malformed
+  // depth-underflow paths). Production code only constructs this via `runParser`.
+  private[extraction] def newHandler(queue: LinkedBlockingQueue[Option[String]]): TextEmittingHandler =
+    new TextEmittingHandler(queue)
+
+  private def queueResource(implicit F: Async[F]): Resource[F, LinkedBlockingQueue[Option[String]]] =
     Resource.make(Async[F].delay(new LinkedBlockingQueue[Option[String]](16)))(_ => Async[F].unit)
 
   /**
@@ -94,15 +121,21 @@ object HtmlStreamExtractor {
 
   /**
    * SAX `ContentHandler` that emits `characters` events as queue puts whenever we're inside `<body>` and outside
-   * `<script>` / `<style>`. Element nesting is tracked via `AtomicInteger` counters because TagSoup invokes the handler
-   * from a single parser thread, but the JVM Memory Model makes the visibility into adjacent SAX callbacks easier to
-   * reason about with explicit atomics. Element names are captured lower-case (TagSoup normalizes HTML element names
-   * but defensive `.toLowerCase` covers other SAX implementations of this same interface).
+   * `<script>` / `<style>` and any subclass-suppressed subtree. Element nesting is tracked via `AtomicInteger` counters
+   * because TagSoup invokes the handler from a single parser thread, but the JVM Memory Model makes the visibility into
+   * adjacent SAX callbacks easier to reason about with explicit atomics. Element names are captured lower-case (TagSoup
+   * normalizes HTML element names but defensive `.toLowerCase` covers other SAX implementations of this same
+   * interface).
    */
-  final private class TextEmittingHandler(queue: LinkedBlockingQueue[Option[String]]) extends ContentHandler {
-    private val bodyDepth   = new AtomicInteger(0)
-    private val scriptDepth = new AtomicInteger(0)
-    private val styleDepth  = new AtomicInteger(0)
+  // Package-private (instead of private) so unit tests can drive SAX events that the TagSoup parser doesn't naturally
+  // emit for typical Congress.gov input — `ignorableWhitespace`, `processingInstruction`, `skippedEntity`, the
+  // defensive depth-underflow guards in `endElement`, and the `elementName` qName-fallback branch.
+  final private[extraction] class TextEmittingHandler(queue: LinkedBlockingQueue[Option[String]])
+      extends ContentHandler {
+    private val bodyDepth       = new AtomicInteger(0)
+    private val scriptDepth     = new AtomicInteger(0)
+    private val styleDepth      = new AtomicInteger(0)
+    private val suppressedDepth = new AtomicInteger(0)
 
     override def setDocumentLocator(locator: Locator): Unit                          = ()
     override def startDocument(): Unit                                               = ()
@@ -121,10 +154,16 @@ object HtmlStreamExtractor {
         case "style"  => val _ = styleDepth.incrementAndGet()
         case _        => ()
       }
+      if (!shouldKeepNode(name) || suppressedDepth.get() > 0) {
+        val _ = suppressedDepth.incrementAndGet()
+      }
     }
 
     override def endElement(uri: String, localName: String, qName: String): Unit = {
       val name = elementName(localName, qName)
+      if (suppressedDepth.get() > 0) {
+        val _ = suppressedDepth.decrementAndGet()
+      }
       name match {
         case "body"   => if (bodyDepth.get() > 0) { val _ = bodyDepth.decrementAndGet() }
         case "script" => if (scriptDepth.get() > 0) { val _ = scriptDepth.decrementAndGet() }
@@ -134,9 +173,9 @@ object HtmlStreamExtractor {
     }
 
     override def characters(ch: Array[Char], start: Int, length: Int): Unit =
-      if (bodyDepth.get() > 0 && scriptDepth.get() == 0 && styleDepth.get() == 0) {
+      if (bodyDepth.get() > 0 && scriptDepth.get() == 0 && styleDepth.get() == 0 && suppressedDepth.get() == 0) {
         val raw       = new String(ch, start, length)
-        val collapsed = BillTextExtractor.collapseWhitespace(raw)
+        val collapsed = TextExtractor.collapseWhitespace(transformText(raw))
         if (collapsed.nonEmpty) queue.put(Some(collapsed))
       }
 

@@ -17,8 +17,8 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
  * Streams a bill text body from GPO's `api.govinfo.gov` straight into the downstream extractor — no temp file for HTML
  * / XML / plain-text formats. Only PDF needs a temp file (PDF format requires random access to the xref table at the
  * end of the file), and that materialization is handled internally by
- * [[repcheck.ingestion.bills.text.extraction.PdfStreamExtractor]] so the downloader's API stays uniform: open HTTP,
- * emit response body bytes.
+ * [[repcheck.ingestion.text.extraction.PdfStreamExtractor]] so the downloader's API stays uniform: open HTTP, emit
+ * response body bytes.
  *
  * ==Source: GovInfo, not Congress.gov==
  *
@@ -87,7 +87,7 @@ class BillTextDownloader[F[_]: Async](
    *   Otherwise it's used as-is.
    * @param textFormat
    *   format hint from Congress.gov (e.g. `"Formatted Text"`, `"PDF"`). Used for log context only — the actual format
-   *   dispatch happens in [[repcheck.ingestion.bills.text.extraction.BillTextExtractor]].
+   *   dispatch happens in [[repcheck.ingestion.text.extraction.TextExtractor]].
    * @param correlationId
    *   correlation ID for log threading; flows through every emitted log line in this download.
    */

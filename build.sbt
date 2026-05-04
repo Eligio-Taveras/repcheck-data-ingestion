@@ -122,6 +122,7 @@ lazy val root = (project in file("."))
     commonTesting,
     billsCommon,
     membersCommon,
+    textExtractionCommon,
     billMetadataPipeline,
     billSummaryPipeline,
     billTextAvailabilityChecker,
@@ -166,6 +167,15 @@ lazy val billsCommon = (project in file("bills-common"))
     // tables. Cross-subproject parallelism (configurable via `-Dsbt.testConcurrency=N`, default 2) is safe because each
     // subproject gets its own AlloyDB container.
     Test / parallelExecution := false,
+  )
+
+lazy val textExtractionCommon = (project in file("text-extraction-common"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .settings(commonSettings)
+  .settings(
+    name := "text-extraction-common",
+    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig ++ fs2
+      ++ catsEffect ++ htmlParsing ++ pdfParsing ++ logging ++ testDeps,
   )
 
 lazy val membersCommon = (project in file("members-common"))
@@ -263,13 +273,14 @@ lazy val lisMappingRefresher = (project in file("lis-mapping-refresher"))
 lazy val billTextPipeline = (project in file("bill-text-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
   .dependsOn(billsCommon % "compile->compile;test->test")
+  .dependsOn(textExtractionCommon)
   .dependsOn(billTextAvailabilityChecker % "test->compile")
   .dependsOn(billMetadataPipeline % "test->compile")
   .settings(pipelineSettings)
   .settings(
     name := "bill-text-pipeline",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ xml ++ htmlParsing ++ pdfParsing ++ logging ++ testDeps,
+      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ xml ++ logging ++ testDeps,
     coverageExcludedFiles := ".*BillTextPipelineApp",
     // WireMock-based tests share a dynamic port; sequential prevents port contention.
     // Cross-subproject parallelism (configurable via `-Dsbt.testConcurrency=N`, default 2) gives us the speedup win.

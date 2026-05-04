@@ -22,7 +22,7 @@ import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillTextVersionRepository}
 import repcheck.ingestion.bills.common.testing.{DockerRequired, PubSubEmulatorFixture, TransactorFixture}
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{CrossBillEmbedder, EmbeddingConfig, NoOpEmbeddingService}
+import repcheck.ingestion.bills.text.embedding.CrossBillEmbedder
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.textcheck.api.BillTextApiClient
@@ -31,6 +31,7 @@ import repcheck.ingestion.bills.textcheck.pipeline.BillTextAvailabilityChecker
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, GooglePubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.ingestion.text.embedding.{EmbeddingConfig, NoOpEmbeddingService}
 import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
 import repcheck.shared.models.congress.bill.TextVersionCode
@@ -189,7 +190,7 @@ class FullChainIntegrationSpec
       xa = xa,
       logger = testLogger,
       extractText = (bytes, format) =>
-        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](bytes, format),
+        repcheck.ingestion.text.extraction.TextExtractor.extractStream[IO](bytes, format),
     )
   }
 
