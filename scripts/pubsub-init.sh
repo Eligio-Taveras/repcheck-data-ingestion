@@ -83,4 +83,18 @@ create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions
   -H "Content-Type: application/json" \
   -d "{\"topic\":\"projects/${PROJECT_ID}/topics/vote-events\",\"ackDeadlineSeconds\":60,\"deadLetterPolicy\":{\"deadLetterTopic\":\"projects/${PROJECT_ID}/topics/vote-events-dead-letter\",\"maxDeliveryAttempts\":5}}"
 
+# Topic: amendment-text-available-dead-letter (for messages that exceed max delivery attempts)
+echo "Creating topic: amendment-text-available-dead-letter"
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/amendment-text-available-dead-letter"
+
+# Topic: amendment-text-available (amendment-text-availability-checker → amendment-text-pipeline)
+echo "Creating topic: amendment-text-available"
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/amendment-text-available"
+
+# Subscription: amendment-text-available-pipeline-sub (amendment-text-pipeline reads from this)
+echo "Creating subscription: amendment-text-available-pipeline-sub"
+create_resource "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions/amendment-text-available-pipeline-sub" \
+  -H "Content-Type: application/json" \
+  -d "{\"topic\":\"projects/${PROJECT_ID}/topics/amendment-text-available\",\"ackDeadlineSeconds\":60,\"deadLetterPolicy\":{\"deadLetterTopic\":\"projects/${PROJECT_ID}/topics/amendment-text-available-dead-letter\",\"maxDeliveryAttempts\":5},\"retryPolicy\":{\"minimumBackoff\":\"10s\",\"maximumBackoff\":\"600s\"},\"retainAckedMessages\":false}"
+
 echo "Pub/Sub topics and subscriptions created successfully."
