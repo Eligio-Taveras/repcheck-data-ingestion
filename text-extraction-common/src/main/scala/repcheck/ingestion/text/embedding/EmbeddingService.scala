@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.embedding
+package repcheck.ingestion.text.embedding
 
 trait EmbeddingService[F[_]] {
 
@@ -10,10 +10,10 @@ trait EmbeddingService[F[_]] {
    * the backing model expects (Ollama's `/api/embed` endpoint accepts both single and array forms).
    *
    * @param text
-   *   the bill text content to embed
+   *   the text content to embed
    * @return
    *   the embedding vector, or `None` if embedding generation failed (transient HTTP error, dimension mismatch, etc.).
-   *   The pipeline persists `None`-embedding chunks so a later tick can re-process — see `BillTextProcessor`.
+   *   Callers typically persist `None`-embedding rows so a later tick can re-process.
    */
   def generateEmbedding(text: String): F[Option[Array[Float]]]
 
@@ -27,8 +27,8 @@ trait EmbeddingService[F[_]] {
    *
    * Error semantics mirror [[generateEmbedding]]: if the batch call fails (HTTP error, dimension mismatch, partial
    * response), the whole batch returns `List.fill(texts.size)(None)` — failures don't propagate as raised errors, they
-   * degrade per-chunk. This preserves the existing partial-result contract: the pipeline persists chunk rows with
-   * `embedding = None` and the next pipeline tick re-processes the bill.
+   * degrade per-chunk. This preserves the partial-result contract: the caller persists rows with `embedding = None` and
+   * the next pipeline tick re-processes.
    *
    * @param texts
    *   the chunks to embed, in order. Empty list returns empty list. Empty-string entries return `None` in the

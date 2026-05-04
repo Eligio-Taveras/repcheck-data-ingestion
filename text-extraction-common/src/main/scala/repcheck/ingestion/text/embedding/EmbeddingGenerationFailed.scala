@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.embedding
+package repcheck.ingestion.text.embedding
 
 final case class EmbeddingGenerationFailed(
   reason: String,

@@ -21,13 +21,14 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.bills.text.app.BillTextPipelinePipeline.{AppConfig, PipelineResources}
 import repcheck.ingestion.bills.text.config.BillTextPipelineConfig
-import repcheck.ingestion.bills.text.embedding.{CrossBillEmbedder, EmbeddingConfig}
+import repcheck.ingestion.bills.text.embedding.CrossBillEmbedder
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.execution.PipelineFailureHandlerConfig
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.ingestion.text.embedding.EmbeddingConfig
 import repcheck.pipeline.models.events.{BillTextAvailableEvent, PipelineEvent}
 import repcheck.pipeline.models.metadata.ProcessingResult
 

@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.extraction
+package repcheck.ingestion.text.extraction
 
 import cats.effect.{Async, Resource}
 import cats.syntax.all._
@@ -10,7 +10,6 @@ import org.apache.pdfbox.Loader
 import org.apache.pdfbox.io.RandomAccessReadBufferedFile
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.text.PDFTextStripper
-import repcheck.ingestion.bills.text.errors.PdfExtractionFailed
 
 /**
  * Streaming PDF text extractor. Writes the upstream byte stream to a temp file first (PDF requires random access to the
@@ -43,7 +42,7 @@ import repcheck.ingestion.bills.text.errors.PdfExtractionFailed
  * just hands us a `Stream[F, Byte]`.
  *
  * @param bytes
- *   the byte stream to parse. Caller (typically [[BillTextExtractor.extractStream]] dispatching by format) doesn't know
+ *   the byte stream to parse. Caller (typically [[TextExtractor.extractStream]] dispatching by format) doesn't know
  *   about the temp-file dance.
  */
 object PdfStreamExtractor {
@@ -74,7 +73,7 @@ object PdfStreamExtractor {
                     stripper.setEndPage(pageIndex + 1)
                     stripper.getText(document)
                   }
-                  .map(BillTextExtractor.collapseWhitespace)
+                  .map(TextExtractor.collapseWhitespace)
               }
               .filter(_.nonEmpty)
           }
@@ -94,7 +93,7 @@ object PdfStreamExtractor {
   private def spoolToTempFile[F[_]: Async](bytes: Stream[F, Byte]): Resource[F, FsPath] =
     Files
       .forAsync[F]
-      .tempFile(dir = None, prefix = "bill-text-pdf-", suffix = ".bin", permissions = None)
+      .tempFile(dir = None, prefix = "text-extraction-pdf-", suffix = ".bin", permissions = None)
       .evalTap(tempPath => bytes.through(Files.forAsync[F].writeAll(tempPath, Flags.Write)).compile.drain)
 
   /**

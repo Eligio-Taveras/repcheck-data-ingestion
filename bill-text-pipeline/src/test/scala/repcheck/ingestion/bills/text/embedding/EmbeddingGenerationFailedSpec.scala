@@ -2,6 +2,7 @@ package repcheck.ingestion.bills.text.embedding
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import repcheck.ingestion.text.embedding.EmbeddingGenerationFailed
 
 class EmbeddingGenerationFailedSpec extends AnyFlatSpec with Matchers {
 

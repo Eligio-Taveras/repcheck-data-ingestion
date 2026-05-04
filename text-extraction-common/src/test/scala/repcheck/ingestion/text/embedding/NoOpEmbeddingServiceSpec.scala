@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.embedding
+package repcheck.ingestion.text.embedding
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global

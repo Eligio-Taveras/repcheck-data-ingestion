@@ -1,4 +1,4 @@
-package repcheck.ingestion.bills.text.chunking
+package repcheck.ingestion.text.chunking
 
 import scala.annotation.tailrec
 
@@ -7,9 +7,9 @@ import cats.effect.kernel.Async
 import fs2.{Chunk, Pipe, Pull, Stream}
 
 /**
- * Streaming bill-text chunker. Takes a `Stream[F, String]` of semantic fragments emitted by the streaming extraction
- * layer (e.g. one paragraph from HTML, one `<section>` text from XML, one page from PDF) and emits a `Stream[F,
- * String]` of fixed-size chunks suitable for the embedding model's context window.
+ * Streaming text chunker. Takes a `Stream[F, String]` of semantic fragments emitted by the streaming extraction layer
+ * (e.g. one paragraph from HTML, one `<section>` text from XML, one page from PDF) and emits a `Stream[F, String]` of
+ * fixed-size chunks suitable for the embedding model's context window.
  *
  * ==Heap profile==
  *
@@ -40,10 +40,10 @@ import fs2.{Chunk, Pipe, Pull, Stream}
  *
  * For a fixed `(input fragments, maxChunkChars)` pair, [[chunkPipe]] emits the same chunks in the same order. The
  * concatenation of all emitted chunks equals the concatenation of all input fragments (modulo whitespace trim at chunk
- * boundaries). Re-processing a bill yields identical chunks → `ORDER BY chunk_index` after persistence reconstructs the
- * document.
+ * boundaries). Re-processing a document yields identical chunks → `ORDER BY chunk_index` after persistence reconstructs
+ * the document.
  */
-object BillTextChunker {
+object TextChunker {
 
   /**
    * fs2 Pipe that converts a stream of text fragments into a stream of fixed-size chunks.
