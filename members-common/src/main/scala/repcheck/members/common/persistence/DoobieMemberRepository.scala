@@ -4,11 +4,14 @@ import doobie._
 import doobie.implicits._
 import doobie.postgres.implicits._
 
+import repcheck.members.common.errors.InvalidBioguideId
 import repcheck.pipeline.models.constants.Tables
 import repcheck.shared.models.congress.common.DoobieEnumInstances._
 import repcheck.shared.models.congress.dos.member.MemberDO
 
 class DoobieMemberRepository extends MemberRepository {
+
+  private val bioguideIdPattern = "^[A-Z]\\d{6}$".r
 
   /**
    * Explicit column list matching [[MemberDO]] constructor parameter order. Required because the `id` column was added
@@ -62,6 +65,22 @@ class DoobieMemberRepository extends MemberRepository {
       update_date = EXCLUDED.update_date
     RETURNING id""".query[Long].unique
   }
+
+  /**
+   * Single-roundtrip placeholder upsert keyed on `natural_key` (the bioguide id column). The trailing `DO UPDATE SET
+   * natural_key ... EXCLUDED ...` is a no-op tweak — `DO NOTHING` would skip `RETURNING id` on conflict, forcing a
+   * separate SELECT. Validation runs before SQL is issued so malformed inputs raise `InvalidBioguideId` without a
+   * database hit.
+   */
+  override def upsertPlaceholder(bioguideId: String): ConnectionIO[Long] =
+    if (bioguideIdPattern.matches(bioguideId)) {
+      val table = Fragment.const(Tables.Members)
+      sql"""INSERT INTO $table (natural_key) VALUES ($bioguideId)
+            ON CONFLICT (natural_key) DO UPDATE SET natural_key = EXCLUDED.natural_key
+            RETURNING id""".query[Long].unique
+    } else {
+      doobie.free.connection.raiseError[Long](InvalidBioguideId(bioguideId))
+    }
 
   override def findPlaceholders(): ConnectionIO[List[MemberDO]] = {
     val table = Fragment.const(Tables.Members)

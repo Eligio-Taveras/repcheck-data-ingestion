@@ -8,6 +8,7 @@ trait MemberRepository {
   def findById(memberId: Long): ConnectionIO[Option[MemberDO]]
   def findByBioguideId(bioguideId: String): ConnectionIO[Option[MemberDO]]
   def upsert(member: MemberDO): ConnectionIO[Long]
+  def upsertPlaceholder(bioguideId: String): ConnectionIO[Long]
   def findPlaceholders(): ConnectionIO[List[MemberDO]]
   def existsWithLisMapping(memberId: Long): ConnectionIO[Boolean]
 }

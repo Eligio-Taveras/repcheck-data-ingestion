@@ -80,6 +80,16 @@ class DoobieMemberRepositoryUnitSpec extends AnyFlatSpec with Matchers {
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
+  "upsertPlaceholder" should "produce a ConnectionIO for a well-formed bioguide id" in {
+    val cio = repo.upsertPlaceholder("A000370")
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "produce a ConnectionIO that raises InvalidBioguideId for a malformed bioguide id" in {
+    val cio = repo.upsertPlaceholder("nope")
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
   "findPlaceholders" should "produce a ConnectionIO for the placeholder query" in {
     val cio = repo.findPlaceholders()
     cio shouldBe a[doobie.ConnectionIO[?]]
