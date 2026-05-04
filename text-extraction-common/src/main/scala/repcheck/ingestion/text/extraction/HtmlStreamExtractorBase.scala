@@ -96,6 +96,12 @@ trait HtmlStreamExtractorBase[F[_]] {
    */
   protected def transformText(text: String): String = text
 
+  // Test-visible so HtmlStreamExtractorBaseSpec can drive SAX events that TagSoup doesn't emit for
+  // typical Congress.gov HTML (ignorableWhitespace, processingInstruction, skippedEntity, malformed
+  // depth-underflow paths). Production code only constructs this via `runParser`.
+  private[extraction] def newHandler(queue: LinkedBlockingQueue[Option[String]]): TextEmittingHandler =
+    new TextEmittingHandler(queue)
+
   private def queueResource(implicit F: Async[F]): Resource[F, LinkedBlockingQueue[Option[String]]] =
     Resource.make(Async[F].delay(new LinkedBlockingQueue[Option[String]](16)))(_ => Async[F].unit)
 
@@ -121,7 +127,11 @@ trait HtmlStreamExtractorBase[F[_]] {
    * normalizes HTML element names but defensive `.toLowerCase` covers other SAX implementations of this same
    * interface).
    */
-  final private class TextEmittingHandler(queue: LinkedBlockingQueue[Option[String]]) extends ContentHandler {
+  // Package-private (instead of private) so unit tests can drive SAX events that the TagSoup parser doesn't naturally
+  // emit for typical Congress.gov input — `ignorableWhitespace`, `processingInstruction`, `skippedEntity`, the
+  // defensive depth-underflow guards in `endElement`, and the `elementName` qName-fallback branch.
+  final private[extraction] class TextEmittingHandler(queue: LinkedBlockingQueue[Option[String]])
+      extends ContentHandler {
     private val bodyDepth       = new AtomicInteger(0)
     private val scriptDepth     = new AtomicInteger(0)
     private val styleDepth      = new AtomicInteger(0)

@@ -150,9 +150,14 @@ private[app] object BillTextPipelinePipeline {
       eventPublisher = eventPublisher,
       xa = xa,
       logger = logger,
-      extractText = (bytes, format) => TextExtractor.extractStream[F](bytes, format),
+      extractText = extractTextFn[F],
     )
   }
+
+  // Extracted so unit tests can exercise the production extractText wiring without
+  // needing to construct a full BillTextProcessor + drive processEvent.
+  private[app] def extractTextFn[F[_]: Async]: (Stream[F, Byte], String) => Stream[F, String] =
+    (bytes, format) => TextExtractor.extractStream[F](bytes, format)
 
   /**
    * Builds the FS2 result stream from the Pub/Sub subscriber. Pulls batches of messages until the subscription drains

@@ -195,6 +195,21 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     summaryLogs should not be empty
   }
 
+  "extractTextFn" should "delegate to TextExtractor.extractStream for the configured format" in {
+    val bytes = Stream.emits(
+      "<html><body><pre>SECTION 1. Test bill body.</pre></body></html>".getBytes(
+        java.nio.charset.StandardCharsets.UTF_8
+      )
+    )
+    val fragments = BillTextPipelinePipeline
+      .extractTextFn[IO](bytes.covary[IO], "Formatted Text")
+      .compile
+      .toList
+      .unsafeRunSync()
+
+    fragments.mkString.replaceAll("\\s+", " ") should include("SECTION 1. Test bill body.")
+  }
+
   "buildProcessor" should "construct a BillTextProcessor with all dependencies" in {
     val logger     = new StubPipelineLogger
     val httpClient = Client.fromHttpApp[IO](org.http4s.HttpApp.notFound[IO])
