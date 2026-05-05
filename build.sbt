@@ -53,10 +53,10 @@ lazy val commonSettings = Seq(
   ),
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
-    "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.21",
-    "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.23",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.29" % Test,
-    "com.repcheck" %% "repchecksharedmodels"          % "0.1.39",
+    "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.25",
+    "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.28",
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.34" % Test,
+    "com.repcheck" %% "repchecksharedmodels"          % "0.1.43",
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
