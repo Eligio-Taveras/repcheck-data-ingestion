@@ -33,12 +33,13 @@ The constant lives in `repcheck-pipeline-models` `Tables` companion or a dedicat
 - **Trigger:** Before §7.2 / §7.5 implementation. Blocking — code can't compile without the bumped artifact.
 - **Contact / Action:** Bump `repchecksharedmodels` from 0.1.39 → 0.1.40 with these field additions:
 
-  **`AmendmentDO` — two new metadata + text-tracking fields** (per S2 — `textVersionsCount` dropped; ~~`proposedDate`~~ dropped per 2026-05-05 review — Congress.gov API has no such field; ~~`effectiveBillId`~~ dropped — `billId` is now always populated with the resolved ancestor bill):
+  **`AmendmentDO` — three new metadata + text-tracking fields** (per S2 — `textVersionsCount` dropped; `~~effectiveBillId~~` dropped — `billId` is now always populated with the resolved ancestor bill):
   ```scala
+  proposedDate:      Option[LocalDate],   // Date the amendment was proposed on the floor — distinct from submittedDate. RESTORED 2026-05-05 after live API verification: field IS returned by Congress.gov even though the openapi yaml doesn't document it.
   latestActionTime:  Option[String],      // pairs with latestActionDate; Congress.gov returns date and time as separate fields
   lastTextCheckAt:   Option[Instant]      // RepCheck-internal audit — when §7.5 last SUCCESSFULLY completed text check (per L1)
   ```
-  Update `AmendmentDetailDTO.toDO` to populate `latestActionTime` from the upstream response. `lastTextCheckAt` defaults to `None` on initial insert; §7.5 sets it via `updateLastTextCheckAt` only on the success path.
+  Update `AmendmentDetailDTO.toDO` to populate `proposedDate` and `latestActionTime` from the upstream response. `lastTextCheckAt` defaults to `None` on initial insert; §7.5 sets it via `updateLastTextCheckAt` only on the success path.
 
   **`AmendmentDO` — one additional field for sub-amendment chain navigation (per §7.3):**
   ```scala
@@ -187,7 +188,7 @@ The constant lives in `repcheck-pipeline-models` `Tables` companion or a dedicat
 - **Status:** Not started
 - **Trigger:** Implementation of §7.2 / §7.4 / §7.6
 - **Contact / Action:** Required `repcheck-db-migrations` artifact bumps, sequenced with each area:
-  1. **Base amendments table** (§7.2): `amendments` table with surrogate `id BIGSERIAL PRIMARY KEY`, `natural_key TEXT UNIQUE NOT NULL`, `chamber chamber_type NOT NULL` (per L9 — always populated, derived from amendment_type), plus the new fields from P7.0: `latest_action_time`, `last_text_check_at`, `parent_amendment_id`. **No `text_versions_count`** (per S2). **No `proposed_date`** (no upstream source, dropped 2026-05-05). **No `effective_bill_id`** (collapsed into `bill_id` which is now always the resolved ancestor bill, dropped 2026-05-05).
+  1. **Base amendments table** (§7.2): `amendments` table with surrogate `id BIGSERIAL PRIMARY KEY`, `natural_key TEXT UNIQUE NOT NULL`, `chamber chamber_type NOT NULL` (per L9 — always populated, derived from amendment_type), plus the new fields from P7.0: `proposed_date`, `latest_action_time`, `last_text_check_at`, `parent_amendment_id`. **No `text_versions_count`** (per S2). **No `effective_bill_id`** (collapsed into `bill_id` which is now always the resolved ancestor bill, dropped 2026-05-05). `proposed_date` is REAL despite openapi yaml omission (live API verified 2026-05-05).
   2. **Legislation type enum extension** (§7.4): `ALTER TYPE legislation_type_enum ADD VALUE IF NOT EXISTS 'HAMDT' / 'SAMDT' / 'SUAMDT';`
   3. **Amendment text tables** (§7.6): `amendment_text_versions` + `amendment_text_chunks` (embedding column `vector(1024)` to match the bill-side qwen3-embedding:0.6b dimension; **HNSW index** per P4) + new `amendment_format_type` enum + new `amendment_text_version_code_type` enum with values `'SUB' / 'MOD'` (per L3 — dedicated enum, NOT an extension of the bill-side `text_version_code_type`). FK to `amendments.id` (surrogate, per Q3). Two partial indexes on `amendment_text_versions` for `WHERE fetched_at IS NULL` and `WHERE fetched_at IS NOT NULL` (so downstream consumers polling readiness don't scan the full table).
   4. **Vote-weight enum extension** (P7.3 / deferred §11.12): `ALTER TYPE vote_weight_type ADD VALUE IF NOT EXISTS 'AMENDMENT_SUBSTANTIVE' / 'AMENDMENT_PROCEDURAL';` — the enum values are added now (cheap, harmless when unused) so the deferred scoring plan doesn't have to chain another migration.
