@@ -17,9 +17,9 @@ Each phase produces a shippable, testable deliverable. Don't start phase N+1 unt
 | Step | Artifact | Source repo | What | Tracking |
 |---|---|---|---|---|
 | ~~0.1~~ | ~~`members-common`~~ | — | **REMOVED** — §7.3 reuses the existing shared `PlaceholderCreator.ensureExists[MemberDO]` pattern + `MemberRepository.findByBioguideId`. No new method on `MemberRepository`. See [P7.8](PRODUCTION_TASKS.md#p78--removed). | — |
-| 0.2 | `repcheck-shared-models 0.1.39 → 0.1.40` | repcheck-shared-models repo | Field additions: `AmendmentDO` (+5 fields per S2 simplification — dropped `textVersionsCount`): `parentAmendmentId`, `effectiveBillId`, `proposedDate`, `latestActionTime`, `lastTextCheckAt`. **`chamber` tightened to `chamber_enum NOT NULL`** (per L9 — always derivable from `amendmentType`). New `LegislationRef` sealed type. New DTOs: `AmendmentTextItemDTO`, `AmendmentFormatDTO`, `AmendmentTextResponseDTO` (`date: Option[String]`, parsed downstream). New `AmendmentDetailDTO.toDO(billId, sponsorMemberId, parentAmendmentId)` overload. **No analysis types** — `AnalysisComplexity` / `FindingImpact` / `*ComplexityScoreDO` / `*FindingDO` field additions belong to the deferred analysis plan, not this one. | [P7.0](PRODUCTION_TASKS.md#p70) |
+| 0.2 | `repcheck-shared-models` | repcheck-shared-models repo | Field additions: `AmendmentDO` (+3 fields per 2026-05-05 review — `proposedDate` and `effectiveBillId` dropped): `parentAmendmentId`, `latestActionTime`, `lastTextCheckAt`. **`billId` now always populated with resolved ancestor bill** (no separate `effectiveBillId`). **`chamber` tightened to `chamber_type NOT NULL`** (per L9 — always derivable from `amendmentType`). New `LegislationRef` sealed type. New DTOs: `AmendmentTextItemDTO`, `AmendmentFormatDTO`, `AmendmentTextResponseDTO` (`date: Option[String]`, parsed downstream). New `AmendmentDetailDTO.toDO(billId, sponsorMemberId, parentAmendmentId)` overload — caller passes resolved-ancestor `billId`. **No analysis types** — `AnalysisComplexity` / `FindingImpact` / `*ComplexityScoreDO` / `*FindingDO` field additions belong to the deferred analysis plan, not this one. | [P7.0](PRODUCTION_TASKS.md#p70) |
 | 0.3 | `repcheck-pipeline-models 0.1.21 → 0.1.22` | repcheck-pipeline-models repo | New event: `AmendmentTextAvailableEvent` (output of availability checker — same pattern as `BillTextAvailableEvent`). **No `AmendmentTextIngestedEvent`** — completion is signaled by `amendment_text_versions.fetched_at IS NOT NULL`, mirroring the bill-side pattern. New `EventTypes.*` constants for the one new event. New `Tables.*` constants for `amendments`, `amendment_text_versions`, `amendment_text_chunks`. New `Constants.MinAmendmentCongress = 102`. | [P7.5](PRODUCTION_TASKS.md#p75) |
-| 0.4 | `repcheck-db-migrations 0.1.x → 0.1.x+N` | repcheck-db-migrations repo | Schema additions for ingestion only: `amendments` table (with `chamber chamber_enum NOT NULL` per L9), `amendment_text_versions` (with two partial indexes for `fetched_at IS NULL` / `IS NOT NULL`), `amendment_text_chunks` (embedding `vector(1024)` to match bill-side qwen3-embedding:0.6b output; **HNSW index** per P4). New enums: `amendment_format_type`, **`amendment_text_version_code_type`** (per L3 — dedicated enum for amendment text versions, NOT a co-mingled extension of bill-side `text_version_code_type`). Enum extensions: `legislation_type_enum` (+HAMDT/SAMDT/SUAMDT — needed for §7.4 votes integration), `vote_weight_type` (+AMENDMENT_SUBSTANTIVE/AMENDMENT_PROCEDURAL — written by §7.4 even though scoring won't use them yet). **Analysis/scoring tables (`amendment_findings`, `amendment_complexity_scores`, `bill_complexity_scores`, `member_amendment_stances*`, `finding_impact_weights`, etc.) are deferred to the analysis/scoring plans.** | [P7.6](PRODUCTION_TASKS.md#p76) |
+| 0.4 | `repcheck-db-migrations` | repcheck-db-migrations repo | Schema deltas for ingestion only — **ALTER, not CREATE** (the existing schema already has `amendments` and `amendment_text_versions` tables; the new pipeline reuses existing columns where they exist). `amendments`: ADD `latest_action_time`, `parent_amendment_id` + self-FK, `last_text_check_at`; widen `number INT → TEXT`; `chamber` SET NOT NULL (per L9). `amendment_text_versions`: ADD `download_url`, `text_length`; convert existing `version_type TEXT → amendment_text_version_code_type` enum (table is empty, cast trivial); two partial indexes on `fetched_at`. **Reuse existing columns:** `url`, `version_type`, `version_date`, `format_type` (Congress.gov "HTML" maps to existing `'Formatted Text'` at the DTO layer). `amendment_text_chunks`: net-new table mirroring `raw_bill_text` (qwen3-embedding 1024-dim, HNSW). New dedicated enum: **`amendment_text_version_code_type`** (per L3). Enum extensions: `legislation_type_enum` (+HAMDT/SAMDT/SUAMDT — for §7.4), `vote_weight_type` (+AMENDMENT_SUBSTANTIVE/AMENDMENT_PROCEDURAL — for deferred scoring plan). **No `proposed_date`** (no upstream source). **No `bill_id (resolved ancestor)`** (collapsed into `bill_id`). **Analysis/scoring tables deferred.** | [P7.6](PRODUCTION_TASKS.md#p76) |
 | 0.5 | `ingestion-common` | this repo's `ingestion-common` subproject | Add `transientNetworkAware[E <: HttpStatusError](base: HttpStatusErrorClassifier[E])` helper that wraps a status-code classifier with the cause-chain walk (per S7 — replaces the four near-identical copies of the walk that would otherwise land in `BillSummariesApi`/`AmendmentsApi`/`AmendmentTextCheck`/`AmendmentTextDownload` classifiers). | [P7.11](PRODUCTION_TASKS.md#p711) |
 
 **Done when**: all artifacts published; `build.sbt` pins updated in this repo; `sbt compile` succeeds.
@@ -48,7 +48,7 @@ Sequence: API client → repository → processor → IOApp wiring.
 | 2.2 | `AmendmentsApiErrorClassifier` | Wraps the shared `transientNetworkAware` helper from `ingestion-common` (per S7 — no copy-pasted cause-chain walk). New `AmendmentFetchFailed` + `AmendmentsApiHttpError`. |
 | 2.3 | `AmendmentsApiClient[F]` extends `CongressGovPaginatedClient[F, AmendmentListItemDTO]` | Per-congress iteration via `/amendment/{c}?fromDateTime=now-{config.lookbackDays}d` (Q8). `fetchDetail(url): F[AmendmentDetailDTO]`. URL casing rules: path lowercase, query uppercase. |
 | 2.4 | `AmendmentRepository[F]` trait + `DoobieAmendmentRepository` | Methods: `upsert`, **`upsertPlaceholder(naturalKey): F[Unit]` — `ON CONFLICT (natural_key) DO NOTHING` mirroring [`BillRepository.upsertPlaceholder`](../../../../bills-common/src/main/scala/repcheck/ingestion/bills/common/persistence/BillRepository.scala). Caller does `findByNaturalKey` separately to get the surrogate id (2-step pattern matches votes-pipeline's [`BillLookup`](../../../../votes-pipeline/src/main/scala/repcheck/ingestion/votes/pipeline/BillLookup.scala))**, `findById`, `findByNaturalKey`, **`findByNaturalKeys(keys): F[Map[String, AmendmentDO]]` (per P2 — page-batch helper)**, `findByBillId`, `findByEffectiveBillId`, `findByCongress`, `findByParentAmendmentId`, `updateEffectiveBillId`, `findCandidatesForTextCheck` (parameterized `staleAfter`), `updateLastTextCheckAt` (per L1). **No `computeEffectiveBillId`** (per S8 — processor computes inline). **No `failureCount` / `lastFailureReason` / `resolveUnresolvedSubAmendments`** — there's no "stuck amendment" concept and no end-of-run sweep. New errors: `AmendmentUpsertFailed`, `InvalidAmendmentNaturalKey`. |
-| 2.5 | `AmendmentProcessor[F]` | `streamAll(runId): Stream[F, ProcessingResult]` iterates `config.congresses`. **Per-page batch** (per P2): `findByNaturalKeys(allKeysOnPage)` → 1 SELECT per page. Per-amendment: inline parent recursion (depth-bounded, **no cycle guard** per S1) → resolve sponsor + bill placeholders → recurse parents (correlationId propagated through frames) → DTO→DO via overload → upsert with `effective_bill_id` already set inline. **No end-of-run sweep.** NO event emission. |
+| 2.5 | `AmendmentProcessor[F]` | `streamAll(runId): Stream[F, ProcessingResult]` iterates `config.congresses`. **Per-page batch** (per P2): `findByNaturalKeys(allKeysOnPage)` → 1 SELECT per page. Per-amendment: inline parent recursion (depth-bounded, **no cycle guard** per S1) → resolve sponsor + bill placeholders → recurse parents (correlationId propagated through frames) → DTO→DO via overload → upsert with `bill_id (resolved ancestor)` already set inline. **No end-of-run sweep.** NO event emission. |
 | 2.6 | `AmendmentPipelineApp` (IOApp.Simple) | Pure wiring. **`maximumPoolSize = parallelism × maxRecursionDepth + 5 = 45`** in HikariCP config (per P1 — recursion can hold deep connection counts during cold-chain hydration). `PipelineBootstrap`, transactor, HTTP client with `pageDelay` rate-limited semaphore, processor, run, summarize, `WorkflowStateUpdater.recordStepCompleted`. |
 | 2.7 | Tests | Unit (per-class) + WireMock (HTTP simulation) + DockerRequired integration (AlloyDB Omni). Acceptance criteria from §7.1, §7.2, §7.3 — including the new test rows for: pagination boundaries, congresses validation, page-batch SELECT (P2), single-roundtrip upsertPlaceholder (S5), parallel-recursion under shared parent (L2), connection-pool sizing negative test (P1), correlationId propagation through recursion frames. |
 
@@ -70,13 +70,16 @@ Given `processAmendment(naturalKey: String, listItemOpt: Option[AmendmentListIte
 6. **Resolve parent — RECURSIVE:** if `detail.amendedAmendment.isDefined`:
    - Compute `parentNaturalKey` from the amended-amendment ref.
    - `parentExisting ← amendmentRepo.findByNaturalKey(parentNaturalKey)`.
-   - **If `parentExisting.exists(_.updateDate.isDefined)`** → parent is fully hydrated; use its surrogate id as `parentAmendmentId` and read its `effective_bill_id` cache.
-   - **Else** → call `processAmendment(parentNaturalKey, listItemOpt = None, storedOpt = parentExisting, depth + 1, correlationId)` recursively (**same `correlationId`** — child + parent share log context). Recursion drains the entire parent chain to the bill before returning. After it returns, re-`findByNaturalKey(parentNaturalKey)` to read the now-hydrated parent's `id` and `effective_bill_id`.
-7. **Compute `effectiveBillId` inline (per S8 — no `computeEffectiveBillId` repo round-trip):** `billId.orElse(parentEffectiveBillId)`. Else `None` (orphan amendment — legitimate for some procedural / treaty amendments; per L8, downstream scoring/analysis pipelines querying via `findByEffectiveBillId` will skip these).
-8. **DTO→DO** via `detail.toDO(billId, sponsorMemberId, parentAmendmentId)`.
-9. **Upsert** (single transaction): write the row with `effective_bill_id` already set. Return surrogate id.
+   - **If `parentExisting.exists(_.updateDate.isDefined)`** → parent is fully hydrated; use its surrogate id as `parentAmendmentId` and read its `bill_id` (which is itself the resolved ancestor for that parent — see step 7).
+   - **Else** → call `processAmendment(parentNaturalKey, listItemOpt = None, storedOpt = parentExisting, depth + 1, correlationId)` recursively (**same `correlationId`** — child + parent share log context). Recursion drains the entire parent chain to the bill before returning. After it returns, re-`findByNaturalKey(parentNaturalKey)` to read the now-hydrated parent's `id` and `bill_id`.
+7. **Compute `billId` inline as the resolved ancestor bill** (per 2026-05-05 design revision — no separate `effective_bill_id` column; `bill_id` carries this semantic):
+   - If `detail.amendedBill.isDefined`: `billId = resolvedBillId` (this amendment directly modifies a bill).
+   - Else if parent is set: `billId = parentBillId` (the parent's already-resolved ancestor bill, read from the parent row in step 6).
+   - Else: `billId = None` (orphan amendment — legitimate for some procedural / treaty amendments; per L8, downstream scoring/analysis pipelines querying by `bill_id` will skip these as expected).
+8. **DTO→DO** via `detail.toDO(billId = resolvedAncestorBillId, sponsorMemberId, parentAmendmentId)`.
+9. **Upsert** (single transaction): write the row with `bill_id` set to the resolved ancestor. Return surrogate id.
 
-The recursion guarantees that by the time any row gets persisted, its full parent chain is also persisted with `effective_bill_id` populated. **No separate `resolveUnresolvedSubAmendments` end-of-run sweep is needed** — the data is consistent on every commit.
+The recursion guarantees that by the time any row gets persisted, its full parent chain is also persisted with `bill_id` populated to the resolved ancestor. **No separate `resolveUnresolvedSubAmendments` end-of-run sweep is needed** — the data is consistent on every commit. **No separate `bill_id (resolved ancestor)` column** — `bill_id` carries this semantic.
 
 > **Per L2 — known wasted-call under parallel processing.** When two amendments A and B share parent C and are processed in parallel, both can independently fetch C's detail before either commits. `ON CONFLICT` upsert prevents duplicate rows but C is fetched from Congress.gov twice. Document the wasted-call rate via the `congress_gov_detail_fetches_total{cause="recursion_redundant"}` counter (see §7.3 acceptance). Mitigation by per-page parent pre-resolution (per P6) is available as future work if backfill cost ever requires it.
 
@@ -210,21 +213,21 @@ End-to-end ingestion when a brand new amendment appears on Congress.gov. The flo
                  IF parentExisting.exists(_.updateDate.isDefined):
                      # Parent already fully hydrated — use as-is
                      resolvedParentAmendmentId = parentExisting.id
-                     parentEffectiveBillId    = parentExisting.effectiveBillId
+                     parentBillId             = parentExisting.billId       # already the resolved ancestor
                  ELSE:
                      # Recurse: drain entire parent chain to the bill before continuing
                      processAmendment(parentNk, inFlight + naturalKey, depth + 1)
-                     # After recursion returns, re-read parent
+                     # After recursion returns, re-read parent (its billId is now the ancestor)
                      hydrated = amendmentRepo.findByNaturalKey(parentNk)
                      resolvedParentAmendmentId = hydrated.id
-                     parentEffectiveBillId    = hydrated.effectiveBillId
-             - effectiveBillId = resolvedBillId
-                                  .orElse(parentEffectiveBillId)
-                                  .orElse(None)  # legitimate for some procedural amendments
+                     parentBillId             = hydrated.billId             # already the resolved ancestor
+             - resolvedAncestorBillId = resolvedBillId        # direct bill
+                                          .orElse(parentBillId)  # parent's already-resolved ancestor
+                                          .orElse(None)           # legitimate orphan (procedural / treaty)
              - DTO→DO:
-                 detail.toDO(resolvedBillId, resolvedSponsorMemberId, resolvedParentAmendmentId)
+                 detail.toDO(resolvedAncestorBillId, resolvedSponsorMemberId, resolvedParentAmendmentId)
                  → Either[String, AmendmentDO]
-             - UPSERT (single transaction, effectiveBillId already populated):
+             - UPSERT (single transaction; bill_id is the resolved ancestor):
                  amendmentRepo.upsert(amendmentDO).transact(xa) → AmendmentDO with surrogate id
              - LOG diff at info level
              - Return Succeeded
@@ -233,7 +236,7 @@ End-to-end ingestion when a brand new amendment appears on Congress.gov. The flo
    6. Exit 0
                                     │
                                     │  amendments table now has S.Amdt. 5000
-                                    │  with parent + effectiveBillId already cached
+                                    │  with parent + resolved-ancestor bill_id set
                                     ▼
 [CRON +0:50] amendment-text-availability-checker (Cloud Run Job)
    1. amendmentRepo.findCandidatesForTextCheck(minCongress=117, staleAfter=4h)
@@ -346,7 +349,7 @@ External systems and data flows the ingestion work touches. **Each row enumerate
 
 | Writer | Writes to table | Notes |
 |---|---|---|
-| amendments-pipeline §7.3 | `amendments` (full upsert with `effective_bill_id` already populated), `members` (placeholder), `bills` (placeholder) | Cross-pipeline writes to members + bills tables — only placeholders, never overwrites |
+| amendments-pipeline §7.3 | `amendments` (full upsert with `bill_id (resolved ancestor)` already populated), `members` (placeholder), `bills` (placeholder) | Cross-pipeline writes to members + bills tables — only placeholders, never overwrites |
 | votes-pipeline §7.4 | `amendments` (placeholder via `upsertPlaceholder`), `votes` (full) | Cross-pipeline placeholder write to amendments — never overwrites real data |
 | amendment-text-availability-checker §7.5 | `amendments` (only `last_text_check_at` via `updateLastTextCheckAt`, on success path per L1) | Targeted UPDATE; doesn't touch amendment metadata fields |
 | amendment-text-pipeline §7.6 | `amendment_text_versions` (INSERT with `fetched_at=NULL`, then `markFetched(versionId, NOW())` on completion), `amendment_text_chunks` | Owned tables. **No event emitted** — `fetched_at IS NOT NULL` is the readiness signal. |
@@ -401,7 +404,7 @@ Confirm before starting Phase 7 (production cutover):
 - [ ] Local backfill produced amendment counts within an order of magnitude of estimate (~50K–150K rows for 102–119).
 - [ ] `amendment_text_versions WHERE fetched_at IS NOT NULL` count is non-zero for ≥117.
 - [ ] Pre-102 votes do NOT create amendment placeholders (counter visible in logs).
-- [ ] `effective_bill_id` populated for ≥99% of amendments where parent + bill chain is fully discoverable from API data (orphan rate documented).
+- [ ] `bill_id (resolved ancestor)` populated for ≥99% of amendments where parent + bill chain is fully discoverable from API data (orphan rate documented).
 
 ---
 
@@ -455,7 +458,7 @@ Per-subproject "integration" test that wires real classes together (still no Doc
 
 | Subproject | Inter-class test |
 |---|---|
-| amendments-pipeline | `AmendmentProcessor` ↔ `AmendmentRepository` ↔ recursion: end-to-end flow from `streamAll` to persisted row, using AlloyDB Omni Docker singleton + WireMock for API. Verifies recursion's effective_bill_id resolution against a real DB. |
+| amendments-pipeline | `AmendmentProcessor` ↔ `AmendmentRepository` ↔ recursion: end-to-end flow from `streamAll` to persisted row, using AlloyDB Omni Docker singleton + WireMock for API. Verifies recursion's bill_id (resolved ancestor) resolution against a real DB. |
 | amendment-text-availability-checker | `AmendmentTextAvailabilityChecker` ↔ `AmendmentRepository` ↔ Pub/Sub publisher: cron-tick simulation that produces `AmendmentTextAvailableEvent` against the emulator. |
 | amendment-text-pipeline | `AmendmentTextProcessor` ↔ embedder ↔ chunker ↔ extractor: byte-level fixture flows through the full pipeline; chunks land with valid 1024-dim embeddings; HNSW index satisfies a sample cosine query. |
 
