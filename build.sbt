@@ -292,12 +292,13 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
 
 lazy val amendmentsPipeline = (project in file("amendments-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
-  .dependsOn(billsCommon % "compile->compile;test->test", membersCommon)
+  .dependsOn(membersCommon % "compile->compile;test->test")
+  .dependsOn(billsCommon % "compile->compile;test->test")
   .settings(pipelineSettings)
   .settings(
     name := "amendments-pipeline",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ doobie ++ fs2 ++ logging ++ testDeps,
+      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     coverageExcludedFiles                  := ".*AmendmentsPipelineApp",
     Test / parallelExecution               := false,
@@ -321,25 +322,6 @@ lazy val votesPipeline = (project in file("votes-pipeline"))
     Test / parallelExecution   := false,
     assembly / mainClass       := Some("repcheck.ingestion.votes.app.VotesPipelineApp"),
     assembly / assemblyJarName := "votes-pipeline.jar",
-  )
-
-// `amendments-pipeline` — Component 7. Phase 2 (in flight): API client (§7.1) + repository
-// (§7.2). Phase 3 will add the processor/IOApp wiring (§7.3). The subproject definition is
-// shared between §7.1 and §7.2 — both PRs add it; whichever lands second resolves the trivial
-// conflict at merge time.
-lazy val amendmentsPipeline = (project in file("amendments-pipeline"))
-  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
-  .dependsOn(membersCommon % "compile->compile;test->test")
-  .dependsOn(billsCommon % "compile->compile;test->test")
-  .settings(pipelineSettings)
-  .settings(
-    name := "amendments-pipeline",
-    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
-    // Shared SharedDockerPostgres singleton + per-suite table truncation make intra-subproject
-    // parallel execution unsafe; cross-subproject parallelism (configurable via
-    // `-Dsbt.testConcurrency=N`, default 2) still provides the speedup.
-    Test / parallelExecution := false,
   )
 
 // Test-only subproject. Houses the full-stack docker-compose E2E wiring test:
