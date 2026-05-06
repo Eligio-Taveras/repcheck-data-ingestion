@@ -1,10 +1,12 @@
 package repcheck.ingestion.amendments.api
 
 import java.time.Instant
+import java.util.UUID
 
 import scala.concurrent.duration._
 
 import cats.effect.IO
+import cats.effect.kernel.Ref
 import cats.effect.unsafe.implicits.global
 
 import org.http4s.ember.client.EmberClientBuilder
@@ -37,6 +39,8 @@ class AmendmentsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     ._1
 
   private lazy val retryWrapper = new RetryWrapper[IO]((_, _, _, _, _, _) => IO.unit)
+
+  private val testCorrelationId = UUID.fromString("00000000-0000-0000-0000-000000000001")
 
   private def makeClient(
     retryConfig: RetryConfig = RetryConfig(maxRetries = 1, initialBackoffMs = 10L),
@@ -447,7 +451,7 @@ class AmendmentsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient()
     val detail = client
-      .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137")
+      .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137", testCorrelationId)
       .unsafeRunSync()
 
     val _ = detail.congress shouldBe 117
@@ -470,7 +474,7 @@ class AmendmentsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient()
     val _ = client
-      .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137?format=xml")
+      .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137?format=xml", testCorrelationId)
       .unsafeRunSync()
 
     // No format=xml on the wire, exactly one format=json.
@@ -489,7 +493,7 @@ class AmendmentsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     val client = makeClient(retryConfig = RetryConfig(maxRetries = 0, initialBackoffMs = 0L))
     intercept[AmendmentFetchFailed] {
       val _ = client
-        .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/9999")
+        .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/9999", testCorrelationId)
         .unsafeRunSync()
     }
   }
@@ -517,7 +521,7 @@ class AmendmentsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient()
     val detail = client
-      .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137")
+      .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137", testCorrelationId)
       .unsafeRunSync()
     detail.number shouldBe "2137"
   }
@@ -525,7 +529,7 @@ class AmendmentsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   it should "raise AmendmentFetchFailed when detailUrl is unparseable" in {
     val client = makeClient(retryConfig = RetryConfig(maxRetries = 0, initialBackoffMs = 0L))
     intercept[AmendmentFetchFailed] {
-      val _ = client.fetchDetail("not a valid url with spaces").unsafeRunSync()
+      val _ = client.fetchDetail("not a valid url with spaces", testCorrelationId).unsafeRunSync()
     }
   }
 
@@ -542,7 +546,7 @@ class AmendmentsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient()
     val _ = client
-      .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137")
+      .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137", testCorrelationId)
       .unsafeRunSync()
 
     wireMock.verify(
@@ -564,13 +568,84 @@ class AmendmentsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     val client = makeClient()
     val _ = client
-      .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137?api_key=stale-key")
+      .fetchDetail(
+        s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137?api_key=stale-key",
+        testCorrelationId,
+      )
       .unsafeRunSync()
 
     wireMock.verify(
       getRequestedFor(urlPathEqualTo("/v3/amendment/117/samdt/2137"))
         .withQueryParam("api_key", equalTo("test-api-key"))
     )
+  }
+
+  it should "thread the caller-supplied correlationId through to the retry wrapper" in {
+    // Different correlation IDs on two consecutive calls both succeed — proves the parameter is wired through, not
+    // dropped on the floor in favor of an internally-minted UUID. Also serves as the test we'd want when the §7.3
+    // processor lands and we can spy on the retry-wrapper callback to assert the exact UUID landed.
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/amendment/117/samdt/2137"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(detailJson(117, "SAMDT", "2137"))
+        )
+    )
+
+    val client     = makeClient()
+    val firstId    = UUID.fromString("11111111-1111-1111-1111-111111111111")
+    val secondId   = UUID.fromString("22222222-2222-2222-2222-222222222222")
+    val detailUrl  = s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137"
+    val firstCall  = client.fetchDetail(detailUrl, firstId).unsafeRunSync()
+    val secondCall = client.fetchDetail(detailUrl, secondId).unsafeRunSync()
+
+    val _ = firstCall.number shouldBe "2137"
+    secondCall.number shouldBe "2137"
+  }
+
+  it should "pass the caller's correlationId to the RetryWrapper callback verbatim" in {
+    // Force one transient retry (503 → 200) so the wrapper's logRetry callback fires; capture the correlationId arg
+    // and assert it equals the value the caller passed to fetchDetail. Proves the parameter reaches the wrapper
+    // verbatim instead of being replaced by a fresh UUID.randomUUID() inside the client.
+    val capturedIds = Ref.unsafe[IO, List[UUID]](List.empty)
+    val spyWrapper  = new RetryWrapper[IO]({ (_, _, _, _, _, correlationId) => capturedIds.update(_ :+ correlationId) })
+
+    val scenario = "correlation-id-passthrough"
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/amendment/117/samdt/2137"))
+        .inScenario(scenario)
+        .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+        .willReturn(aResponse().withStatus(503).withBody("transient"))
+        .willSetStateTo("recovered")
+    )
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/amendment/117/samdt/2137"))
+        .inScenario(scenario)
+        .whenScenarioStateIs("recovered")
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(detailJson(117, "SAMDT", "2137"))
+        )
+    )
+
+    val cfg = CongressGovClientConfig(
+      apiKey = "test-api-key",
+      baseUrl = s"http://localhost:${wireMock.port()}/v3",
+      pageSize = 250,
+      pageDelay = Duration.Zero,
+      retry = RetryConfig(maxRetries = 1, initialBackoffMs = 10L),
+    )
+    val client     = AmendmentsApiClient[IO](cfg, httpClient, spyWrapper)
+    val expectedId = UUID.fromString("33333333-3333-3333-3333-333333333333")
+    val _ = client
+      .fetchDetail(s"http://localhost:${wireMock.port()}/v3/amendment/117/samdt/2137", expectedId)
+      .unsafeRunSync()
+
+    capturedIds.get.unsafeRunSync() should contain(expectedId)
   }
 
 }

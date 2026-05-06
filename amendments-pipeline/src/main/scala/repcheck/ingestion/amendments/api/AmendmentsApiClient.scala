@@ -137,8 +137,12 @@ class AmendmentsApiClient[F[_]](
    * Decodes the `{"amendment": {...}}` envelope into [[AmendmentDetailDTO]] via [[AmendmentDetailApiResponseDTO]]. 4xx
    * (other than 429) is classified as Systemic and propagates as `AmendmentFetchFailed`; the processor (§7.3) decides
    * whether to skip-and-warn (404) or halt (auth errors).
+   *
+   * The caller threads its amendment-level `correlationId` through this method so detail-fetch logs (and any retry
+   * wrapper diagnostics) share the same ID as the surrounding list-page → detail-fetch → recursion → upsert work for
+   * that amendment. Do NOT mint a fresh UUID here.
    */
-  def fetchDetail(detailUrl: String): F[AmendmentDetailDTO] =
+  def fetchDetail(detailUrl: String, correlationId: UUID): F[AmendmentDetailDTO] =
     parseUri(detailUrl, detailUrl).flatMap { rawUri =>
       val uri = rawUri
         .removeQueryParam("format")
@@ -164,7 +168,7 @@ class AmendmentsApiClient[F[_]](
             naturalKey = uri.removeQueryParam("api_key").renderString,
             cause = cause,
           ),
-        correlationId = UUID.randomUUID(),
+        correlationId = correlationId,
       )
     }
 
