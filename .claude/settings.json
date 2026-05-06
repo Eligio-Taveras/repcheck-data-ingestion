@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); if echo \"$input\" | grep -qE 'git rm --cached|git checkout --|git reset --hard|rm -rf|rm -f'; then echo 'WARNING: Read-before-rollback rule -- have you read each affected file and summarized for the user before this command? If not, abort and ask first.' >&2; fi",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "input=$(cat); cmd=$(echo \"$input\" | jq -r '.tool_input.command // empty' 2>/dev/null); if echo \"$cmd\" | grep -qE '^[[:space:]]*git[[:space:]]+push'; then branch=$(echo \"$cmd\" | awk '{print $NF}' | sed 's|.*[:/=]||'); if [ -n \"$branch\" ] && [ \"$branch\" != \"main\" ] && [ \"$branch\" != \"master\" ]; then state=$(gh pr view \"$branch\" --json state -q .state 2>/dev/null || echo NONE); if [ \"$state\" = \"MERGED\" ] || [ \"$state\" = \"CLOSED\" ]; then echo \"BLOCKED: PR for branch $branch is $state. Open a new branch from latest main/master before pushing.\" >&2; exit 2; fi; fi; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

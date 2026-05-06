@@ -28,11 +28,17 @@ private[app] object PipelineExecutor {
     val logCtx = LogContext(runId = runId.toString, stepName = pipelineName)
 
     for {
+      _ <- logger.info(logCtx, s"PipelineExecutor.execute.start pipelineName=$pipelineName runId=${runId.toString}")
       startedAt   <- Async[F].realTimeInstant
+      _           <- logger.info(logCtx, s"PipelineExecutor.compile.start startedAt=${startedAt.toString}")
       results     <- resultStream.compile.toList
       completedAt <- Async[F].realTimeInstant
-      // TODO: record step started/completed in workflow_run_steps via WorkflowStateUpdater (ingestion-common §3.7).
-      // stepRunId is a placeholder until that table and updater are implemented.
+      _ <- logger.info(
+        logCtx,
+        s"PipelineExecutor.compile.done completedAt=${completedAt.toString} " +
+          s"resultsCount=${results.size.toString} " +
+          s"durationMs=${(completedAt.toEpochMilli - startedAt.toEpochMilli).toString}",
+      )
       summary = StepRunSummary.fromResults(
         stepRunId = 0L,
         stepName = pipelineName,
@@ -47,6 +53,7 @@ private[app] object PipelineExecutor {
       exitCode =
         if (summary.itemsFailed == 0) { ExitCode.Success }
         else { ExitCode.Error }
+      _ <- logger.info(logCtx, s"PipelineExecutor.execute.exit exitCode=${exitCode.toString}")
     } yield exitCode
   }
 

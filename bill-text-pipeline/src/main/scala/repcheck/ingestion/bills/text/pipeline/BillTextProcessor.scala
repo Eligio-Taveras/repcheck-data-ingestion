@@ -11,19 +11,14 @@ import fs2.Stream
 import doobie._
 
 import repcheck.ingestion.bills.common.persistence.{BillRepository, BillTextVersionRepository, TransactionRunner}
-import repcheck.ingestion.bills.text.chunking.BillTextChunker
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{
-  BillChunkEmbedder,
-  BillEmbedCtx,
-  EmbeddingConfig,
-  EmbeddingContextLengthExceeded,
-  EmbeddingGenerationFailed,
-}
+import repcheck.ingestion.bills.text.embedding.{BillChunkEmbedder, BillEmbedCtx}
 import repcheck.ingestion.bills.text.errors.{BillNotFoundForText, BillTextProcessingFailed}
 import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.ingestion.text.chunking.TextChunker
+import repcheck.ingestion.text.embedding.{EmbeddingConfig, EmbeddingContextLengthExceeded, EmbeddingGenerationFailed}
 import repcheck.pipeline.models.events.{BillTextAvailableEvent, BillTextIngestedEvent}
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.common.FormatType
@@ -208,7 +203,7 @@ class BillTextProcessor[F[_]: Async] private[text] (
    *   1. `downloader.streamBody` — `Stream[F, Byte]` of HTTP response bytes for the bill's text.
    *   1. `extractText(bytes, format)` — `Stream[F, String]` of semantic fragments per the format's natural unit.
    *   1. `stripNullBytes` + `filter(nonEmpty)` — strip null bytes (Postgres TEXT can't hold them) and drop empties.
-   *   1. `BillTextChunker.chunkPipe(maxChunkChars)` — accumulate fragments and emit fixed-size chunks.
+   *   1. `TextChunker.chunkPipe(maxChunkChars)` — accumulate fragments and emit fixed-size chunks.
    *   1. `embedder.processChunks` — submits each chunk to the shared cross-bill queue; awaits the bill's Deferred.
    *
    * The cross-bill batching that produces the actual Ollama call happens INSIDE the embedder's background fiber, NOT
@@ -221,7 +216,7 @@ class BillTextProcessor[F[_]: Async] private[text] (
     versionId: Long,
     correlationId: UUID,
   ): F[ProcessingResult] = {
-    // No defensive check here for `maxChunkChars > 0` — `BillTextChunker.chunkPipe` is the single source of truth
+    // No defensive check here for `maxChunkChars > 0` — `TextChunker.chunkPipe` is the single source of truth
     // for that validation. If it's misconfigured, the chunker raises `InvalidChunkSize` through the F effect channel
     // when the stream is consumed, the embedder's Resource cleanup completes the Deferred as Failed, and the
     // raise propagates back to processEvent's `handleErrorWith`.
@@ -230,7 +225,7 @@ class BillTextProcessor[F[_]: Async] private[text] (
     val chunkStream = extractText(bytes, event.textFormat)
       .map(stripNullBytes)
       .filter(_.nonEmpty)
-      .through(BillTextChunker.chunkPipe(embeddingConfig.maxChunkChars))
+      .through(TextChunker.chunkPipe(embeddingConfig.maxChunkChars))
     embedder.processChunks(ctx, chunkStream)
   }
 

@@ -1,0 +1,32 @@
+<configuration>
+
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Hikari is extremely chatty at DEBUG (pool-housekeeper every 30s, per-borrow debug, etc.).
+       Cap at WARN to silence the housekeeper noise that otherwise dominates docker logs. -->
+  <logger name="com.zaxxer.hikari" level="WARN"/>
+
+  <!-- Doobie's free interpreter logs every JDBC call at DEBUG; suppress unless deep-diving. -->
+  <logger name="doobie" level="WARN"/>
+
+  <!-- http4s ember client's connection pool + parser log at DEBUG with each request. -->
+  <logger name="org.http4s" level="WARN"/>
+
+  <!-- fs2 stream pull/scope debug is also chatty. -->
+  <logger name="fs2" level="WARN"/>
+
+  <!-- Repcheck application code (PipelineLogger writes via println, but this catches anything
+       that goes through slf4j directly). Set INFO so framework code emits operational logs;
+       flip to DEBUG to enable the deep step-by-step / per-cosponsor debug logs. -->
+  <logger name="repcheck" level="INFO"/>
+
+  <!-- Default root: INFO. Catches everything not explicitly listed above. -->
+  <root level="INFO">
+    <appender-ref ref="STDOUT" />
+  </root>
+
+</configuration>

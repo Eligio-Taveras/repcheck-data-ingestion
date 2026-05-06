@@ -19,11 +19,12 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.bills.common.persistence.{BillRepository, BillTextVersionRepository}
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{BillChunkEmbedder, BillEmbedCtx, EmbeddingConfig}
+import repcheck.ingestion.bills.text.embedding.{BillChunkEmbedder, BillEmbedCtx}
 import repcheck.ingestion.bills.text.errors.{BillTextProcessingFailed, TextDownloadFailed}
 import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.ingestion.text.embedding.EmbeddingConfig
 import repcheck.pipeline.models.events.{BillTextAvailableEvent, BillTextIngestedEvent}
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.dos.bill.{BillDO, BillTextVersionDO}

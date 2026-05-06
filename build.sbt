@@ -119,8 +119,10 @@ lazy val pipelineSettings = commonSettings ++ Seq(
 
 lazy val root = (project in file("."))
   .aggregate(
+    commonTesting,
     billsCommon,
     membersCommon,
+    textExtractionCommon,
     billMetadataPipeline,
     billSummaryPipeline,
     billTextAvailabilityChecker,
@@ -138,8 +140,24 @@ lazy val root = (project in file("."))
     publish / skip := true,
   )
 
+// Shared Docker-backed Postgres test fixture, consumed by every common module's `% Test` config.
+// Lives in `src/main/scala` so dependents can pull it as a normal classpath dep (typed `% Test`); this is the standard
+// sbt pattern for cross-project test utilities. The module's own `Test` config is empty (the fixture has no tests of
+// its own; it's exercised end-to-end by every DockerRequired spec across the repo). Sole external dep: the
+// db-migrations-runner artifact, used to apply the canonical Liquibase changelog against the spawned postgres.
+lazy val commonTesting = (project in file("common-testing"))
+  .settings(commonSettings)
+  .settings(
+    name := "common-testing",
+    libraryDependencies ++= catsEffect ++ doobie ++ Seq(
+      "org.scalatest" %% "scalatest"                     % "3.2.18",
+      "com.repcheck"  %% "repcheck-db-migrations-runner" % "0.1.34",
+    ),
+  )
+
 lazy val billsCommon = (project in file("bills-common"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(commonTesting % "test->compile")
   .settings(commonSettings)
   .settings(
     name := "bills-common",
@@ -152,8 +170,18 @@ lazy val billsCommon = (project in file("bills-common"))
     Test / parallelExecution := false,
   )
 
+lazy val textExtractionCommon = (project in file("text-extraction-common"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .settings(commonSettings)
+  .settings(
+    name := "text-extraction-common",
+    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig ++ fs2
+      ++ catsEffect ++ htmlParsing ++ pdfParsing ++ logging ++ testDeps,
+  )
+
 lazy val membersCommon = (project in file("members-common"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(commonTesting % "test->compile")
   .settings(commonSettings)
   .settings(
     name := "members-common",
@@ -246,19 +274,35 @@ lazy val lisMappingRefresher = (project in file("lis-mapping-refresher"))
 lazy val billTextPipeline = (project in file("bill-text-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
   .dependsOn(billsCommon % "compile->compile;test->test")
+  .dependsOn(textExtractionCommon)
   .dependsOn(billTextAvailabilityChecker % "test->compile")
   .dependsOn(billMetadataPipeline % "test->compile")
   .settings(pipelineSettings)
   .settings(
     name := "bill-text-pipeline",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ xml ++ htmlParsing ++ pdfParsing ++ logging ++ testDeps,
+      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ xml ++ logging ++ testDeps,
     coverageExcludedFiles := ".*BillTextPipelineApp",
     // WireMock-based tests share a dynamic port; sequential prevents port contention.
     // Cross-subproject parallelism (configurable via `-Dsbt.testConcurrency=N`, default 2) gives us the speedup win.
     Test / parallelExecution   := false,
     assembly / mainClass       := Some("repcheck.ingestion.bills.text.app.BillTextPipelineApp"),
     assembly / assemblyJarName := "bill-text-pipeline.jar",
+  )
+
+lazy val amendmentsPipeline = (project in file("amendments-pipeline"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(billsCommon % "compile->compile;test->test", membersCommon)
+  .settings(pipelineSettings)
+  .settings(
+    name := "amendments-pipeline",
+    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
+      ++ catsEffect ++ doobie ++ fs2 ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
+    coverageExcludedFiles                  := ".*AmendmentsPipelineApp",
+    Test / parallelExecution               := false,
+    assembly / mainClass                   := Some("repcheck.ingestion.amendments.app.AmendmentsPipelineApp"),
+    assembly / assemblyJarName             := "amendments-pipeline.jar",
   )
 
 lazy val votesPipeline = (project in file("votes-pipeline"))

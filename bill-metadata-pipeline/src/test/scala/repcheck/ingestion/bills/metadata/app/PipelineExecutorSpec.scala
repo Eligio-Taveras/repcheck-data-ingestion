@@ -101,9 +101,10 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers {
 
     val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
 
-    val _          = logger.messages.size shouldBe 1
-    val logMessage = logger.messages.headOption.getOrElse(fail("expected at least one log message"))
-    val _          = logMessage should include("4 processed")
+    val logMessage = logger.messages
+      .find(_.contains("Pipeline completed:"))
+      .getOrElse(fail("expected a 'Pipeline completed' summary log"))
+    val _ = logMessage should include("4 processed")
     // Skipped results count toward succeeded (per pipeline-models v0.1.21 — idempotent skip is a successful no-op).
     // 2 Succeeded + 1 Skipped = 3 succeeded; 1 Failed.
     val _ = logMessage should include("3 succeeded")

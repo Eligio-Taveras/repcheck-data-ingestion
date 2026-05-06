@@ -1,5 +1,6 @@
 package repcheck.ingestion.bills.common.persistence
 
+import cats.data.NonEmptyList
 import cats.syntax.all._
 
 import doobie._
@@ -127,24 +128,36 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         .to[List]
     }
 
-  override def findBillsNeedingTextCheck(): ConnectionIO[List[BillDO]] =
-    // Stage-aware filter (post-migration 032). Returns bills whose stage has moved past the version we
-    // already have stored — i.e. `expected_text_version_code` (set by bill-metadata-pipeline as the
-    // introduced floor and/or bill-summary-pipeline as it advances from CRS summary versionCodes) does
-    // not match `text_version_type` (set by bill-text-pipeline after a successful download).
+  override def findBillsNeedingTextCheck(congresses: List[Int]): ConnectionIO[List[BillDO]] = {
+    // Stage-aware filter. Returns bills whose stored stage doesn't match the expected stage, ordered
+    // so genuinely pending bills (no text downloaded yet) come before "upgrade-bucket" bills (text
+    // downloaded but at a different version code).
     //
-    //   * `expected_text_version_code IS NOT NULL` — fail-safe: bills with no stage signal yet stay out
-    //     of the sweep. This keeps the query bounded as bill-metadata-pipeline's first 10-year backfill
-    //     populates floors.
+    //   * `expected_text_version_code IS NOT NULL` — fail-safe: bills with no stage signal yet stay
+    //     out of the sweep.
     //   * `text_version_type IS DISTINCT FROM expected_text_version_code` — handles both "stored is
-    //     NULL" and "stored != expected" with one operator. Bill enters the sweep, /text gets called,
-    //     bill-text-pipeline downloads the matching version, `text_version_type` is bumped, and the
-    //     bill exits the sweep until the next stage transition.
-    (fr"SELECT" ++ selectColumns ++ fr"""FROM $table
-      WHERE expected_text_version_code IS NOT NULL
-        AND text_version_type IS DISTINCT FROM expected_text_version_code""")
+    //     NULL" and "stored != expected" with one operator.
+    //   * `congress = ANY($congresses)` — operator-controlled allow-list. Pre-103 bills have
+    //     `expected_text_version_code` populated by the metadata pipeline's chamber-floor write,
+    //     but Congress.gov has no text body for them. Empty list = no congress filter (sweep all).
+    //     Default in `BillTextCheckerConfig.congresses` is "103,104,...,119".
+    //
+    // ORDER BY (latest_text_version_id IS NULL) DESC: prioritize never-downloaded bills over upgrade-
+    // bucket bills. The upgrade bucket can otherwise starve the pending work — a single per-run scan
+    // is rate-limited by Congress.gov, so processing "Text unchanged" no-ops first leaves no budget
+    // for the actual backfill.
+    val congressFilter = congresses match {
+      case Nil          => Fragment.empty
+      case head :: tail => fr"AND" ++ Fragments.in(fr"congress", NonEmptyList(head, tail))
+    }
+    (fr"SELECT" ++ selectColumns ++ fr"FROM $table" ++
+      fr"WHERE expected_text_version_code IS NOT NULL" ++
+      fr"AND text_version_type IS DISTINCT FROM expected_text_version_code" ++
+      congressFilter ++
+      fr"ORDER BY (latest_text_version_id IS NULL) DESC, congress DESC, id ASC")
       .query[BillDO]
       .to[List]
+  }
 
   override def updateTextFields(
     billId: String,
@@ -155,7 +168,7 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     latestTextVersionId: Long,
   ): ConnectionIO[Unit] = {
     val (congress, billType, number) = parseNaturalKey(billId)
-    sql"""
+    val updateText: ConnectionIO[Unit] = sql"""
       UPDATE $table SET
         text_url = $textUrl,
         text_format = $textFormat::format_type_enum,
@@ -165,6 +178,32 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         updated_at = NOW()
       WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int
     """.update.run.void
+
+    // Cooperative-write contract repair: when a successfully-downloaded text version's progressionOrder
+    // exceeds the current `expected_text_version_code`, bump expected to match. Without this, bills can
+    // end up stuck in `findBillsNeedingTextCheck`'s `IS DISTINCT FROM` filter forever — the metadata or
+    // summary pipeline set expected to some early stage (e.g. IH), bill-text-pipeline downloaded a later
+    // stage (e.g. ATS), the SQL filter keeps surfacing the bill, the runtime check decides "Text
+    // unchanged" because Congress.gov's latest matches what we have. Self-heals here so freshly-
+    // downloaded rows escape the loop on the next text-pipeline pass; new rows never enter the broken
+    // state.
+    val maybeBumpExpected: ConnectionIO[Unit] = TextVersionCode.fromString(textVersionType) match {
+      case Left(_) =>
+        // textVersionType doesn't parse to a known TextVersionCode. The Postgres enum cast above
+        // will fail anyway, so the whole transaction aborts; nothing to do here.
+        doobie.free.connection.unit
+      case Right(downloaded) =>
+        findExpectedVersion(billId).flatMap { existing =>
+          val shouldBump = existing match {
+            case None          => true
+            case Some(current) => downloaded.progressionOrder > current.progressionOrder
+          }
+          if (shouldBump) updateExpectedVersion(billId, downloaded)
+          else doobie.free.connection.unit
+        }
+    }
+
+    updateText *> maybeBumpExpected
   }
 
   private[persistence] def parseNaturalKey(naturalKey: String): (Int, String, String) = {
@@ -202,10 +241,33 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
   override def upsertPlaceholder(naturalKey: String): ConnectionIO[Unit] =
     parsePlaceholderNaturalKey(naturalKey) match {
       case Right((congress, billType, number)) =>
-        // `title` NOT NULL on bills → empty string stub; bills-pipeline overwrites it on enrichment.
-        // `update_date` NOT NULL → NOW() stub; also overwritten on enrichment.
-        sql"""INSERT INTO $table (congress, bill_type, number, title, update_date)
-              VALUES ($congress, $billType, $number, '', NOW())
+        // Canonical placeholder shape, matched against `HasPlaceholder[BillDO].placeholder(...)` in
+        // shared-models. The factory there sets `updateDate = None` and every detail field to None;
+        // `BillPlaceholder.isPlaceholder` (in bills-common) is the inverse predicate and pins the
+        // contract via an invariant test in `BillPlaceholderSpec`.
+        //
+        // We insert ONLY `(congress, bill_type, number, title)` and let every other column take its
+        // declared default — NULL for `update_date`, `update_date_including_text`, every Option-
+        // backed detail column, and `now()` for `created_at` / `updated_at` (those are NOT NULL with
+        // a `now()` default; that's fine, they're DB row metadata, not API content).
+        //
+        // `title` is included as the empty string because `BillDO.title: String` is NOT an Option —
+        // Doobie's auto-derived `Read[BillDO]` would crash on a NULL value when this row is later
+        // read back. The empty string is also what the canonical factory uses, and `BillPlaceholder
+        // .isPlaceholder` treats `title.isEmpty` as a placeholder marker.
+        //
+        // The previous version of this method was `INSERT (congress, bill_type, number, title,
+        // update_date) VALUES (?, ?, ?, '', NOW())`. The author assumed `title` and `update_date`
+        // were NOT NULL on the schema (they aren't — both are nullable; `title` is in our DO model
+        // for a different reason as noted above). The `NOW()` stub silently broke the metadata
+        // pipeline's `incoming.updateDate > stored.updateDate` comparison forever after: every
+        // placeholder got stamped with the writer's wall-clock time, which is by definition newer
+        // than any actual API `updateDate`, so `evaluateAndProcess` routed every placeholder to the
+        // "Bill unchanged" path on the next sweep instead of the backfill path. Defense-in-depth
+        // coverage exists in `BillMetadataProcessor` (it detects placeholders by the field-set
+        // shape regardless of stored `updateDate`), but the root-cause fix is here.
+        sql"""INSERT INTO $table (congress, bill_type, number, title)
+              VALUES ($congress, $billType, $number, '')
               ON CONFLICT (congress, bill_type, number) DO NOTHING""".update.run.void
 
       case Left(err) =>

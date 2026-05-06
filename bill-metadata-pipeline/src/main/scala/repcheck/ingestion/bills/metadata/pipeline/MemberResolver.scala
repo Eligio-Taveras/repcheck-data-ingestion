@@ -15,10 +15,6 @@ import repcheck.shared.models.congress.dos.bill.{BillCosponsorDO, BillDO}
 import repcheck.shared.models.congress.dos.member.MemberDO
 import repcheck.shared.models.congress.dto.bill.CoSponsorDTO
 
-/**
- * Resolves Congress.gov bioguide IDs to internal member IDs, creating placeholder member rows when needed. Handles both
- * bill sponsors and cosponsors.
- */
 private[pipeline] class MemberResolver[F[_]: Async](
   memberRepo: MemberRepository,
   placeholderCreator: PlaceholderCreator[F],
@@ -27,10 +23,6 @@ private[pipeline] class MemberResolver[F[_]: Async](
   logger: PipelineLogger[F],
 ) {
 
-  /**
-   * Ensures a placeholder member row exists for the bill's sponsor, then looks up the internal member ID. Returns a
-   * copy of the bill with `sponsorMemberId` set (or `None` if the member could not be resolved).
-   */
   private[pipeline] def ensureSponsorPlaceholder(
     billDO: BillDO,
     detail: repcheck.shared.models.congress.dto.bill.BillDetailDTO,
@@ -40,8 +32,19 @@ private[pipeline] class MemberResolver[F[_]: Async](
     sponsorBioguideId match {
       case Some(bioguideId) =>
         for {
+          _ <- logger.debug(
+            logCtx,
+            s"ensureSponsorPlaceholder.start bioguideId=$bioguideId sponsorListSize=${detail.sponsors.fold(0)(_.size).toString}",
+          )
+          _        <- logger.debug(logCtx, s"ensureSponsorPlaceholder.placeholder.start bioguideId=$bioguideId")
           _        <- placeholderCreator.ensureExists[MemberDO](bioguideId, memberEntityRepo)
+          _        <- logger.debug(logCtx, s"ensureSponsorPlaceholder.placeholder.done bioguideId=$bioguideId")
+          _        <- logger.debug(logCtx, s"ensureSponsorPlaceholder.lookup.start bioguideId=$bioguideId")
           memberId <- TransactionRunner.run(xa)(memberRepo.findByBioguideId(bioguideId).map(_.map(_.memberId)))
+          _ <- logger.debug(
+            logCtx,
+            s"ensureSponsorPlaceholder.lookup.done bioguideId=$bioguideId memberId=${memberId.fold("none")(_.toString)}",
+          )
           _ <-
             if (memberId.isEmpty) {
               logger.warn(logCtx, s"Sponsor member ID not found after placeholder creation for $bioguideId")
@@ -50,66 +53,76 @@ private[pipeline] class MemberResolver[F[_]: Async](
             }
         } yield billDO.copy(sponsorMemberId = memberId)
       case None =>
-        Async[F].pure(billDO)
+        logger.debug(logCtx, s"ensureSponsorPlaceholder.skip (no sponsor in detail)") *>
+          Async[F].pure(billDO)
     }
   }
 
-  /**
-   * Converts a list of cosponsor DTOs to domain objects by ensuring placeholder members exist, looking up their
-   * internal IDs, and filtering out any that could not be resolved.
-   *
-   * Input hardening (surfaced during Phase 6 live validation):
-   *   - Empty `sponsorshipDate` strings (older bills; e.g., 94-HR-13955) are treated as `None` rather than attempting
-   *     to parse "" as a `LocalDate`, which would raise `DateTimeParseException`.
-   *   - Duplicate `bioguideId` entries (Congress.gov occasionally returns the same cosponsor twice in one response;
-   *     e.g., 119-S-1383) are deduped, keeping the first occurrence and logging a warn so operators can see the API
-   *     data quality issue. Deduping here avoids the `uq_bill_cosponsors` constraint violation at the batch-insert
-   *     layer.
-   */
   private[pipeline] def buildCosponsorDOs(
     cosponsorDTOs: List[CoSponsorDTO],
     logCtx: LogContext,
   ): F[List[BillCosponsorDO]] = {
     val deduped        = cosponsorDTOs.distinctBy(_.bioguideId)
     val duplicateCount = cosponsorDTOs.size - deduped.size
-    val logDuplicates =
-      if (duplicateCount > 0) {
-        val dupeIds = cosponsorDTOs
-          .groupBy(_.bioguideId)
-          .collect { case (id, list) if list.size > 1 => id }
-          .toList
-          .sorted
-        logger.warn(
-          logCtx,
-          s"Congress.gov returned $duplicateCount duplicate cosponsor(s) in a single response for ${dupeIds.mkString(", ")} — deduping to first occurrence",
-        )
-      } else {
-        Async[F].unit
-      }
 
-    logDuplicates *>
-      deduped.traverseFilter { dto =>
-        for {
-          _        <- placeholderCreator.ensureExists[MemberDO](dto.bioguideId, memberEntityRepo)
-          memberId <- TransactionRunner.run(xa)(memberRepo.findByBioguideId(dto.bioguideId).map(_.map(_.memberId)))
-          result <- memberId match {
-            case Some(mid) =>
-              Async[F].pure(
-                Some(
-                  BillCosponsorDO(
-                    billId = 0L,
-                    memberId = mid,
-                    isOriginalCosponsor = dto.isOriginalCosponsor,
-                    sponsorshipDate = dto.sponsorshipDate.filter(_.nonEmpty).map(LocalDate.parse),
+    for {
+      _ <- logger.debug(
+        logCtx,
+        s"buildCosponsorDOs.start raw=${cosponsorDTOs.size.toString} " +
+          s"deduped=${deduped.size.toString} duplicates=${duplicateCount.toString}",
+      )
+      _ <-
+        if (duplicateCount > 0) {
+          val dupeIds = cosponsorDTOs
+            .groupBy(_.bioguideId)
+            .collect { case (id, list) if list.size > 1 => id }
+            .toList
+            .sorted
+          logger.warn(
+            logCtx,
+            s"Congress.gov returned $duplicateCount duplicate cosponsor(s) for ${dupeIds.mkString(", ")} — deduping to first occurrence",
+          )
+        } else {
+          Async[F].unit
+        }
+      result <- deduped.zipWithIndex.traverseFilter {
+        case (dto, idx) =>
+          for {
+            _ <- logger.debug(
+              logCtx,
+              s"buildCosponsorDOs.cosponsor[${idx.toString}/${deduped.size.toString}].start " +
+                s"bioguideId=${dto.bioguideId} sponsorshipDate=${dto.sponsorshipDate.fold("none")(identity)}",
+            )
+            _        <- placeholderCreator.ensureExists[MemberDO](dto.bioguideId, memberEntityRepo)
+            _        <- logger.debug(logCtx, s"buildCosponsorDOs.cosponsor[${idx.toString}].placeholder.done")
+            memberId <- TransactionRunner.run(xa)(memberRepo.findByBioguideId(dto.bioguideId).map(_.map(_.memberId)))
+            _ <- logger.debug(
+              logCtx,
+              s"buildCosponsorDOs.cosponsor[${idx.toString}].lookup.done memberId=${memberId.fold("none")(_.toString)}",
+            )
+            maybeDO <- memberId match {
+              case Some(mid) =>
+                Async[F].pure[Option[BillCosponsorDO]](
+                  Some(
+                    BillCosponsorDO(
+                      billId = 0L,
+                      memberId = mid,
+                      isOriginalCosponsor = dto.isOriginalCosponsor,
+                      sponsorshipDate = dto.sponsorshipDate.filter(_.nonEmpty).map(LocalDate.parse),
+                    )
                   )
                 )
-              )
-            case None =>
-              logger.warn(logCtx, s"Cosponsor member ID not found for ${dto.bioguideId}") *>
-                Async[F].pure(Option.empty[BillCosponsorDO])
-          }
-        } yield result
+              case None =>
+                logger.warn(logCtx, s"Cosponsor member ID not found for ${dto.bioguideId}") *>
+                  Async[F].pure(Option.empty[BillCosponsorDO])
+            }
+          } yield maybeDO
       }
+      _ <- logger.debug(
+        logCtx,
+        s"buildCosponsorDOs.done resolved=${result.size.toString}/${deduped.size.toString}",
+      )
+    } yield result
   }
 
 }

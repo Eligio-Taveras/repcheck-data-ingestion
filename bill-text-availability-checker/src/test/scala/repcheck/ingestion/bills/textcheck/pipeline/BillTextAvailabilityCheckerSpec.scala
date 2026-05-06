@@ -41,7 +41,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
   private val testRetryConfig =
     RetryConfig(maxRetries = 1, initialBackoffMs = 1L, maxBackoffMs = 10L, backoffMultiplier = 1.0)
 
-  private val config       = BillTextCheckerConfig(parallelism = 1, eventPublishRetry = testRetryConfig)
+  private val config = BillTextCheckerConfig(parallelism = 1, eventPublishRetry = testRetryConfig, congresses = "")
   private val retryWrapper = new RetryWrapper[IO]((_, _, _, _, _, _) => IO.unit)
 
   private case class TestFixture(
@@ -294,7 +294,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       makeBill(naturalKey = "118-HR-2", number = "2"),
     )
 
-    when(f.billRepo.findBillsNeedingTextCheck())
+    when(f.billRepo.findBillsNeedingTextCheck(any[List[Int]]))
       .thenReturn(doobie.free.connection.pure(bills))
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
       .thenReturn(IO.pure(List.empty))
@@ -311,7 +311,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       makeBill(naturalKey = "118-HR-2", number = "2"),
     )
 
-    when(f.billRepo.findBillsNeedingTextCheck())
+    when(f.billRepo.findBillsNeedingTextCheck(any[List[Int]]))
       .thenReturn(doobie.free.connection.pure(bills))
 
     // First bill fails, second succeeds with empty versions
@@ -329,7 +329,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
   it should "complete with empty stream when no bills need checking" in {
     val f = createFixture()
 
-    when(f.billRepo.findBillsNeedingTextCheck())
+    when(f.billRepo.findBillsNeedingTextCheck(any[List[Int]]))
       .thenReturn(doobie.free.connection.pure(List.empty[BillDO]))
 
     val results = f.checker.checkAll(runId).compile.toList.unsafeRunSync()
