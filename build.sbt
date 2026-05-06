@@ -130,6 +130,7 @@ lazy val root = (project in file("."))
     memberProfilePipeline,
     lisMappingRefresher,
     votesPipeline,
+    amendmentsPipeline,
     dockerComposeE2e,
     docGenerator,
   )
@@ -287,6 +288,21 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
     Test / parallelExecution   := false,
     assembly / mainClass       := Some("repcheck.ingestion.bills.text.app.BillTextPipelineApp"),
     assembly / assemblyJarName := "bill-text-pipeline.jar",
+  )
+
+lazy val amendmentsPipeline = (project in file("amendments-pipeline"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(billsCommon % "compile->compile;test->test", membersCommon)
+  .settings(pipelineSettings)
+  .settings(
+    name := "amendments-pipeline",
+    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
+      ++ catsEffect ++ doobie ++ fs2 ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
+    coverageExcludedFiles                  := ".*AmendmentsPipelineApp",
+    Test / parallelExecution               := false,
+    assembly / mainClass                   := Some("repcheck.ingestion.amendments.app.AmendmentsPipelineApp"),
+    assembly / assemblyJarName             := "amendments-pipeline.jar",
   )
 
 lazy val votesPipeline = (project in file("votes-pipeline"))
