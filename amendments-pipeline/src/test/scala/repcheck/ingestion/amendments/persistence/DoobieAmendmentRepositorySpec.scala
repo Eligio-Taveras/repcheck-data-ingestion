@@ -13,7 +13,8 @@ import doobie.implicits._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.amendments.errors.InvalidAmendmentNaturalKey
-import repcheck.ingestion.amendments.testing.{DockerRequired, TransactorFixture}
+import repcheck.ingestion.amendments.testing.TransactorFixture
+import repcheck.members.common.testing.DockerRequired
 import repcheck.shared.models.congress.amendment.AmendmentType
 import repcheck.shared.models.congress.common.Chamber
 import repcheck.shared.models.congress.dos.amendment.AmendmentDO

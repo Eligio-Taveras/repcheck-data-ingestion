@@ -285,6 +285,7 @@ lazy val votesPipeline = (project in file("votes-pipeline"))
 // conflict at merge time.
 lazy val amendmentsPipeline = (project in file("amendments-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(membersCommon % "compile->compile;test->test")
   .dependsOn(billsCommon % "compile->compile;test->test")
   .settings(pipelineSettings)
   .settings(

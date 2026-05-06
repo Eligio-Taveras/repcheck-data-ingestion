@@ -28,6 +28,18 @@ object DockerPostgres {
   private val maxConnectAttempts: Int = 60
   private val connectDelayMs: Long    = 1000L
 
+  // On Windows, Java's `ProcessBuilder.start` (used under the hood by `scala.sys.process`) does
+  // not auto-resolve PATHEXT extensions, so a bare "docker" exec from sbt's forked test JVM fails
+  // even when `docker` works in an interactive shell. The DOCKER_BIN override lets CI / users
+  // point at an explicit binary; the Windows default matches Docker Desktop's standard install.
+  private val dockerBin: String = {
+    val isWindows = sys.props.get("os.name").exists(_.toLowerCase.contains("windows"))
+    sys.env.getOrElse(
+      "DOCKER_BIN",
+      if (isWindows) """C:\Program Files\Docker\Docker\resources\bin\docker.exe""" else "docker",
+    )
+  }
+
   final private case class ContainerHandle(name: String, info: PostgresContainerInfo)
 
   val resource: Resource[IO, PostgresContainerInfo] =
@@ -49,13 +61,13 @@ object DockerPostgres {
   }
 
   private def release(handle: ContainerHandle): IO[Unit] = IO.blocking {
-    val _ = Seq("docker", "rm", "-f", handle.name).!
+    val _ = Seq(dockerBin, "rm", "-f", handle.name).!
     ()
   }
 
   private def startContainer(containerName: String): Int = {
     val exitCode = Seq(
-      "docker",
+      dockerBin,
       "run",
       "-d",
       "--name",
@@ -75,7 +87,7 @@ object DockerPostgres {
       sys.error("Failed to start Docker container. Is Docker running?")
     }
 
-    val portOutput = Seq("docker", "port", containerName, "5432").!!.trim
+    val portOutput = Seq(dockerBin, "port", containerName, "5432").!!.trim
     portOutput
       .split(':')
       .lastOption
@@ -86,12 +98,12 @@ object DockerPostgres {
   @tailrec
   private def waitForReady(containerName: String, remaining: Int = maxReadyAttempts): Unit = {
     if (remaining <= 0) {
-      val _ = Seq("docker", "rm", "-f", containerName).!
+      val _ = Seq(dockerBin, "rm", "-f", containerName).!
       sys.error(s"PostgreSQL container did not become ready after $maxReadyAttempts attempts")
     }
 
     val ready = Try {
-      Seq("docker", "exec", containerName, "pg_isready", "-U", dbUser, "-d", dbName).!!
+      Seq(dockerBin, "exec", containerName, "pg_isready", "-U", dbUser, "-d", dbName).!!
     }.isSuccess
 
     if (!ready) {
