@@ -18,6 +18,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.bills.metadata.errors.BillFetchFailed
 import repcheck.ingestion.common.api.{CongressGovClientConfig, FetchParams}
+import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 
 class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
@@ -39,6 +40,13 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
 
   private lazy val retryWrapper = new RetryWrapper[IO]((_, _, _, _, _, _) => IO.unit)
 
+  private val noOpLogger: PipelineLogger[IO] = new PipelineLogger[IO] {
+    def info(context: LogContext, message: String): IO[Unit]                            = IO.unit
+    def warn(context: LogContext, message: String): IO[Unit]                            = IO.unit
+    def error(context: LogContext, message: String, cause: Option[Throwable]): IO[Unit] = IO.unit
+    def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
+  }
+
   private def makeClient(
     retryConfig: RetryConfig = RetryConfig(maxRetries = 1, initialBackoffMs = 10L)
   ): BillsApiClient[IO] = {
@@ -49,7 +57,7 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
       pageDelay = Duration.Zero,
       retry = retryConfig,
     )
-    BillsApiClient[IO](config, httpClient, retryWrapper)
+    BillsApiClient[IO](config, httpClient, retryWrapper, noOpLogger)
   }
 
   override def beforeAll(): Unit = {
@@ -153,6 +161,44 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     val client = makeClient()
     val _      = client.fetchPage(FetchParams(pageSize = 250)).unsafeRunSync()
     wireMock.verify(getRequestedFor(urlPathEqualTo("/v3/bill")).withQueryParam("api_key", equalTo("test-api-key")))
+  }
+
+  it should "pass congress as a query param when FetchParams.congress is set" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill"))
+        .withQueryParam("congress", equalTo("119"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(billListJson(List.empty))
+        )
+    )
+    val client = makeClient()
+    val _      = client.fetchPage(FetchParams(congress = Some(119), pageSize = 250)).unsafeRunSync()
+    wireMock.verify(getRequestedFor(urlPathEqualTo("/v3/bill")).withQueryParam("congress", equalTo("119")))
+  }
+
+  it should "pass only fromDateTime when toDateTime is None" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill"))
+        .withQueryParam("fromDateTime", equalTo("2024-01-01T00:00:00Z"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(billListJson(List.empty))
+        )
+    )
+    val client = makeClient()
+    val _ = client
+      .fetchPage(
+        FetchParams(fromDateTime = Some(Instant.parse("2024-01-01T00:00:00Z")), pageSize = 250)
+      )
+      .unsafeRunSync()
+    wireMock.verify(
+      getRequestedFor(urlPathEqualTo("/v3/bill")).withQueryParam("fromDateTime", equalTo("2024-01-01T00:00:00Z"))
+    )
   }
 
   "fetchAll" should "paginate across multiple pages" in {

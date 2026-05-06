@@ -18,6 +18,7 @@ import org.http4s.{MediaType, Uri}
 
 import repcheck.ingestion.bills.metadata.errors.{BillFetchFailed, BillsApiErrorClassifier, BillsApiHttpError}
 import repcheck.ingestion.common.api.{CongressGovClientConfig, CongressGovPaginatedClient, FetchParams, PagedResponse}
+import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.bill.{
   BillDetailDTO,
@@ -31,8 +32,15 @@ class BillsApiClient[F[_]](
   config: CongressGovClientConfig,
   client: Client[F],
   retryWrapper: RetryWrapper[F],
+  logger: PipelineLogger[F],
   temporalInstance: Temporal[F],
 ) extends CongressGovPaginatedClient[F, BillListItemDTO] {
+
+  // Logs from the API layer aren't tied to a specific run ID (the run ID is owned by the pipeline
+  // entry point) — but every log line still carries a stepName so operators can grep an operational
+  // dimension. "bill-metadata-api" distinguishes API-layer events from the in-pipeline
+  // "bill-metadata" stepName used by BillMetadataProcessor.
+  private val apiLogCtx = LogContext("0", "bill-metadata-api")
 
   override protected def pageDelay: FiniteDuration = config.pageDelay
 
@@ -71,6 +79,7 @@ class BillsApiClient[F[_]](
 
         params.toDateTime.fold(withFrom)(dt => withFrom.withQueryParam("toDateTime", isoFormatter.format(dt)))
       }
+      val sanitizedUri = uri.removeQueryParam("api_key").renderString
 
       val request = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
       val operation = client.run(request).use { response =>
@@ -88,24 +97,42 @@ class BillsApiClient[F[_]](
         }
       }
 
-      retryWrapper.withRetry(
-        operation = operation,
-        config = config.retry,
-        classifier = BillsApiErrorClassifier,
-        errorFactory = (msg, cause) =>
-          BillFetchFailed(
-            endpoint = uri.removeQueryParam("api_key").renderString,
-            statusCode = 0,
-            detail = msg,
-            cause = cause,
-          ),
-        correlationId = UUID.randomUUID(),
-      )
+      val instrumentedOperation =
+        for {
+          _ <- logger.info(
+            apiLogCtx,
+            s"Fetching bill list page: offset=${params.offset.toString}, limit=${params.pageSize.toString}",
+          )
+          start <- temporal.realTime
+          result <- retryWrapper.withRetry(
+            operation = operation,
+            config = config.retry,
+            classifier = BillsApiErrorClassifier,
+            errorFactory = (msg, cause) =>
+              BillFetchFailed(
+                endpoint = sanitizedUri,
+                statusCode = 0,
+                detail = msg,
+                cause = cause,
+              ),
+            correlationId = UUID.randomUUID(),
+          )
+          end <- temporal.realTime
+          _ <- logger.info(
+            apiLogCtx,
+            s"Fetched bill list page: offset=${params.offset.toString}, " +
+              s"items=${result.items.size.toString}, totalCount=${result.totalCount.toString}, " +
+              s"elapsed=${(end - start).toMillis.toString}ms",
+          )
+        } yield result
+
+      instrumentedOperation
     }
 
   def fetchDetail(detailUrl: String): F[BillDetailDTO] =
     parseUri(detailUrl).flatMap { baseUri =>
-      val uri = baseUri.withQueryParam("api_key", config.apiKey).withQueryParam("format", "json")
+      val uri          = baseUri.withQueryParam("api_key", config.apiKey).withQueryParam("format", "json")
+      val sanitizedUri = uri.removeQueryParam("api_key").renderString
 
       val request = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
       val operation = client.run(request).use { response =>
@@ -116,23 +143,42 @@ class BillsApiClient[F[_]](
         }
       }
 
-      retryWrapper.withRetry(
-        operation = operation,
-        config = config.retry,
-        classifier = BillsApiErrorClassifier,
-        errorFactory = (msg, cause) =>
-          BillFetchFailed(
-            endpoint = uri.removeQueryParam("api_key").renderString,
-            statusCode = 0,
-            detail = msg,
-            cause = cause,
-          ),
-        correlationId = UUID.randomUUID(),
-      )
+      for {
+        _     <- logger.info(apiLogCtx, s"Fetching bill detail: $sanitizedUri")
+        start <- temporal.realTime
+        result <- retryWrapper.withRetry(
+          operation = operation,
+          config = config.retry,
+          classifier = BillsApiErrorClassifier,
+          errorFactory = (msg, cause) =>
+            BillFetchFailed(
+              endpoint = sanitizedUri,
+              statusCode = 0,
+              detail = msg,
+              cause = cause,
+            ),
+          correlationId = UUID.randomUUID(),
+        )
+        end <- temporal.realTime
+        _ <- logger.info(
+          apiLogCtx,
+          s"Fetched bill detail: $sanitizedUri (elapsed=${(end - start).toMillis.toString}ms)",
+        )
+      } yield result
     }
 
   def fetchCosponsors(cosponsorUrl: String): F[List[CoSponsorDTO]] =
-    fetchCosponsorsPage(cosponsorUrl, List.empty, config.pageSize)
+    for {
+      _      <- logger.info(apiLogCtx, s"Fetching cosponsors: $cosponsorUrl")
+      start  <- temporal.realTime
+      result <- fetchCosponsorsPage(cosponsorUrl, List.empty, config.pageSize)
+      end    <- temporal.realTime
+      _ <- logger.info(
+        apiLogCtx,
+        s"Fetched ${result.size.toString} cosponsors total: $cosponsorUrl " +
+          s"(elapsed=${(end - start).toMillis.toString}ms)",
+      )
+    } yield result
 
   private def fetchCosponsorsPage(
     url: String,
@@ -144,6 +190,7 @@ class BillsApiClient[F[_]](
         .withQueryParam("api_key", config.apiKey)
         .withQueryParam("format", "json")
         .withQueryParam("limit", pageSize)
+      val sanitizedUri = uri.removeQueryParam("api_key").renderString
 
       val request = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
       val operation = client.run(request).use { response =>
@@ -154,31 +201,33 @@ class BillsApiClient[F[_]](
         }
       }
 
-      retryWrapper
-        .withRetry(
+      val pageStart = temporal.flatMap(logger.debug(apiLogCtx, s"Fetching cosponsor page: $sanitizedUri")) { _ =>
+        retryWrapper.withRetry(
           operation = operation,
           config = config.retry,
           classifier = BillsApiErrorClassifier,
           errorFactory = (msg, cause) =>
             BillFetchFailed(
-              endpoint = uri.removeQueryParam("api_key").renderString,
+              endpoint = sanitizedUri,
               statusCode = 0,
               detail = msg,
               cause = cause,
             ),
           correlationId = UUID.randomUUID(),
         )
-        .flatMap { listResponse =>
-          val all     = accumulated ++ listResponse.cosponsors
-          val nextUrl = listResponse.pagination.flatMap(_.url)
-          if (listResponse.cosponsors.size < pageSize || nextUrl.isEmpty) {
-            temporal.pure(all)
-          } else {
-            temporal.flatMap(temporal.sleep(pageDelay)) { _ =>
-              fetchCosponsorsPage(nextUrl.getOrElse(url), all, pageSize)
-            }
+      }
+
+      pageStart.flatMap { listResponse =>
+        val all     = accumulated ++ listResponse.cosponsors
+        val nextUrl = listResponse.pagination.flatMap(_.url)
+        if (listResponse.cosponsors.size < pageSize || nextUrl.isEmpty) {
+          temporal.pure(all)
+        } else {
+          temporal.flatMap(temporal.sleep(pageDelay)) { _ =>
+            fetchCosponsorsPage(nextUrl.getOrElse(url), all, pageSize)
           }
         }
+      }
     }
 
 }
@@ -189,8 +238,9 @@ object BillsApiClient {
     config: CongressGovClientConfig,
     client: Client[F],
     retryWrapper: RetryWrapper[F],
+    logger: PipelineLogger[F],
   ): BillsApiClient[F] =
-    new BillsApiClient[F](config, client, retryWrapper, Temporal[F])
+    new BillsApiClient[F](config, client, retryWrapper, logger, Temporal[F])
 
 }
 

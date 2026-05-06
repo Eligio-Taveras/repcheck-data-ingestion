@@ -7,7 +7,17 @@ trait BillRepository[F[_]] {
   def upsert(bill: BillDO): F[Long]
   def findByBillId(billId: String): F[Option[BillDO]]
   def findByBillIds(billIds: List[String]): F[List[BillDO]]
-  def findBillsNeedingTextCheck(): F[List[BillDO]]
+
+  /**
+   * Return bills whose stored `text_version_type` differs from `expected_text_version_code`, filtered to `congresses`
+   * if non-empty (empty list = no congress filter).
+   *
+   * The congress filter exists because pre-103 bills get `expected_text_version_code` populated by the metadata
+   * pipeline's chamber-floor write, but Congress.gov has no text body for them — so including them in the sweep just
+   * burns API rate budget on guaranteed misses. Operators set the list (default 103-119) via
+   * `BILL_TEXT_CHECK_CONGRESSES` env or `pipeline.congresses` HOCON.
+   */
+  def findBillsNeedingTextCheck(congresses: List[Int]): F[List[BillDO]]
 
   def updateTextFields(
     billId: String,

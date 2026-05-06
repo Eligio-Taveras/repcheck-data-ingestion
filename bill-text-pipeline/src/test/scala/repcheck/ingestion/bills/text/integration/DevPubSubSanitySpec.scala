@@ -33,7 +33,7 @@ import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillTextVersionRepository}
 import repcheck.ingestion.bills.common.testing.{E2ETest, TransactorFixture}
 import repcheck.ingestion.bills.text.download.BillTextDownloader
-import repcheck.ingestion.bills.text.embedding.{CrossBillEmbedder, EmbeddingConfig, OllamaEmbeddingService}
+import repcheck.ingestion.bills.text.embedding.CrossBillEmbedder
 import repcheck.ingestion.bills.text.persistence.DoobieRawBillTextRepository
 import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.textcheck.api.BillTextApiClient
@@ -42,6 +42,7 @@ import repcheck.ingestion.bills.textcheck.pipeline.BillTextAvailabilityChecker
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, GooglePubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.ingestion.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
 import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
 import repcheck.shared.models.congress.bill.TextVersionCode
@@ -278,7 +279,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       eventPublisher = eventPublisher,
       retryWrapper = retryWrapper,
       xa = xa,
-      config = BillTextCheckerConfig(parallelism = 1, eventPublishRetry = testRetryConfig),
+      config = BillTextCheckerConfig(parallelism = 1, eventPublishRetry = testRetryConfig, congresses = ""),
       logger = testLogger,
     )
   }
@@ -335,7 +336,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       xa = xa,
       logger = testLogger,
       extractText = (bytes, format) =>
-        repcheck.ingestion.bills.text.extraction.BillTextExtractor.extractStream[IO](bytes, format),
+        repcheck.ingestion.text.extraction.TextExtractor.extractStream[IO](bytes, format),
     )
   }
 

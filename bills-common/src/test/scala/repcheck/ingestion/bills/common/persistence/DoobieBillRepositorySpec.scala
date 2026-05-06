@@ -177,7 +177,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     // hasn't been touched by either bill-metadata-pipeline (introduced floor) or bill-summary-pipeline
     // (advancing writer) yet — fail-safe: don't sweep it.
     val _     = repo.upsert(makeBill(number = "1")).transact(xa).unsafeRunSync()
-    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck(List.empty).transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should not contain "118-HR-1"
   }
 
@@ -187,7 +187,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     val _ = repo.upsert(makeBill(number = "10")).transact(xa).unsafeRunSync()
     val _ = repo.updateExpectedVersion("118-HR-10", TextVersionCode.IH).transact(xa).unsafeRunSync()
 
-    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck(List.empty).transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should contain("118-HR-10")
   }
 
@@ -205,7 +205,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
       .transact(xa)
       .unsafeRunSync()
 
-    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck(List.empty).transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should not contain "118-HR-20"
   }
 
@@ -224,7 +224,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
       .transact(xa)
       .unsafeRunSync()
 
-    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck(List.empty).transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should contain("118-HR-30")
   }
 
@@ -241,7 +241,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
       .transact(xa)
       .unsafeRunSync()
 
-    val found = repo.findBillsNeedingTextCheck().transact(xa).unsafeRunSync()
+    val found = repo.findBillsNeedingTextCheck(List.empty).transact(xa).unsafeRunSync()
     found.map(_.naturalKey) should not contain "118-HR-40"
   }
 
@@ -350,6 +350,43 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
         val _ = bill.number shouldBe "30"
         // Placeholder title is intentionally an empty string — bills-pipeline overwrites it on enrichment.
         bill.title shouldBe ""
+      case None => fail("Expected placeholder bill to be findable via findByBillId")
+    }
+  }
+
+  // CONTRACT: a row inserted via upsertPlaceholder must leave `update_date` NULL — that's the field
+  // the metadata pipeline's `incoming.updateDate > stored.updateDate` comparison reads, and any non-
+  // NULL value here would short-circuit a future enrichment sweep into the "Bill unchanged" branch
+  // (because the writer's wall-clock NOW() is by definition newer than any real API updateDate).
+  // This test was added when the historical bug — `INSERT ... VALUES (..., '', NOW())` — was fixed:
+  // 161,721 placeholder rows in the local dev DB had `update_date = April 26-30, 2026` (writer
+  // insertion time), and every metadata sweep skipped them silently. The fix is to leave
+  // `update_date` (and `update_date_including_text`) entirely out of the INSERT so the column takes
+  // its NULL default, matching the canonical `HasPlaceholder[BillDO].placeholder()` shape.
+  it should "leave update_date and update_date_including_text NULL on the inserted row" taggedAs DockerRequired in {
+    val _ = repo.upsertPlaceholder("119-HR-31").transact(xa).unsafeRunSync()
+
+    val stored = repo.findByBillId("119-HR-31").transact(xa).unsafeRunSync()
+    stored match {
+      case Some(bill) =>
+        val _ = bill.updateDate shouldBe None
+        bill.updateDateIncludingText shouldBe None
+      case None => fail("Expected placeholder bill to be findable via findByBillId")
+    }
+  }
+
+  // The placeholder INSERT must produce a row that the canonical detector
+  // `BillPlaceholder.isPlaceholder` recognizes. Since both this writer and the detector are pinned
+  // (via `BillPlaceholderSpec`'s invariant-lock test) to the same `HasPlaceholder[BillDO]
+  // .placeholder(...)` factory shape, an inadvertent override here (e.g., reintroducing a NOW()
+  // stub on update_date, or accidentally populating an Option detail field) would fail this test.
+  it should "produce a row matching BillPlaceholder.isPlaceholder" taggedAs DockerRequired in {
+    val _ = repo.upsertPlaceholder("119-HR-32").transact(xa).unsafeRunSync()
+
+    val stored = repo.findByBillId("119-HR-32").transact(xa).unsafeRunSync()
+    stored match {
+      case Some(bill) =>
+        repcheck.ingestion.bills.common.BillPlaceholder.isPlaceholder(bill) shouldBe true
       case None => fail("Expected placeholder bill to be findable via findByBillId")
     }
   }

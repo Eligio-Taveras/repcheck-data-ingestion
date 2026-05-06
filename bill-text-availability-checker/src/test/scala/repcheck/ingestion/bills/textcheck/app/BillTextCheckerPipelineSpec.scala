@@ -65,6 +65,7 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
         maxBackoffMs = 10,
         backoffMultiplier = 1.0,
       ),
+      congresses = "",
     ),
     eventPublisher = EventPublisherConfig(
       projectId = "repcheck-test",

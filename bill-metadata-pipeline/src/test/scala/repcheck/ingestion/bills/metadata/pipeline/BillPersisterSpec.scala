@@ -62,13 +62,22 @@ class BillPersisterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     latestTextVersionId = None,
   )
 
+  import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+
+  private val noOpLogger: PipelineLogger[IO] = new PipelineLogger[IO] {
+    def info(c: LogContext, m: String): IO[Unit]                        = IO.unit
+    def warn(c: LogContext, m: String): IO[Unit]                        = IO.unit
+    def error(c: LogContext, m: String, t: Option[Throwable]): IO[Unit] = IO.unit
+    def debug(c: LogContext, m: String): IO[Unit]                       = IO.unit
+  }
+
   private def makePersister(
     billRepo: BillRepository[ConnectionIO],
     cosponsorRepo: BillCosponsorRepository[ConnectionIO],
     subjectRepo: BillSubjectRepository[ConnectionIO],
     historyArchiver: BillHistoryArchiver[ConnectionIO],
   ): BillPersister[IO] =
-    new BillPersister[IO](billRepo, cosponsorRepo, subjectRepo, historyArchiver, testXa)
+    new BillPersister[IO](billRepo, cosponsorRepo, subjectRepo, historyArchiver, testXa, noOpLogger)
 
   "persistBill" should "archive history before upsert for existing bills" in {
     val billRepo        = mock[BillRepository[ConnectionIO]]

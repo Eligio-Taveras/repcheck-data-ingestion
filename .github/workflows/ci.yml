@@ -60,6 +60,14 @@ jobs:
       # filter to include DockerRequired.
       # ----------------------------------------------------------------------
 
+      - name: Run commonTesting non-Docker tests
+        # commonTesting holds the shared DockerPostgres fixture + a unit suite
+        # for its pure helpers (resolveDockerBin, parseHostPort). Without this
+        # step those helpers' coverage is invisible to scoverage and patch
+        # coverage flags the file even though the helpers ARE tested.
+        timeout-minutes: 5
+        run: sbt coverage 'commonTesting/test'
+
       - name: Run billsCommon non-Docker tests
         timeout-minutes: 7
         run: sbt coverage 'billsCommon/test'
@@ -67,6 +75,10 @@ jobs:
       - name: Run membersCommon non-Docker tests
         timeout-minutes: 7
         run: sbt coverage 'membersCommon/test'
+
+      - name: Run textExtractionCommon non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'textExtractionCommon/test'
 
       - name: Run billMetadataPipeline non-Docker tests
         timeout-minutes: 7
@@ -91,6 +103,22 @@ jobs:
       - name: Run votesPipeline non-Docker tests
         timeout-minutes: 7
         run: sbt coverage 'votesPipeline/test'
+
+      - name: Run commonTesting Docker tests
+        # Drives DockerPostgres.resource through its full IO lifecycle once via
+        # DockerPostgresLifecycleSpec so commonTesting's own scoverage.xml records
+        # hits on the acquire/release/startContainer/waitForReady/applyMigrations/
+        # connectWithRetry paths. Without this, those paths are only hit by
+        # DockerRequired specs in other subprojects (billsCommon, membersCommon,
+        # pipelines), where the coverage data lands in the *consumer's* scoverage
+        # output — codecov merges per-file across uploads but each subproject's
+        # report only lists files compiled by that subproject, so commonTesting's
+        # DockerPostgres.scala patch coverage stalled at ~85% (helpers only).
+        timeout-minutes: 10
+        run: |
+          sbt coverage \
+            'set commonTesting / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
+            'commonTesting/test'
 
       - name: Run billsCommon Docker tests
         timeout-minutes: 10
@@ -158,9 +186,11 @@ jobs:
             bill-metadata-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-text-availability-checker/target/scala-3.7.3/scoverage-report/scoverage.xml
             bill-text-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
+            common-testing/target/scala-3.7.3/scoverage-report/scoverage.xml
             lis-mapping-refresher/target/scala-3.7.3/scoverage-report/scoverage.xml
             member-profile-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
             members-common/target/scala-3.7.3/scoverage-report/scoverage.xml
+            text-extraction-common/target/scala-3.7.3/scoverage-report/scoverage.xml
             votes-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
 
       - name: Enforce per-file coverage threshold
