@@ -1,0 +1,15 @@
+{
+  "amendments": [
+    {
+      "congress": 117,
+      "number": "100",
+      "type": "SAMDT",
+      "description": "Test amendment",
+      "updateDate": "2024-06-01T12:00:00Z",
+      "url": "https://api.congress.gov/v3/amendment/117/samdt/100"
+    }
+  ],
+  "pagination": {
+    "count": 1
+  }
+}

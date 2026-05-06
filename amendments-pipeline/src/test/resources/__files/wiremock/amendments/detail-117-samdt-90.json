@@ -1,0 +1,37 @@
+{
+  "amendment": {
+    "congress": 117,
+    "number": "90",
+    "type": "SAMDT",
+    "amendedBill": {
+      "congress": 117,
+      "number": "3684",
+      "originChamber": "House",
+      "originChamberCode": "H",
+      "title": "Infrastructure Investment and Jobs Act",
+      "type": "HR",
+      "url": "https://api.congress.gov/v3/bill/117/hr/3684"
+    },
+    "chamber": "Senate",
+    "description": "Parent amendment",
+    "purpose": "To strike",
+    "sponsors": [
+      {
+        "bioguideId": "C000174",
+        "firstName": "Tom",
+        "lastName": "Carper",
+        "fullName": "Sen. Carper, Tom [D-DE]",
+        "party": "D",
+        "state": "DE"
+      }
+    ],
+    "submittedDate": "2021-07-30",
+    "proposedDate": "2021-07-31",
+    "latestAction": {
+      "actionDate": "2024-05-30",
+      "text": "Amendment SA 90 agreed to in Senate by Voice Vote.",
+      "actionTime": "10:00:00"
+    },
+    "updateDate": "2024-05-30T10:00:00Z"
+  }
+}
