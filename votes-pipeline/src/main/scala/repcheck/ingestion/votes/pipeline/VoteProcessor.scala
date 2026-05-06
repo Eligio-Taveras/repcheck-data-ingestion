@@ -7,14 +7,21 @@ import cats.syntax.all._
 
 import fs2.Stream
 
+import doobie.implicits._
+import doobie.util.transactor.Transactor
+
+import repcheck.ingestion.amendments.persistence.AmendmentRepository
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.api.HouseVotesApiClient
 import repcheck.ingestion.votes.config.{HouseVotesConfig, SenateVoteXmlConfig}
 import repcheck.ingestion.votes.lis.LisResolver
+import repcheck.ingestion.votes.metrics.AmendmentPlaceholderSkipCounter
 import repcheck.ingestion.votes.xml.{SenateVoteIndexEntry, SenateVoteXmlClient}
+import repcheck.pipeline.models.constants.Constants
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.dos.results.VoteConversionResult
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
+import repcheck.shared.models.congress.dto.vote.VoteMembersDTO
 
 /**
  * End-to-end vote processor: fetches House + Senate roll-call data, converts it, reconciles members, detects what
@@ -64,6 +71,9 @@ class VoteProcessor[F[_]: Async](
   billLookup: BillLookup[F],
   memberLookup: MemberLookup[F],
   eventEmitter: VoteEventEmitter[F],
+  amendmentRepo: AmendmentRepository[doobie.ConnectionIO],
+  xa: Transactor[F],
+  skipCounter: AmendmentPlaceholderSkipCounter,
   findStoredVote: String => F[Option[VoteDO]],
   houseConfig: HouseVotesConfig,
   senateConfig: SenateVoteXmlConfig,
@@ -184,16 +194,83 @@ class VoteProcessor[F[_]: Async](
                 "houseRollCallVoteMemberVotes array) — skipping",
             )
             .as(ProcessingResult.Skipped(naturalKey, "no member-vote data available from API"))
-        case Some(dto) =>
+        case Some(rawDto) =>
           for {
-            conversion <- houseConverter.convert(dto, billLookup.forContext(logCtx), logCtx)
+            // §7.4 House dispatch: amendment-typed `legislationType` (HAMDT/SAMDT/SUAMDT) routes through
+            // amendmentRepo.upsertPlaceholder instead of bills-pipeline. The DTO is rewritten to clear the
+            // amendment-typed legislationType (shared-models `parseLegislationType` only knows BillType, so
+            // leaving HAMDT in place would fail conversion). We retain `legislationNumber` so the vote row
+            // still records which amendment was voted on.
+            adjustedDto <- handleHouseAmendmentDispatch(rawDto, naturalKey, logCtx)
+            conversion  <- houseConverter.convert(adjustedDto, billLookup.forContext(logCtx), logCtx)
             // House arm: resolve each bioguide to members.id (placeholder + lookup).
             memberMap <- memberLookup.resolveAll(conversion.positions, logCtx)
             buildPositions = (voteId: Long) => VotePositionBuilders.house(voteId, conversion.positions, memberMap)
-            result <- processVote(conversion, buildPositions, VoteNaturalKeys.houseBill(dto), correlationId, logCtx)
+            result <- processVote(
+              conversion,
+              buildPositions,
+              VoteNaturalKeys.houseBill(adjustedDto),
+              correlationId,
+              logCtx,
+            )
           } yield result
       }
   }
+
+  /**
+   * House-side amendment dispatch (§7.4). If `dto.legislationType` parses to an [[AmendmentType]]:
+   *   - For congress >= 102: upsert an amendment placeholder via [[AmendmentRepository.upsertPlaceholder]] using the
+   *     `{congress}-{TYPE}-{number}` natural key. Errors are logged + raised so the per-vote `handleErrorWith` in
+   *     `processHouseVotes` records a Failed.
+   *   - For congress < 102 (pre-amendments-pipeline range): increment the pre-102 skip counter, log INFO, no repository
+   *     write. The vote itself still persists below.
+   *
+   * Returns a copy of the DTO with `legislationType = None` so the shared-models `parseLegislationType` doesn't fail
+   * conversion. `legislationNumber` is retained — the vote row records which amendment number was voted on, just
+   * without the now-absent `BillType` enum value (until shared-models bumps to a polymorphic type).
+   *
+   * Bill-typed and missing `legislationType`s pass through untouched.
+   */
+  private[pipeline] def handleHouseAmendmentDispatch(
+    dto: VoteMembersDTO,
+    voteNaturalKey: String,
+    logCtx: LogContext,
+  ): F[VoteMembersDTO] =
+    AmendmentLegislationTypes.parseAmendmentType(dto.legislationType) match {
+      case None => Async[F].pure(dto)
+      case Some(amendmentType) =>
+        dto.legislationNumber match {
+          case None =>
+            // Congress.gov contract is that legislationType + legislationNumber are populated together.
+            // If number is missing, log + persist without amendment linkage rather than raising.
+            logger
+              .warn(
+                logCtx,
+                s"House vote $voteNaturalKey has legislationType '${amendmentType.toString}' but no " +
+                  "legislationNumber — persisting without amendment placeholder",
+              )
+              .as(dto.copy(legislationType = None))
+          case Some(number) =>
+            val amendmentNK = AmendmentLegislationTypes.buildAmendmentNaturalKey(dto.congress, amendmentType, number)
+            val placeholderEffect: F[Unit] =
+              if (dto.congress < Constants.MinAmendmentCongress) {
+                skipCounter.incPre102Skip[F] *>
+                  logger.info(
+                    logCtx,
+                    s"Skipping pre-102 amendment placeholder for $amendmentNK (vote $voteNaturalKey)",
+                  )
+              } else {
+                amendmentRepo.upsertPlaceholder(amendmentNK).transact(xa).handleErrorWith { err =>
+                  logger.error(
+                    logCtx,
+                    s"Amendment placeholder failed for $amendmentNK (vote $voteNaturalKey)",
+                    Some(err),
+                  ) *> Async[F].raiseError[Unit](err)
+                }
+              }
+            placeholderEffect.as(dto.copy(legislationType = None))
+        }
+    }
 
   private[pipeline] def processSenateVote(
     entry: SenateVoteIndexEntry,
@@ -210,11 +287,11 @@ class VoteProcessor[F[_]: Async](
       entityId = Some(naturalKey),
     )
     for {
-      dto        <- senateClient.fetchVote(congress, session, entry.voteNumber)
-      lisMap     <- lisResolver.resolve(dto)
-      conversion <- senateConverter.convert(dto, billLookup.forContext(logCtx), logCtx)
+      envelope   <- senateClient.fetchVote(congress, session, entry.voteNumber)
+      lisMap     <- lisResolver.resolve(envelope.dto)
+      conversion <- senateConverter.convert(envelope, billLookup.forContext(logCtx), logCtx)
       buildPositions = (voteId: Long) => VotePositionBuilders.senate(voteId, conversion.positions, lisMap)
-      result <- processVote(conversion, buildPositions, VoteNaturalKeys.senateBill(dto), correlationId, logCtx)
+      result <- processVote(conversion, buildPositions, VoteNaturalKeys.senateBill(envelope.dto), correlationId, logCtx)
     } yield result
   }
 

@@ -578,4 +578,76 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
     Option(getClass.getResourceAsStream("/senate-xml/vote_malformed.xml")).map(_.available()).getOrElse(0) should be > 0
   }
 
+  // ------------------------------------------------------------------
+  // §7.4 — decodeVoteEnvelope: amendment-typed top-level fields
+  // ------------------------------------------------------------------
+
+  /** Build a `<roll_call_vote>` element with arbitrary extra top-level XML appended. */
+  private def voteElemWithExtra(extraTopLevel: String, document: String = sampleDocumentXml): Elem =
+    XML.loadString(
+      s"""<?xml version="1.0" encoding="UTF-8"?>
+         |<roll_call_vote>
+         |  <congress>117</congress>
+         |  <session>1</session>
+         |  <vote_number>312</vote_number>
+         |  <question>On the Amendment</question>
+         |  <vote_date>2025-01-25T11:30:00</vote_date>
+         |  <vote_result>Amendment Agreed To</vote_result>
+         |  $document
+         |  <members>$sampleMemberXml</members>
+         |  $extraTopLevel
+         |</roll_call_vote>""".stripMargin
+    )
+
+  "decodeVoteEnvelope" should "extract amendmentNumber, amendmentToDocumentNumber, and amendmentToDocumentShortTitle when present" in {
+    val extra =
+      """<amendment_number>S.Amdt. 2137</amendment_number>
+        |<amendment_to_document_number>H.R. 3684</amendment_to_document_number>
+        |<amendment_to_document_short_title>INVEST in America Act</amendment_to_document_short_title>""".stripMargin
+
+    val result = SenateVoteXmlDecoder.decodeVoteEnvelope(voteElemWithExtra(extra))
+
+    val _   = result.isRight shouldBe true
+    val env = result.toOption.getOrElse(fail("expected Right"))
+    val _   = env.amendmentFields.amendmentNumber shouldBe Some("S.Amdt. 2137")
+    val _   = env.amendmentFields.amendmentToDocumentNumber shouldBe Some("H.R. 3684")
+    env.amendmentFields.amendmentToDocumentShortTitle shouldBe Some("INVEST in America Act")
+  }
+
+  it should "return None for amendment fields when they're missing entirely (bill-vote XML)" in {
+    val result = SenateVoteXmlDecoder.decodeVoteEnvelope(voteElemWithExtra(""))
+
+    val _   = result.isRight shouldBe true
+    val env = result.toOption.getOrElse(fail("expected Right"))
+    val _   = env.amendmentFields.amendmentNumber shouldBe None
+    val _   = env.amendmentFields.amendmentToDocumentNumber shouldBe None
+    env.amendmentFields.amendmentToDocumentShortTitle shouldBe None
+  }
+
+  it should "return None for amendment fields when they're self-closing empty elements" in {
+    val extra =
+      """<amendment_number/>
+        |<amendment_to_document_number/>
+        |<amendment_to_document_short_title/>""".stripMargin
+
+    val result = SenateVoteXmlDecoder.decodeVoteEnvelope(voteElemWithExtra(extra))
+
+    val _   = result.isRight shouldBe true
+    val env = result.toOption.getOrElse(fail("expected Right"))
+    val _   = env.amendmentFields.amendmentNumber shouldBe None
+    val _   = env.amendmentFields.amendmentToDocumentNumber shouldBe None
+    env.amendmentFields.amendmentToDocumentShortTitle shouldBe None
+  }
+
+  it should "decodeVote (legacy) returns the same SenateVoteXmlDTO as decodeVoteEnvelope.dto" in {
+    val extra =
+      """<amendment_number>S.Amdt. 2137</amendment_number>""".stripMargin
+    val elem = voteElemWithExtra(extra)
+
+    val viaDecodeVote = SenateVoteXmlDecoder.decodeVote(elem).toOption.getOrElse(fail("expected Right"))
+    val viaEnvelope   = SenateVoteXmlDecoder.decodeVoteEnvelope(elem).toOption.getOrElse(fail("expected Right"))
+
+    viaDecodeVote shouldBe viaEnvelope.dto
+  }
+
 }

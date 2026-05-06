@@ -5,11 +5,13 @@ import cats.effect.{Async, Temporal}
 import doobie.implicits._
 import doobie.util.transactor.Transactor
 
+import repcheck.ingestion.amendments.persistence.DoobieAmendmentRepository
 import repcheck.ingestion.bills.common.persistence.DoobieBillRepository
 import repcheck.ingestion.common.logging.PipelineLogger
 import repcheck.ingestion.common.placeholders.{DefaultPlaceholderCreator, DoobieEntityRepository}
 import repcheck.ingestion.votes.api.HouseVotesApiClient
 import repcheck.ingestion.votes.lis.LisResolver
+import repcheck.ingestion.votes.metrics.AmendmentPlaceholderSkipCounter
 import repcheck.ingestion.votes.pipeline.{
   BillLookup,
   HouseVoteConverter,
@@ -73,6 +75,7 @@ private[votes] object VotesProcessorFactory {
     val memberRepo    = new DoobieMemberRepository
     val lisMemberRepo = new DoobieLisMemberRepository
     val billRepo      = new DoobieBillRepository
+    val amendmentRepo = new DoobieAmendmentRepository
 
     // Placeholder machinery. Members use the generic DoobieEntityRepository + MemberInsertSql; bill placeholders are
     // handled directly by BillRepository.upsertPlaceholder (see bills-common) — see BillLookup below.
@@ -114,8 +117,16 @@ private[votes] object VotesProcessorFactory {
       xa = resources.xa,
       logger = logger,
     )
-    val houseConverter  = new HouseVoteConverter[F](logger)
-    val senateConverter = new SenateVoteConverter[F](logger, config.pipeline.senate.baseUrl)
+    val skipCounter    = new AmendmentPlaceholderSkipCounter
+    val houseConverter = new HouseVoteConverter[F](logger)
+    val senateConverter = new SenateVoteConverter[F](
+      logger = logger,
+      senateBaseUrl = config.pipeline.senate.baseUrl,
+      amendmentRepo = amendmentRepo,
+      billRepo = billRepo,
+      xa = resources.xa,
+      skipCounter = skipCounter,
+    )
     val persister = new VotePersister[F](
       voteRepo = voteRepo,
       positionRepo = positionRepo,
@@ -147,6 +158,9 @@ private[votes] object VotesProcessorFactory {
       billLookup = billLookup,
       memberLookup = memberLookup,
       eventEmitter = eventEmitter,
+      amendmentRepo = amendmentRepo,
+      xa = resources.xa,
+      skipCounter = skipCounter,
       findStoredVote = findStoredVote,
       houseConfig = config.pipeline.house,
       senateConfig = config.pipeline.senate,
