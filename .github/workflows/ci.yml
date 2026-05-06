@@ -104,6 +104,10 @@ jobs:
         timeout-minutes: 7
         run: sbt coverage 'votesPipeline/test'
 
+      - name: Run amendmentsPipeline non-Docker tests
+        timeout-minutes: 7
+        run: sbt coverage 'amendmentsPipeline/test'
+
       - name: Run commonTesting Docker tests
         # Drives DockerPostgres.resource through its full IO lifecycle once via
         # DockerPostgresLifecycleSpec so commonTesting's own scoverage.xml records
@@ -172,6 +176,13 @@ jobs:
             'set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
             'votesPipeline/test'
 
+      - name: Run amendmentsPipeline Docker tests
+        timeout-minutes: 10
+        run: |
+          sbt coverage \
+            'set amendmentsPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, "-n", "DockerRequired"), Tests.Argument(TestFrameworks.ScalaTest, "-oD"))' \
+            'amendmentsPipeline/test'
+
       - name: Generate combined coverage reports
         timeout-minutes: 10
         run: sbt coverageReport
@@ -192,6 +203,7 @@ jobs:
             members-common/target/scala-3.7.3/scoverage-report/scoverage.xml
             text-extraction-common/target/scala-3.7.3/scoverage-report/scoverage.xml
             votes-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
+            amendments-pipeline/target/scala-3.7.3/scoverage-report/scoverage.xml
 
       - name: Enforce per-file coverage threshold
         # Parses every subproject's scoverage.xml and fails if any instrumented file is below

@@ -323,6 +323,25 @@ lazy val votesPipeline = (project in file("votes-pipeline"))
     assembly / assemblyJarName := "votes-pipeline.jar",
   )
 
+// `amendments-pipeline` — Component 7. Phase 2 (in flight): API client (§7.1) + repository
+// (§7.2). Phase 3 will add the processor/IOApp wiring (§7.3). The subproject definition is
+// shared between §7.1 and §7.2 — both PRs add it; whichever lands second resolves the trivial
+// conflict at merge time.
+lazy val amendmentsPipeline = (project in file("amendments-pipeline"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(membersCommon % "compile->compile;test->test")
+  .dependsOn(billsCommon % "compile->compile;test->test")
+  .settings(pipelineSettings)
+  .settings(
+    name := "amendments-pipeline",
+    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
+      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
+    // Shared SharedDockerPostgres singleton + per-suite table truncation make intra-subproject
+    // parallel execution unsafe; cross-subproject parallelism (configurable via
+    // `-Dsbt.testConcurrency=N`, default 2) still provides the speedup.
+    Test / parallelExecution := false,
+  )
+
 // Test-only subproject. Houses the full-stack docker-compose E2E wiring test:
 // brings up docker-compose.e2e.yml via scala.sys.process, runs every pipeline
 // against canned fixtures, then asserts on AlloyDB + Pub/Sub emulator state
@@ -384,7 +403,10 @@ addCommandAlias(
     "; set votesPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
     "; set billSummaryPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
     "; billSummaryPipeline / test" +
-    "; set billSummaryPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
+    "; set billSummaryPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))" +
+    "; set amendmentsPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-n\", \"DockerRequired\"))" +
+    "; amendmentsPipeline / test" +
+    "; set amendmentsPipeline / Test / testOptions := Seq(Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"DockerRequired\"), Tests.Argument(TestFrameworks.ScalaTest, \"-l\", \"com.repcheck.tags.E2ETest\"))",
 )
 
 // `dockerTestParallel` — experimental. Flips every DockerRequired-capable subproject's test
