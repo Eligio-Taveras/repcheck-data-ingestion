@@ -16,7 +16,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
+import repcheck.shared.models.congress.common.{BillType, Chamber, LegislationKind, Party, UsState}
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
 
@@ -84,7 +84,9 @@ class VoteChangeDetectorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       result = Some("Passed"),
       voteDate = Some(LocalDate.parse("2024-05-30")),
       legislationNumber = Some("1234"),
-      legislationType = Some(BillType.HR),
+      legislationType = Some(LegislationKind.BILL),
+      billType = Some(BillType.HR),
+      amendmentType = None,
       legislationUrl = Some("https://congress.gov/bill/118/hr/1234"),
       sourceDataUrl = Some("https://api.congress.gov/v3/house-vote/119/1/42"),
       updateDate = updateDate,

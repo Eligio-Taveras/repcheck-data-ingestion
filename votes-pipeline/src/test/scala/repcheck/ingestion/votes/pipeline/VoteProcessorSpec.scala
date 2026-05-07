@@ -18,7 +18,7 @@ import repcheck.ingestion.votes.config.{HouseVotesConfig, SenateVoteXmlConfig}
 import repcheck.ingestion.votes.lis.LisResolver
 import repcheck.ingestion.votes.xml.{SenateVoteIndexEntry, SenateVoteXmlClient}
 import repcheck.pipeline.models.metadata.ProcessingResult
-import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
+import repcheck.shared.models.congress.common.{BillType, Chamber, LegislationKind, Party, UsState}
 import repcheck.shared.models.congress.dos.results.VoteConversionResult
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
@@ -65,7 +65,9 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       result = Some("Passed"),
       voteDate = Some(LocalDate.parse("2024-05-30")),
       legislationNumber = Some("1234"),
-      legislationType = Some(BillType.HR),
+      legislationType = Some(LegislationKind.BILL),
+      billType = Some(BillType.HR),
+      amendmentType = None,
       legislationUrl = None,
       sourceDataUrl = None,
       updateDate = updateDate,
@@ -399,6 +401,9 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       documentName = "S. 1071",
       documentTitle = "Title",
       documentShortTitle = None,
+      amendmentNumber = None,
+      amendmentToDocumentNumber = None,
+      amendmentToDocumentShortTitle = None,
     )
     val senDto = repcheck.shared.models.congress.dto.vote.SenateVoteXmlDTO(
       congress = 119,

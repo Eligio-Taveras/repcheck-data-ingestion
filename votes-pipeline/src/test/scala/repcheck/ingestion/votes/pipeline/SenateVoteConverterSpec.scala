@@ -11,7 +11,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.shared.models.congress.common.{BillType, Chamber}
+import repcheck.shared.models.congress.common.{BillType, Chamber, LegislationKind}
 import repcheck.shared.models.congress.dto.vote.{SenateVoteDocumentDTO, SenateVoteMemberXmlDTO, SenateVoteXmlDTO}
 import repcheck.shared.models.congress.vote.VoteType
 
@@ -71,6 +71,9 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
       documentName = s"$docType $docNumber",
       documentTitle = docTitle,
       documentShortTitle = None,
+      amendmentNumber = None,
+      amendmentToDocumentNumber = None,
+      amendmentToDocumentShortTitle = None,
     )
 
   /** A Presidential-Nomination document the converter should classify as billId-unlinked. */
@@ -82,6 +85,9 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
       documentName = "PN11-11",
       documentTitle = "Kristi Noem, of South Dakota, to be Secretary of Homeland Security",
       documentShortTitle = None,
+      amendmentNumber = None,
+      amendmentToDocumentNumber = None,
+      amendmentToDocumentShortTitle = None,
     )
 
   private def senateDto(
@@ -124,7 +130,9 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val _ = result.vote.billId shouldBe Some(500L)
     // billNaturalKey derived from the document for event-emission bookkeeping.
     val _ = result.billNaturalKey shouldBe Some("119-S-1071")
-    val _ = result.vote.legislationType shouldBe Some(BillType.S)
+    val _ = result.vote.legislationType shouldBe Some(LegislationKind.BILL)
+    val _ = result.vote.billType shouldBe Some(BillType.S)
+    val _ = result.vote.amendmentType shouldBe None
     val _ = result.vote.legislationNumber shouldBe Some("1071")
     // legislationUrl derived from document (BillType.S → senate-bill).
     val _ = result.vote.legislationUrl shouldBe Some("https://www.congress.gov/bill/119/senate-bill/1071")
@@ -156,7 +164,9 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val result = converter.convert(dto, stubBillLookup(321L), logCtx).unsafeRunSync()
 
     val _ = result.billNaturalKey shouldBe Some("117-HR-1319")
-    val _ = result.vote.legislationType shouldBe Some(BillType.HR)
+    val _ = result.vote.legislationType shouldBe Some(LegislationKind.BILL)
+    val _ = result.vote.billType shouldBe Some(BillType.HR)
+    val _ = result.vote.amendmentType shouldBe None
     val _ = result.vote.billId shouldBe Some(321L)
     result.vote.legislationUrl shouldBe Some("https://www.congress.gov/bill/117/house-bill/1319")
   }
@@ -175,7 +185,9 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
       case (docType, expectedBillType, expectedSlug) =>
         val dto    = senateDto(document = billDoc(docType = docType, docNumber = "5"))
         val result = converter.convert(dto, stubBillLookup(42L), logCtx).unsafeRunSync()
-        val _      = result.vote.legislationType shouldBe Some(expectedBillType)
+        val _      = result.vote.legislationType shouldBe Some(LegislationKind.BILL)
+        val _      = result.vote.billType shouldBe Some(expectedBillType)
+        val _      = result.vote.amendmentType shouldBe None
         val _      = result.vote.billId shouldBe Some(42L)
         val _      = result.billNaturalKey shouldBe Some(s"119-${expectedBillType.apiValue.toUpperCase}-5")
         result.vote.legislationUrl shouldBe Some(s"https://www.congress.gov/bill/119/$expectedSlug/5")
@@ -216,6 +228,9 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
         documentName = "Treaty Doc. 116-4",
         documentTitle = "Some treaty",
         documentShortTitle = None,
+        amendmentNumber = None,
+        amendmentToDocumentNumber = None,
+        amendmentToDocumentShortTitle = None,
       )
     )
 
@@ -239,6 +254,9 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
         documentName = "Future.New.Type 1",
         documentTitle = "Something new",
         documentShortTitle = None,
+        amendmentNumber = None,
+        amendmentToDocumentNumber = None,
+        amendmentToDocumentShortTitle = None,
       )
     )
 

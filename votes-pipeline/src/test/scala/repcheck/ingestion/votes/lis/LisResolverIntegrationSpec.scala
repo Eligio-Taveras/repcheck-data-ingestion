@@ -64,6 +64,9 @@ class LisResolverIntegrationSpec extends AnyFlatSpec with Matchers with Transact
         documentName = "S. 100",
         documentTitle = "Integration fixture bill title",
         documentShortTitle = None,
+        amendmentNumber = None,
+        amendmentToDocumentNumber = None,
+        amendmentToDocumentShortTitle = None,
       ),
       members = members,
     )
