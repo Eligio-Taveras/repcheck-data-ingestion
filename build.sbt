@@ -55,8 +55,8 @@ lazy val commonSettings = Seq(
   libraryDependencies ++= Seq(
     "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.25",
     "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.28",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.34" % Test,
-    "com.repcheck" %% "repchecksharedmodels"          % "0.1.43",
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.35" % Test,
+    "com.repcheck" %% "repchecksharedmodels"          % "0.1.45",
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
@@ -151,7 +151,7 @@ lazy val commonTesting = (project in file("common-testing"))
     name := "common-testing",
     libraryDependencies ++= catsEffect ++ doobie ++ Seq(
       "org.scalatest" %% "scalatest"                     % "3.2.18",
-      "com.repcheck"  %% "repcheck-db-migrations-runner" % "0.1.34",
+      "com.repcheck"  %% "repcheck-db-migrations-runner" % "0.1.35",
     ),
   )
 
@@ -292,14 +292,13 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
 
 lazy val amendmentsPipeline = (project in file("amendments-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
-  // members-common's test->test config carries SharedTransactorFixture (the AlloyDB Omni harness +
-  // shared `xa` transactor) which the amendments TransactorFixture extends.
-  .dependsOn(billsCommon % "compile->compile;test->test", membersCommon % "compile->compile;test->test")
+  .dependsOn(membersCommon % "compile->compile;test->test")
+  .dependsOn(billsCommon % "compile->compile;test->test")
   .settings(pipelineSettings)
   .settings(
     name := "amendments-pipeline",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
-      ++ catsEffect ++ doobie ++ fs2 ++ logging ++ testDeps,
+      ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
     coverageExcludedFiles                  := ".*AmendmentsPipelineApp",
     Test / parallelExecution               := false,

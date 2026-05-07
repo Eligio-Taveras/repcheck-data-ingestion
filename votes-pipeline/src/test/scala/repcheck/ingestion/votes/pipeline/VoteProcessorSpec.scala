@@ -21,9 +21,9 @@ import repcheck.ingestion.votes.api.HouseVotesApiClient
 import repcheck.ingestion.votes.config.{HouseVotesConfig, SenateVoteXmlConfig}
 import repcheck.ingestion.votes.lis.LisResolver
 import repcheck.ingestion.votes.metrics.AmendmentPlaceholderSkipCounter
-import repcheck.ingestion.votes.xml.{SenateVoteEnvelope, SenateVoteIndexEntry, SenateVoteXmlClient}
+import repcheck.ingestion.votes.xml.{SenateVoteIndexEntry, SenateVoteXmlClient}
 import repcheck.pipeline.models.metadata.ProcessingResult
-import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
+import repcheck.shared.models.congress.common.{BillType, Chamber, LegislationKind, Party, UsState}
 import repcheck.shared.models.congress.dos.results.VoteConversionResult
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
@@ -70,7 +70,9 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       result = Some("Passed"),
       voteDate = Some(LocalDate.parse("2024-05-30")),
       legislationNumber = Some("1234"),
-      legislationType = Some(BillType.HR),
+      legislationType = Some(LegislationKind.BILL),
+      billType = Some(BillType.HR),
+      amendmentType = None,
       legislationUrl = None,
       sourceDataUrl = None,
       updateDate = updateDate,
@@ -421,6 +423,9 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       documentName = "S. 1071",
       documentTitle = "Title",
       documentShortTitle = None,
+      amendmentNumber = None,
+      amendmentToDocumentNumber = None,
+      amendmentToDocumentShortTitle = None,
     )
     val senDto = repcheck.shared.models.congress.dto.vote.SenateVoteXmlDTO(
       congress = 119,
@@ -440,18 +445,15 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       stateAtVote = Some(UsState.NewYork),
     )
 
-    val senEnvelope =
-      SenateVoteEnvelope(senDto, repcheck.ingestion.votes.xml.SenateVoteAmendmentFields.empty)
-
     when(mocks.houseClient.fetchRecentVotes(eqTo(119), any[Int])).thenReturn(IO.pure(List.empty))
     // Session 1 returns the test entry; session 2 returns empty so exactly one Senate vote flows end-to-end.
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(1))).thenReturn(IO.pure(List(entry)))
     when(mocks.senateClient.fetchVoteIndex(eqTo(119), eqTo(2))).thenReturn(IO.pure(List.empty))
-    when(mocks.senateClient.fetchVote(eqTo(119), eqTo(1), eqTo(17))).thenReturn(IO.pure(senEnvelope))
+    when(mocks.senateClient.fetchVote(eqTo(119), eqTo(1), eqTo(17))).thenReturn(IO.pure(senDto))
     when(mocks.lisResolver.resolve(eqTo(senDto))).thenReturn(IO.pure(Map("S428" -> 99L)))
     when(
       mocks.senateConverter.convert(
-        eqTo(senEnvelope),
+        eqTo(senDto),
         any(),
         any[LogContext],
       )
@@ -608,34 +610,32 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       results = None,
     )
 
-  "handleHouseAmendmentDispatch" should "pass through a bill-typed DTO unchanged" in {
+  "handleHouseAmendmentDispatch" should "be a no-op for a bill-typed DTO" in {
     val mocks = mkMocks()
     val dto   = houseDto(legislationType = Some("HR"), legislationNumber = Some("1234"))
 
-    val out = mocks.build.handleHouseAmendmentDispatch(dto, "119-House-1-17", LogContext("r", "s")).unsafeRunSync()
+    mocks.build.handleHouseAmendmentDispatch(dto, "119-House-1-17", LogContext("r", "s")).unsafeRunSync()
 
-    val _ = out shouldBe dto
     val _ = verify(mocks.amendmentRepo, never()).upsertPlaceholder(any[String])
+    succeed
   }
 
-  it should "pass through a DTO with no legislationType unchanged" in {
+  it should "be a no-op for a DTO with no legislationType" in {
     val mocks = mkMocks()
     val dto   = houseDto()
 
-    val out = mocks.build.handleHouseAmendmentDispatch(dto, "119-House-1-17", LogContext("r", "s")).unsafeRunSync()
+    mocks.build.handleHouseAmendmentDispatch(dto, "119-House-1-17", LogContext("r", "s")).unsafeRunSync()
 
-    val _ = out shouldBe dto
     val _ = verify(mocks.amendmentRepo, never()).upsertPlaceholder(any[String])
+    succeed
   }
 
-  it should "call upsertPlaceholder for HAMDT and clear legislationType from the returned DTO" in {
+  it should "call upsertPlaceholder for HAMDT (canonical AMENDMENT triple is set by shared-models toDO downstream)" in {
     val mocks = mkMocks()
     val dto   = houseDto(legislationType = Some("HAMDT"), legislationNumber = Some("42"))
 
-    val out = mocks.build.handleHouseAmendmentDispatch(dto, "119-House-1-17", LogContext("r", "s")).unsafeRunSync()
+    mocks.build.handleHouseAmendmentDispatch(dto, "119-House-1-17", LogContext("r", "s")).unsafeRunSync()
 
-    val _ = out.legislationType shouldBe None
-    val _ = out.legislationNumber shouldBe Some("42")
     verify(mocks.amendmentRepo, times(1)).upsertPlaceholder(eqTo("119-HAMDT-42"))
   }
 
@@ -643,7 +643,7 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     val mocks = mkMocks()
     val dto   = houseDto(legislationType = Some("SAMDT"), legislationNumber = Some("2137"))
 
-    val _ = mocks.build.handleHouseAmendmentDispatch(dto, "119-House-1-17", LogContext("r", "s")).unsafeRunSync()
+    mocks.build.handleHouseAmendmentDispatch(dto, "119-House-1-17", LogContext("r", "s")).unsafeRunSync()
 
     verify(mocks.amendmentRepo, times(1)).upsertPlaceholder(eqTo("119-SAMDT-2137"))
   }
@@ -652,10 +652,8 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     val mocks = mkMocks()
     val dto   = houseDto(congress = 101, legislationType = Some("HAMDT"), legislationNumber = Some("100"))
 
-    val out = mocks.build.handleHouseAmendmentDispatch(dto, "101-House-1-17", LogContext("r", "s")).unsafeRunSync()
+    mocks.build.handleHouseAmendmentDispatch(dto, "101-House-1-17", LogContext("r", "s")).unsafeRunSync()
 
-    val _ = out.legislationType shouldBe None
-    val _ = out.legislationNumber shouldBe Some("100")
     val _ = verify(mocks.amendmentRepo, never()).upsertPlaceholder(any[String])
     mocks.skipCounter.pre102Skips shouldBe 1L
   }
@@ -664,10 +662,10 @@ class VoteProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
     val mocks = mkMocks()
     val dto   = houseDto(legislationType = Some("HAMDT"), legislationNumber = None)
 
-    val out = mocks.build.handleHouseAmendmentDispatch(dto, "119-House-1-17", LogContext("r", "s")).unsafeRunSync()
+    mocks.build.handleHouseAmendmentDispatch(dto, "119-House-1-17", LogContext("r", "s")).unsafeRunSync()
 
-    val _ = out.legislationType shouldBe None
     val _ = verify(mocks.amendmentRepo, never()).upsertPlaceholder(any[String])
+    succeed
   }
 
   it should "log + raise when amendmentRepo.upsertPlaceholder fails (House dispatch)" in {

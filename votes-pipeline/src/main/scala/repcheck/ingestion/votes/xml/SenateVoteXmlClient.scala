@@ -21,6 +21,7 @@ import repcheck.ingestion.votes.errors.{
   SenateVoteXmlHttpError,
 }
 import repcheck.pipeline.models.errors.RetryWrapper
+import repcheck.shared.models.congress.dto.vote.SenateVoteXmlDTO
 
 /**
  * Fetches and decodes Senate roll-call XML from senate.gov.
@@ -78,16 +79,18 @@ class SenateVoteXmlClient[F[_]: Async](
   }
 
   /**
-   * Fetch a single Senate roll-call vote and decode it into a [[SenateVoteEnvelope]] (the shared-models
-   * [[SenateVoteXmlDTO]] plus the votes-pipeline-local [[SenateVoteAmendmentFields]]).
+   * Fetch a single Senate roll-call vote and decode it into a [[SenateVoteXmlDTO]]. Per shared-models 0.1.45 the DTO's
+   * `document` member carries the amendment-vote fields (`amendmentNumber`, `amendmentToDocumentNumber`,
+   * `amendmentToDocumentShortTitle`) directly — populated by the decoder from the top-level `<roll_call_vote>` siblings
+   * for amendment votes, and `None` for bill votes.
    *
    * `voteNumber` must satisfy `1 <= voteNumber < 100000` (senate.gov's 5-digit URL segment). Values outside that range
    * fail fast with [[SenateVoteFetchFailed]] before any HTTP call is made.
    */
-  def fetchVote(congress: Int, session: Int, voteNumber: Int): F[SenateVoteEnvelope] =
+  def fetchVote(congress: Int, session: Int, voteNumber: Int): F[SenateVoteXmlDTO] =
     SenateVoteXmlClient.validateVoteNumber(voteNumber) match {
       case Left(err) =>
-        Async[F].raiseError[SenateVoteEnvelope](
+        Async[F].raiseError[SenateVoteXmlDTO](
           SenateVoteFetchFailed(
             congress = congress,
             session = session,
@@ -102,7 +105,7 @@ class SenateVoteXmlClient[F[_]: Async](
           LogContext(runId = "", stepName = stepName, additional = Map("url" -> url))
         val correlationId = UUID.randomUUID()
 
-        val operation: F[SenateVoteEnvelope] =
+        val operation: F[SenateVoteXmlDTO] =
           logger.info(logCtx, s"Fetching Senate vote XML from $url") *>
             fetchAndDecodeVote(url, congress, session, voteNumber)
 
@@ -169,13 +172,13 @@ class SenateVoteXmlClient[F[_]: Async](
     congress: Int,
     session: Int,
     voteNumber: Int,
-  ): F[SenateVoteEnvelope] =
+  ): F[SenateVoteXmlDTO] =
     fetchElem(url, congress, session, Some(voteNumber))
       .flatMap { elem =>
-        SenateVoteXmlDecoder.decodeVoteEnvelope(elem) match {
-          case Right(env) => Async[F].pure(env)
+        SenateVoteXmlDecoder.decodeVote(elem) match {
+          case Right(dto) => Async[F].pure(dto)
           case Left(pf) =>
-            Async[F].raiseError[SenateVoteEnvelope](
+            Async[F].raiseError[SenateVoteXmlDTO](
               SenateVoteFetchFailed(
                 congress = congress,
                 session = session,

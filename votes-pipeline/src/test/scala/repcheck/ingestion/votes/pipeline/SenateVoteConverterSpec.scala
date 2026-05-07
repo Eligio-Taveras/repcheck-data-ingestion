@@ -17,9 +17,8 @@ import repcheck.ingestion.amendments.persistence.AmendmentRepository
 import repcheck.ingestion.bills.common.persistence.BillRepository
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.metrics.AmendmentPlaceholderSkipCounter
-import repcheck.ingestion.votes.xml.{SenateVoteAmendmentFields, SenateVoteEnvelope}
 import repcheck.shared.models.congress.amendment.{AmendmentType, LegislationRef}
-import repcheck.shared.models.congress.common.{BillType, Chamber}
+import repcheck.shared.models.congress.common.{BillType, Chamber, LegislationKind}
 import repcheck.shared.models.congress.dto.vote.{SenateVoteDocumentDTO, SenateVoteMemberXmlDTO, SenateVoteXmlDTO}
 import repcheck.shared.models.congress.vote.VoteType
 
@@ -85,13 +84,6 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
       skipCounter = skipCounter,
     )
 
-  /** Wrap a DTO + (optionally) amendment fields into an envelope. */
-  private def envelope(
-    dto: SenateVoteXmlDTO,
-    fields: SenateVoteAmendmentFields = SenateVoteAmendmentFields.empty,
-  ): SenateVoteEnvelope =
-    SenateVoteEnvelope(dto, fields)
-
   private def senator(
     lisId: String,
     firstName: String = "Angela",
@@ -123,6 +115,9 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
       documentName = s"$docType $docNumber",
       documentTitle = docTitle,
       documentShortTitle = None,
+      amendmentNumber = None,
+      amendmentToDocumentNumber = None,
+      amendmentToDocumentShortTitle = None,
     )
 
   /** A Presidential-Nomination document the converter should classify as billId-unlinked. */
@@ -134,6 +129,9 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
       documentName = "PN11-11",
       documentTitle = "Kristi Noem, of South Dakota, to be Secretary of Homeland Security",
       documentShortTitle = None,
+      amendmentNumber = None,
+      amendmentToDocumentNumber = None,
+      amendmentToDocumentShortTitle = None,
     )
 
   private def senateDto(
@@ -168,7 +166,7 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
       members = List(senator("S428", voteCast = "Yea"), senator("S429", voteCast = "Nay")),
     )
 
-    val result = converter.convert(envelope(dto), stubBillLookup(500L), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, stubBillLookup(500L), logCtx).unsafeRunSync()
 
     val _ = result.vote.naturalKey shouldBe "119-Senate-1-17"
     val _ = result.vote.chamber shouldBe Chamber.Senate
@@ -176,7 +174,9 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val _ = result.vote.billId shouldBe Some(500L)
     // billNaturalKey derived from the document for event-emission bookkeeping.
     val _ = result.billNaturalKey shouldBe Some("119-S-1071")
-    val _ = result.vote.legislationType shouldBe Some(BillType.S)
+    val _ = result.vote.legislationType shouldBe Some(LegislationKind.BILL)
+    val _ = result.vote.billType shouldBe Some(BillType.S)
+    val _ = result.vote.amendmentType shouldBe None
     val _ = result.vote.legislationNumber shouldBe Some("1071")
     // legislationUrl derived from document (BillType.S → senate-bill).
     val _ = result.vote.legislationUrl shouldBe Some("https://www.congress.gov/bill/119/senate-bill/1071")
@@ -196,7 +196,7 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val dto       = senateDto(members = List(senator("S1"), senator("S2"), senator("S3")))
 
     val calls = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
-    val _     = converter.convert(envelope(dto), recordingBillLookup(calls), logCtx).unsafeRunSync()
+    val _     = converter.convert(dto, recordingBillLookup(calls), logCtx).unsafeRunSync()
 
     calls.get() shouldBe List("119-S-1071")
   }
@@ -205,10 +205,12 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val converter = mkConverter()
     val dto       = senateDto(document = billDoc(docType = "H.R.", docNumber = "1319", docCongress = 117))
 
-    val result = converter.convert(envelope(dto), stubBillLookup(321L), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, stubBillLookup(321L), logCtx).unsafeRunSync()
 
     val _ = result.billNaturalKey shouldBe Some("117-HR-1319")
-    val _ = result.vote.legislationType shouldBe Some(BillType.HR)
+    val _ = result.vote.legislationType shouldBe Some(LegislationKind.BILL)
+    val _ = result.vote.billType shouldBe Some(BillType.HR)
+    val _ = result.vote.amendmentType shouldBe None
     val _ = result.vote.billId shouldBe Some(321L)
     result.vote.legislationUrl shouldBe Some("https://www.congress.gov/bill/117/house-bill/1319")
   }
@@ -226,8 +228,10 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     cases.foreach {
       case (docType, expectedBillType, expectedSlug) =>
         val dto    = senateDto(document = billDoc(docType = docType, docNumber = "5"))
-        val result = converter.convert(envelope(dto), stubBillLookup(42L), logCtx).unsafeRunSync()
-        val _      = result.vote.legislationType shouldBe Some(expectedBillType)
+        val result = converter.convert(dto, stubBillLookup(42L), logCtx).unsafeRunSync()
+        val _      = result.vote.legislationType shouldBe Some(LegislationKind.BILL)
+        val _      = result.vote.billType shouldBe Some(expectedBillType)
+        val _      = result.vote.amendmentType shouldBe None
         val _      = result.vote.billId shouldBe Some(42L)
         val _      = result.billNaturalKey shouldBe Some(s"119-${expectedBillType.apiValue.toUpperCase}-5")
         result.vote.legislationUrl shouldBe Some(s"https://www.congress.gov/bill/119/$expectedSlug/5")
@@ -244,7 +248,7 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
 
     val calls = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
     val result = converter
-      .convert(envelope(dto), recordingBillLookup(calls), logCtx)
+      .convert(dto, recordingBillLookup(calls), logCtx)
       .unsafeRunSync()
 
     val _ = result.billNaturalKey shouldBe None
@@ -268,11 +272,14 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
         documentName = "Treaty Doc. 116-4",
         documentTitle = "Some treaty",
         documentShortTitle = None,
+        amendmentNumber = None,
+        amendmentToDocumentNumber = None,
+        amendmentToDocumentShortTitle = None,
       )
     )
 
     val calls  = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
-    val result = converter.convert(envelope(dto), recordingBillLookup(calls), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, recordingBillLookup(calls), logCtx).unsafeRunSync()
 
     val _ = result.billNaturalKey shouldBe None
     val _ = result.vote.billId shouldBe None
@@ -291,11 +298,14 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
         documentName = "Future.New.Type 1",
         documentTitle = "Something new",
         documentShortTitle = None,
+        amendmentNumber = None,
+        amendmentToDocumentNumber = None,
+        amendmentToDocumentShortTitle = None,
       )
     )
 
     val calls  = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
-    val result = converter.convert(envelope(dto), recordingBillLookup(calls), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, recordingBillLookup(calls), logCtx).unsafeRunSync()
 
     val _ = result.billNaturalKey shouldBe None
     val _ = result.vote.billId shouldBe None
@@ -319,7 +329,7 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     )
 
     val calls  = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
-    val result = converter.convert(envelope(dto), recordingBillLookup(calls), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, recordingBillLookup(calls), logCtx).unsafeRunSync()
 
     val _ = result.billNaturalKey shouldBe None
     val _ = result.vote.billId shouldBe None
@@ -340,7 +350,7 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     )
 
     val calls  = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
-    val result = converter.convert(envelope(dto), recordingBillLookup(calls), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, recordingBillLookup(calls), logCtx).unsafeRunSync()
 
     val _ = result.billNaturalKey shouldBe None
     val _ = result.vote.billId shouldBe None
@@ -357,7 +367,7 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val failing: String => IO[Option[Long]] =
       _ => IO.raiseError(new IllegalStateException("simulated bill resolution failure"))
 
-    val outcome = converter.convert(envelope(dto), failing, logCtx).attempt.unsafeRunSync()
+    val outcome = converter.convert(dto, failing, logCtx).attempt.unsafeRunSync()
 
     outcome match {
       case Left(e: IllegalStateException) =>
@@ -375,8 +385,8 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val dtoPn     = senateDto(voteNumber = 17, document = nominationDoc)
     val dtoBill   = senateDto(voteNumber = 648, document = billDoc())
 
-    val resultPn   = converter.convert(envelope(dtoPn), stubBillLookup(1L), logCtx).unsafeRunSync()
-    val resultBill = converter.convert(envelope(dtoBill), stubBillLookup(1L), logCtx).unsafeRunSync()
+    val resultPn   = converter.convert(dtoPn, stubBillLookup(1L), logCtx).unsafeRunSync()
+    val resultBill = converter.convert(dtoBill, stubBillLookup(1L), logCtx).unsafeRunSync()
 
     val _ = resultPn.vote.sourceDataUrl shouldBe Some(
       "https://www.senate.gov/legislative/LIS/roll_call_votes/vote1191/vote_119_1_00017.xml"
@@ -390,7 +400,7 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val converter = mkConverter(senateBaseUrl = "http://127.0.0.1:9999/mocked")
     val dto       = senateDto(voteNumber = 17, document = nominationDoc)
 
-    val result = converter.convert(envelope(dto), stubBillLookup(1L), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, stubBillLookup(1L), logCtx).unsafeRunSync()
 
     result.vote.sourceDataUrl shouldBe Some(
       "http://127.0.0.1:9999/mocked/roll_call_votes/vote1191/vote_119_1_00017.xml"
@@ -403,8 +413,16 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
 
   /**
    * Build an amendment-style document — `<document_type>` is set, but `<document_number>` is empty per the live XML.
+   * Per shared-models 0.1.45 the amendment-vote fields live ON `SenateVoteDocumentDTO` (the decoder copies them off
+   * the top-level `<roll_call_vote>` siblings).
    */
-  private def amendmentDoc(amendmentTypeRaw: String, docCongress: Int): SenateVoteDocumentDTO =
+  private def amendmentDoc(
+    amendmentTypeRaw: String,
+    docCongress: Int,
+    amendmentNumber: Option[String] = None,
+    amendmentToDocumentNumber: Option[String] = None,
+    amendmentToDocumentShortTitle: Option[String] = None,
+  ): SenateVoteDocumentDTO =
     SenateVoteDocumentDTO(
       documentCongress = docCongress,
       documentType = amendmentTypeRaw,
@@ -412,24 +430,34 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
       documentName = amendmentTypeRaw,
       documentTitle = "",
       documentShortTitle = None,
+      amendmentNumber = amendmentNumber,
+      amendmentToDocumentNumber = amendmentToDocumentNumber,
+      amendmentToDocumentShortTitle = amendmentToDocumentShortTitle,
     )
 
   "convert (amendment branch)" should "call upsertPlaceholder on the amendment repo with the canonical natural key" in {
     val amendmentRepo = mkAmendmentRepo()
     val converter     = mkConverter(amendmentRepo = amendmentRepo)
-    val dto           = senateDto(congress = 117, document = amendmentDoc("S.Amdt.", docCongress = 117))
-    val fields = SenateVoteAmendmentFields(
-      amendmentNumber = Some("S.Amdt. 2137"),
-      amendmentToDocumentNumber = Some("H.R. 3684"),
-      amendmentToDocumentShortTitle = Some("INVEST in America Act"),
+    val dto = senateDto(
+      congress = 117,
+      document = amendmentDoc(
+        "S.Amdt.",
+        docCongress = 117,
+        amendmentNumber = Some("S.Amdt. 2137"),
+        amendmentToDocumentNumber = Some("H.R. 3684"),
+        amendmentToDocumentShortTitle = Some("INVEST in America Act"),
+      ),
     )
 
-    val result = converter.convert(envelope(dto, fields), stubBillLookup(1L), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, stubBillLookup(1L), logCtx).unsafeRunSync()
 
     val _ = result.vote.billId shouldBe None
     val _ = result.billNaturalKey shouldBe None
     val _ = result.vote.legislationNumber shouldBe Some("2137")
-    val _ = result.vote.legislationType shouldBe None
+    // Canonical (LegislationKind.AMENDMENT, billType=None, amendmentType=Some(SAMDT)) triple per shared-models 0.1.45.
+    val _ = result.vote.legislationType shouldBe Some(LegislationKind.AMENDMENT)
+    val _ = result.vote.billType shouldBe None
+    val _ = result.vote.amendmentType shouldBe Some(AmendmentType.SAMDT)
     val _ = result.vote.legislationUrl shouldBe None
     import org.mockito.Mockito.verify
     import org.mockito.ArgumentMatchers.{eq => eqTo}
@@ -440,14 +468,17 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
   it should "also seed a parent-bill placeholder when amendment_to_document_number is populated" in {
     val billRepo  = mkBillRepo()
     val converter = mkConverter(billRepo = billRepo)
-    val dto       = senateDto(congress = 117, document = amendmentDoc("S.Amdt.", docCongress = 117))
-    val fields = SenateVoteAmendmentFields(
-      amendmentNumber = Some("S.Amdt. 2137"),
-      amendmentToDocumentNumber = Some("H.R. 3684"),
-      amendmentToDocumentShortTitle = None,
+    val dto = senateDto(
+      congress = 117,
+      document = amendmentDoc(
+        "S.Amdt.",
+        docCongress = 117,
+        amendmentNumber = Some("S.Amdt. 2137"),
+        amendmentToDocumentNumber = Some("H.R. 3684"),
+      ),
     )
 
-    val _ = converter.convert(envelope(dto, fields), stubBillLookup(1L), logCtx).unsafeRunSync()
+    val _ = converter.convert(dto, stubBillLookup(1L), logCtx).unsafeRunSync()
 
     import org.mockito.Mockito.verify
     import org.mockito.ArgumentMatchers.{eq => eqTo}
@@ -459,28 +490,46 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     val billRepo      = mkBillRepo()
     val skipCounter   = new AmendmentPlaceholderSkipCounter
     val converter     = mkConverter(amendmentRepo = amendmentRepo, billRepo = billRepo, skipCounter = skipCounter)
-    val dto           = senateDto(congress = 101, document = amendmentDoc("S.Amdt.", docCongress = 101))
-    val fields        = SenateVoteAmendmentFields(Some("S.Amdt. 100"), Some("H.R. 1"), None)
+    val dto = senateDto(
+      congress = 101,
+      document = amendmentDoc(
+        "S.Amdt.",
+        docCongress = 101,
+        amendmentNumber = Some("S.Amdt. 100"),
+        amendmentToDocumentNumber = Some("H.R. 1"),
+      ),
+    )
 
-    val result = converter.convert(envelope(dto, fields), stubBillLookup(1L), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, stubBillLookup(1L), logCtx).unsafeRunSync()
 
     import org.mockito.Mockito.{never, verify}
     val _ = verify(amendmentRepo, never()).upsertPlaceholder(anyString())
     val _ = verify(billRepo, never()).upsertPlaceholder(anyString())
     val _ = skipCounter.pre102Skips shouldBe 1L
-    // Vote row still records `legislation_number`.
+    // Vote row still records the canonical AMENDMENT triple regardless of pre-102 skip.
     val _ = result.vote.legislationNumber shouldBe Some("100")
+    val _ = result.vote.legislationType shouldBe Some(LegislationKind.AMENDMENT)
+    val _ = result.vote.amendmentType shouldBe Some(AmendmentType.SAMDT)
     result.vote.billId shouldBe None
   }
 
-  it should "classify H.Amdt. via the amendment branch (HAMDT natural-key prefix)" in {
+  it should "classify H.Amdt. via the amendment branch (HAMDT natural-key prefix + AmendmentType.HAMDT)" in {
     val amendmentRepo = mkAmendmentRepo()
     val converter     = mkConverter(amendmentRepo = amendmentRepo)
-    val dto           = senateDto(congress = 117, document = amendmentDoc("H.Amdt.", docCongress = 117))
-    val fields        = SenateVoteAmendmentFields(Some("H.Amdt. 42"), None, None)
+    val dto = senateDto(
+      congress = 117,
+      document = amendmentDoc(
+        "H.Amdt.",
+        docCongress = 117,
+        amendmentNumber = Some("H.Amdt. 42"),
+      ),
+    )
 
-    val _ = converter.convert(envelope(dto, fields), stubBillLookup(1L), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, stubBillLookup(1L), logCtx).unsafeRunSync()
 
+    val _ = result.vote.legislationType shouldBe Some(LegislationKind.AMENDMENT)
+    val _ = result.vote.amendmentType shouldBe Some(AmendmentType.HAMDT)
+    val _ = result.vote.billType shouldBe None
     import org.mockito.Mockito.verify
     import org.mockito.ArgumentMatchers.{eq => eqTo}
     verify(amendmentRepo).upsertPlaceholder(eqTo("117-HAMDT-42"))
@@ -489,26 +538,31 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
   it should "skip placeholder when <amendment_number> is missing or empty" in {
     val amendmentRepo = mkAmendmentRepo()
     val converter     = mkConverter(amendmentRepo = amendmentRepo)
-    val dto           = senateDto(congress = 117, document = amendmentDoc("S.Amdt.", docCongress = 117))
-    val fields        = SenateVoteAmendmentFields(amendmentNumber = None, None, None)
+    val dto = senateDto(congress = 117, document = amendmentDoc("S.Amdt.", docCongress = 117, amendmentNumber = None))
 
-    val result = converter.convert(envelope(dto, fields), stubBillLookup(1L), logCtx).unsafeRunSync()
+    val result = converter.convert(dto, stubBillLookup(1L), logCtx).unsafeRunSync()
 
     import org.mockito.Mockito.{never, verify}
     val _ = verify(amendmentRepo, never()).upsertPlaceholder(anyString())
-    // Vote persists with empty legislation_number — graceful degradation.
+    // Vote persists with empty legislation_number — graceful degradation. The classifier returns the empty
+    // classification (no amendment-type discriminator) when the number is missing.
     val _ = result.vote.legislationNumber shouldBe None
+    val _ = result.vote.legislationType shouldBe None
+    val _ = result.vote.amendmentType shouldBe None
     result.vote.billId shouldBe None
   }
 
   it should "skip placeholder when <amendment_number> doesn't match the strict prefix pattern" in {
     val amendmentRepo = mkAmendmentRepo()
     val converter     = mkConverter(amendmentRepo = amendmentRepo)
-    val dto           = senateDto(congress = 117, document = amendmentDoc("S.Amdt.", docCongress = 117))
     // Note malformed prefix `X.Amdt.` — regex won't match.
-    val fields = SenateVoteAmendmentFields(amendmentNumber = Some("X.Amdt. 100"), None, None)
+    val dto = senateDto(
+      congress = 117,
+      document =
+        amendmentDoc("S.Amdt.", docCongress = 117, amendmentNumber = Some("X.Amdt. 100")),
+    )
 
-    val _ = converter.convert(envelope(dto, fields), stubBillLookup(1L), logCtx).unsafeRunSync()
+    val _ = converter.convert(dto, stubBillLookup(1L), logCtx).unsafeRunSync()
 
     import org.mockito.Mockito.{never, verify}
     verify(amendmentRepo, never()).upsertPlaceholder(anyString())
@@ -521,10 +575,12 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     when(failingRepo.upsertPlaceholder(anyString()))
       .thenReturn(connection.raiseError[Unit](expectedError))
     val converter = mkConverter(logger = loggerMock, amendmentRepo = failingRepo)
-    val dto       = senateDto(congress = 117, document = amendmentDoc("S.Amdt.", docCongress = 117))
-    val fields    = SenateVoteAmendmentFields(Some("S.Amdt. 1"), None, None)
+    val dto = senateDto(
+      congress = 117,
+      document = amendmentDoc("S.Amdt.", docCongress = 117, amendmentNumber = Some("S.Amdt. 1")),
+    )
 
-    val outcome = converter.convert(envelope(dto, fields), stubBillLookup(1L), logCtx).attempt.unsafeRunSync()
+    val outcome = converter.convert(dto, stubBillLookup(1L), logCtx).attempt.unsafeRunSync()
 
     val _ = outcome.isLeft shouldBe true
     import org.mockito.Mockito.{atLeastOnce, verify}
@@ -538,10 +594,17 @@ class SenateVoteConverterSpec extends AnyFlatSpec with Matchers with MockitoSuga
     when(failingBillRepo.upsertPlaceholder(anyString()))
       .thenReturn(connection.raiseError[Unit](expectedError))
     val converter = mkConverter(logger = loggerMock, billRepo = failingBillRepo)
-    val dto       = senateDto(congress = 117, document = amendmentDoc("S.Amdt.", docCongress = 117))
-    val fields    = SenateVoteAmendmentFields(Some("S.Amdt. 1"), Some("H.R. 1"), None)
+    val dto = senateDto(
+      congress = 117,
+      document = amendmentDoc(
+        "S.Amdt.",
+        docCongress = 117,
+        amendmentNumber = Some("S.Amdt. 1"),
+        amendmentToDocumentNumber = Some("H.R. 1"),
+      ),
+    )
 
-    val outcome = converter.convert(envelope(dto, fields), stubBillLookup(1L), logCtx).attempt.unsafeRunSync()
+    val outcome = converter.convert(dto, stubBillLookup(1L), logCtx).attempt.unsafeRunSync()
 
     val _ = outcome.isLeft shouldBe true
     import org.mockito.Mockito.{atLeastOnce, verify}

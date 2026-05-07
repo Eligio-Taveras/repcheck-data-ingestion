@@ -20,7 +20,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.errors.VoteProcessingFailed
 import repcheck.ingestion.votes.repo.StanceMaterializationStatusRepository
 import repcheck.pipeline.models.events.VoteRecordedEvent
-import repcheck.shared.models.congress.common.{BillType, Chamber}
+import repcheck.shared.models.congress.common.{BillType, Chamber, LegislationKind}
 import repcheck.shared.models.congress.dos.vote.VoteDO
 import repcheck.shared.models.congress.vote.{VoteMethod, VoteType}
 
@@ -62,7 +62,9 @@ class VoteEventEmitterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       result = Some("Passed"),
       voteDate = voteDate,
       legislationNumber = Some("1234"),
-      legislationType = Some(BillType.HR),
+      legislationType = Some(LegislationKind.BILL),
+      billType = Some(BillType.HR),
+      amendmentType = None,
       legislationUrl = None,
       sourceDataUrl = None,
       updateDate = updateDate,

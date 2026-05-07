@@ -90,17 +90,13 @@ object SenateVoteXmlDecoder {
    * vote's `<members>` list is decoded entry-by-entry; if any entry is missing a required field (for example
    * `<lis_member_id>`), the whole decode fails rather than silently dropping members — ingestion correctness matters
    * more than best-effort tolerance for roll-call positions.
+   *
+   * Per shared-models 0.1.45, [[SenateVoteDocumentDTO]] now carries `amendmentNumber`,
+   * `amendmentToDocumentNumber`, and `amendmentToDocumentShortTitle` directly. Senate.gov emits those three elements
+   * top-level on `<roll_call_vote>` (not nested under `<document>`) and only populates them on amendment votes; the
+   * decoder reads them at the root level and writes them into the canonical document DTO.
    */
   def decodeVote(elem: Elem): Either[XmlParseFailed, SenateVoteXmlDTO] =
-    decodeVoteEnvelope(elem).map(_.dto)
-
-  /**
-   * Decode `<roll_call_vote>` into a [[SenateVoteEnvelope]] — the shared-models DTO PLUS the votes-pipeline-local
-   * amendment fields (`<amendment_number>`, `<amendment_to_document_number>`, `<amendment_to_document_short_title>`).
-   * All three are top-level on `<roll_call_vote>` (not under `<document>`) and are populated only on amendment votes;
-   * bill votes carry them as missing or empty elements.
-   */
-  def decodeVoteEnvelope(elem: Elem): Either[XmlParseFailed, SenateVoteEnvelope] =
     if (elem.label != "roll_call_vote") {
       Left(
         XmlParseFailed(
@@ -118,22 +114,19 @@ object SenateVoteXmlDecoder {
         result     <- resolveResult(elem)
         document   <- decodeDocument(elem)
         members    <- decodeMembers(elem)
-      } yield SenateVoteEnvelope(
-        dto = SenateVoteXmlDTO(
-          congress = congress,
-          session = session,
-          voteNumber = voteNumber,
-          question = question,
-          voteDate = voteDate,
-          result = result,
-          document = document,
-          members = members,
-        ),
-        amendmentFields = SenateVoteAmendmentFields(
+      } yield SenateVoteXmlDTO(
+        congress = congress,
+        session = session,
+        voteNumber = voteNumber,
+        question = question,
+        voteDate = voteDate,
+        result = result,
+        document = document.copy(
           amendmentNumber = textOpt(elem, "amendment_number"),
           amendmentToDocumentNumber = textOpt(elem, "amendment_to_document_number"),
           amendmentToDocumentShortTitle = textOpt(elem, "amendment_to_document_short_title"),
         ),
+        members = members,
       )
     }
 
@@ -242,6 +235,9 @@ object SenateVoteXmlDecoder {
             documentName = "",
             documentTitle = "",
             documentShortTitle = None,
+            amendmentNumber = None,
+            amendmentToDocumentNumber = None,
+            amendmentToDocumentShortTitle = None,
           )
         )
       case Some(docNode) =>
@@ -270,6 +266,9 @@ object SenateVoteXmlDecoder {
             documentName = docName,
             documentTitle = docTitle,
             documentShortTitle = docShortTitle,
+            amendmentNumber = None,
+            amendmentToDocumentNumber = None,
+            amendmentToDocumentShortTitle = None,
           )
         )
     }

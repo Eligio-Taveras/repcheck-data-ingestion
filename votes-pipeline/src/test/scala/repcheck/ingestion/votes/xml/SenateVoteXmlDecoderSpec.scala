@@ -579,7 +579,7 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
   }
 
   // ------------------------------------------------------------------
-  // §7.4 — decodeVoteEnvelope: amendment-typed top-level fields
+  // §7.4 — decodeVote: amendment-typed top-level fields are folded into document DTO
   // ------------------------------------------------------------------
 
   /** Build a `<roll_call_vote>` element with arbitrary extra top-level XML appended. */
@@ -599,55 +599,44 @@ class SenateVoteXmlDecoderSpec extends AnyFlatSpec with Matchers {
          |</roll_call_vote>""".stripMargin
     )
 
-  "decodeVoteEnvelope" should "extract amendmentNumber, amendmentToDocumentNumber, and amendmentToDocumentShortTitle when present" in {
+  "decodeVote" should "extract amendmentNumber, amendmentToDocumentNumber, and amendmentToDocumentShortTitle into the document DTO when present" in {
     val extra =
       """<amendment_number>S.Amdt. 2137</amendment_number>
         |<amendment_to_document_number>H.R. 3684</amendment_to_document_number>
         |<amendment_to_document_short_title>INVEST in America Act</amendment_to_document_short_title>""".stripMargin
 
-    val result = SenateVoteXmlDecoder.decodeVoteEnvelope(voteElemWithExtra(extra))
+    val result = SenateVoteXmlDecoder.decodeVote(voteElemWithExtra(extra))
 
     val _   = result.isRight shouldBe true
-    val env = result.toOption.getOrElse(fail("expected Right"))
-    val _   = env.amendmentFields.amendmentNumber shouldBe Some("S.Amdt. 2137")
-    val _   = env.amendmentFields.amendmentToDocumentNumber shouldBe Some("H.R. 3684")
-    env.amendmentFields.amendmentToDocumentShortTitle shouldBe Some("INVEST in America Act")
+    val dto = result.toOption.getOrElse(fail("expected Right"))
+    val _   = dto.document.amendmentNumber shouldBe Some("S.Amdt. 2137")
+    val _   = dto.document.amendmentToDocumentNumber shouldBe Some("H.R. 3684")
+    dto.document.amendmentToDocumentShortTitle shouldBe Some("INVEST in America Act")
   }
 
-  it should "return None for amendment fields when they're missing entirely (bill-vote XML)" in {
-    val result = SenateVoteXmlDecoder.decodeVoteEnvelope(voteElemWithExtra(""))
+  it should "return None for amendment fields on the document DTO when they're missing entirely (bill-vote XML)" in {
+    val result = SenateVoteXmlDecoder.decodeVote(voteElemWithExtra(""))
 
     val _   = result.isRight shouldBe true
-    val env = result.toOption.getOrElse(fail("expected Right"))
-    val _   = env.amendmentFields.amendmentNumber shouldBe None
-    val _   = env.amendmentFields.amendmentToDocumentNumber shouldBe None
-    env.amendmentFields.amendmentToDocumentShortTitle shouldBe None
+    val dto = result.toOption.getOrElse(fail("expected Right"))
+    val _   = dto.document.amendmentNumber shouldBe None
+    val _   = dto.document.amendmentToDocumentNumber shouldBe None
+    dto.document.amendmentToDocumentShortTitle shouldBe None
   }
 
-  it should "return None for amendment fields when they're self-closing empty elements" in {
+  it should "return None for amendment fields on the document DTO when they're self-closing empty elements" in {
     val extra =
       """<amendment_number/>
         |<amendment_to_document_number/>
         |<amendment_to_document_short_title/>""".stripMargin
 
-    val result = SenateVoteXmlDecoder.decodeVoteEnvelope(voteElemWithExtra(extra))
+    val result = SenateVoteXmlDecoder.decodeVote(voteElemWithExtra(extra))
 
     val _   = result.isRight shouldBe true
-    val env = result.toOption.getOrElse(fail("expected Right"))
-    val _   = env.amendmentFields.amendmentNumber shouldBe None
-    val _   = env.amendmentFields.amendmentToDocumentNumber shouldBe None
-    env.amendmentFields.amendmentToDocumentShortTitle shouldBe None
-  }
-
-  it should "decodeVote (legacy) returns the same SenateVoteXmlDTO as decodeVoteEnvelope.dto" in {
-    val extra =
-      """<amendment_number>S.Amdt. 2137</amendment_number>""".stripMargin
-    val elem = voteElemWithExtra(extra)
-
-    val viaDecodeVote = SenateVoteXmlDecoder.decodeVote(elem).toOption.getOrElse(fail("expected Right"))
-    val viaEnvelope   = SenateVoteXmlDecoder.decodeVoteEnvelope(elem).toOption.getOrElse(fail("expected Right"))
-
-    viaDecodeVote shouldBe viaEnvelope.dto
+    val dto = result.toOption.getOrElse(fail("expected Right"))
+    val _   = dto.document.amendmentNumber shouldBe None
+    val _   = dto.document.amendmentToDocumentNumber shouldBe None
+    dto.document.amendmentToDocumentShortTitle shouldBe None
   }
 
 }

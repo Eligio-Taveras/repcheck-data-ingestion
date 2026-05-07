@@ -14,7 +14,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.votes.repo.{VoteHistoryArchiver, VotePositionRepository, VoteRepository}
-import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
+import repcheck.shared.models.congress.common.{BillType, Chamber, LegislationKind, Party, UsState}
 import repcheck.shared.models.congress.dos.vote.{VoteDO, VotePositionDO}
 import repcheck.shared.models.congress.vote.{VoteCast, VoteMethod, VoteType}
 
@@ -51,7 +51,9 @@ class VotePersisterSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       result = Some("Passed"),
       voteDate = Some(LocalDate.parse("2024-05-30")),
       legislationNumber = Some("1234"),
-      legislationType = Some(BillType.HR),
+      legislationType = Some(LegislationKind.BILL),
+      billType = Some(BillType.HR),
+      amendmentType = None,
       legislationUrl = None,
       sourceDataUrl = None,
       updateDate = Some(Instant.parse("2024-06-01T12:00:00Z")),

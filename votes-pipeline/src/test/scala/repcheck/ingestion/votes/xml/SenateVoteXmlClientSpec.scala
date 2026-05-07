@@ -108,8 +108,7 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     val fixture = loadFixture("vote_119_1_00017.xml")
     stubXml("/roll_call_votes/vote1191/vote_119_1_00017.xml", fixture)
 
-    val envelope = makeClient().fetchVote(119, 1, 17).unsafeRunSync()
-    val dto      = envelope.dto
+    val dto = makeClient().fetchVote(119, 1, 17).unsafeRunSync()
 
     val _ = dto.congress shouldBe 119
     val _ = dto.session shouldBe 1
@@ -213,10 +212,10 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "application/xml").withBody(fixture))
     )
 
-    val envelope = makeClient(retry =
+    val dto = makeClient(retry =
       RetryConfig(maxRetries = 3, initialBackoffMs = 10L, maxBackoffMs = 50L, backoffMultiplier = 2.0)
     ).fetchVote(119, 1, 42).unsafeRunSync()
-    val _ = envelope.dto.voteNumber shouldBe 42
+    val _ = dto.voteNumber shouldBe 42
     wireMock.verify(2, getRequestedFor(urlEqualTo(url)))
   }
 
@@ -358,10 +357,10 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   }
 
   // ------------------------------------------------------------------
-  // §7.4 — amendment-vote XML integration: verify the envelope carries amendment fields
+  // §7.4 — amendment-vote XML integration: amendment fields are folded into the canonical document DTO
   // ------------------------------------------------------------------
 
-  it should "decode an amendment-vote XML body into an envelope with amendment fields populated" in {
+  it should "decode an amendment-vote XML body with amendment fields populated on the document DTO" in {
     val amendmentXml =
       """<?xml version="1.0" encoding="UTF-8"?>
         |<roll_call_vote>
@@ -386,14 +385,14 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
         |</roll_call_vote>""".stripMargin
     stubXml("/roll_call_votes/vote1171/vote_117_1_00312.xml", amendmentXml)
 
-    val envelope = makeClient().fetchVote(117, 1, 312).unsafeRunSync()
+    val dto = makeClient().fetchVote(117, 1, 312).unsafeRunSync()
 
-    val _ = envelope.dto.congress shouldBe 117
-    val _ = envelope.dto.document.documentType shouldBe "S.Amdt."
-    val _ = envelope.dto.document.documentNumber shouldBe ""
-    val _ = envelope.amendmentFields.amendmentNumber shouldBe Some("S.Amdt. 2137")
-    val _ = envelope.amendmentFields.amendmentToDocumentNumber shouldBe Some("H.R. 3684")
-    envelope.amendmentFields.amendmentToDocumentShortTitle shouldBe Some("INVEST in America Act")
+    val _ = dto.congress shouldBe 117
+    val _ = dto.document.documentType shouldBe "S.Amdt."
+    val _ = dto.document.documentNumber shouldBe ""
+    val _ = dto.document.amendmentNumber shouldBe Some("S.Amdt. 2137")
+    val _ = dto.document.amendmentToDocumentNumber shouldBe Some("H.R. 3684")
+    dto.document.amendmentToDocumentShortTitle shouldBe Some("INVEST in America Act")
   }
 
 }

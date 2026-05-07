@@ -17,10 +17,10 @@ import repcheck.ingestion.amendments.persistence.AmendmentRepository
 import repcheck.ingestion.bills.common.persistence.BillRepository
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.metrics.AmendmentPlaceholderSkipCounter
-import repcheck.ingestion.votes.xml.{SenateVoteAmendmentFields, SenateVoteEnvelope, SenateVoteUrls}
+import repcheck.ingestion.votes.xml.SenateVoteUrls
 import repcheck.pipeline.models.constants.Constants
 import repcheck.shared.models.congress.amendment.{AmendmentType, LegislationRef}
-import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
+import repcheck.shared.models.congress.common.{BillType, Chamber, LegislationKind, Party, UsState}
 import repcheck.shared.models.congress.dos.results.{UnresolvedVotePosition, VoteConversionResult}
 import repcheck.shared.models.congress.dos.vote.VoteDO
 import repcheck.shared.models.congress.dto.conversions.{BillConversions, VoteConversions}
@@ -28,7 +28,7 @@ import repcheck.shared.models.congress.dto.vote.{SenateVoteDocumentDTO, SenateVo
 import repcheck.shared.models.congress.vote.{VoteCast, VoteType}
 
 /**
- * Converts a senate.gov `<roll_call_vote>` XML envelope (as a [[SenateVoteEnvelope]]) into a [[VoteConversionResult]] —
+ * Converts a senate.gov `<roll_call_vote>` XML envelope (a [[SenateVoteXmlDTO]]) into a [[VoteConversionResult]] —
  * `VoteDO` + `billNaturalKey` + `List[UnresolvedVotePosition]`.
  *
  * ==Document classification + bill resolution==
@@ -38,16 +38,16 @@ import repcheck.shared.models.congress.vote.{VoteCast, VoteType}
  * a [[LegislationRef]]:
  *
  *   - [[LegislationRef.Bill]] (bill-like types `"S."`, `"H.R."`, `"S.J.Res."`, etc.): builds the bill natural key,
- *     calls `billLookup` to upsert + resolve the surrogate id, populates `VoteDO.billId = Some(resolvedId)` and
- *     `legislation_*` columns from [[BillType]].
- *   - [[LegislationRef.Amendment]] (`"S.Amdt."`, `"H.Amdt."`): parses the amendment number from the top-level
- *     `<amendment_number>` element (which carries the type prefix + number), builds the amendment natural key
+ *     calls `billLookup` to upsert + resolve the surrogate id, populates `VoteDO.billId = Some(resolvedId)`,
+ *     `legislationType = Some(LegislationKind.BILL)`, `billType = Some(...)`, `amendmentType = None`.
+ *   - [[LegislationRef.Amendment]] (`"S.Amdt."`, `"H.Amdt."`): parses the amendment number from
+ *     `document.amendmentNumber` (which carries the type prefix + number), builds the amendment natural key
  *     `{congress}-{TYPE}-{number}`, and calls [[AmendmentRepository.upsertPlaceholder]] to reserve a row that the
  *     amendments-pipeline will hydrate later. `VoteDO.billId = None` (votes don't FK to amendments per §7.4 OQ2),
- *     `legislation_type = None` (shared-models `VoteDO.legislationType: Option[BillType]` cannot hold an amendment type
- *     until shared-models bumps), `legislation_number = Some(number)`. If `<amendment_to_document_number>` is
- *     populated, the converter ALSO calls `billRepo.upsertPlaceholder` for the parent bill's natural key — that gives
- *     the amendments-pipeline somewhere to attach `bill_id` when it later hydrates the amendment.
+ *     `legislationType = Some(LegislationKind.AMENDMENT)`, `billType = None`, `amendmentType = Some(...)`,
+ *     `legislationNumber = Some(number)`. If `document.amendmentToDocumentNumber` is populated the converter ALSO
+ *     calls `billRepo.upsertPlaceholder` for the parent bill's natural key — that gives the amendments-pipeline
+ *     somewhere to attach `bill_id` when it later hydrates the amendment.
  *   - `"PN"` / `"Treaty Doc."`: non-bill, non-amendment. Persisted with `billId = None` + INFO log.
  *   - Any other documentType: `billId = None`, WARN log.
  *
@@ -72,7 +72,8 @@ import repcheck.shared.models.congress.vote.{VoteCast, VoteType}
  *   the vote.
  * @param billRepo
  *   The bills-common repository, used by the amendment branch to seed a placeholder for the parent bill referenced by
- *   `<amendment_to_document_number>` (so the amendments-pipeline's later hydration finds a row to attach `bill_id` to).
+ *   `document.amendmentToDocumentNumber` (so the amendments-pipeline's later hydration finds a row to attach `bill_id`
+ *   to).
  * @param skipCounter
  *   Increments `pre_102_amendment` when an amendment-typed vote in a pre-102 congress is encountered.
  */
@@ -88,17 +89,16 @@ class SenateVoteConverter[F[_]: Async](
   import SenateVoteConverter._
 
   /**
-   * Convert one senate vote envelope into a [[VoteConversionResult]]. `billLookup` is invoked once when the document
+   * Convert one senate vote DTO into a [[VoteConversionResult]]. `billLookup` is invoked once when the document
    * classifies as bill-like; non-bill documents (PN, Treaty, unknown) leave `billId = None`. Amendment-classified
    * documents call [[AmendmentRepository.upsertPlaceholder]] (and [[BillRepository.upsertPlaceholder]] for the parent
    * bill ref) and produce `billId = None` per §7.4.
    */
   def convert(
-    envelope: SenateVoteEnvelope,
+    dto: SenateVoteXmlDTO,
     billLookup: String => F[Option[Long]],
     logCtx: LogContext,
   ): F[VoteConversionResult] = {
-    val dto = envelope.dto
     val naturalKey = VoteConversions.buildVoteNaturalKey(
       congress = dto.congress,
       chamber = "Senate",
@@ -107,7 +107,7 @@ class SenateVoteConverter[F[_]: Async](
     )
 
     for {
-      classification <- classifyDocument(dto.document, envelope.amendmentFields, dto.congress, naturalKey, logCtx)
+      classification <- classifyDocument(dto.document, dto.congress, naturalKey, logCtx)
       resolvedBillId <- classification.billNaturalKey match {
         case Some(nk) => billLookup(nk)
         case None     => Async[F].pure(Option.empty[Long])
@@ -122,9 +122,10 @@ class SenateVoteConverter[F[_]: Async](
   }
 
   /**
-   * Classify the `<document>` element + amendment-vote fields, log at the appropriate level, perform the amendment-side
-   * placeholder upserts when the vote is amendment-classified, and return a [[DocumentClassification]] with the derived
-   * bill natural key (for bill-like types) and the parsed amendment number (for amendment types).
+   * Classify the `<document>` element (which now carries amendment-vote fields directly per shared-models 0.1.45),
+   * log at the appropriate level, perform the amendment-side placeholder upserts when the vote is amendment-classified,
+   * and return a [[DocumentClassification]] with the derived bill natural key (for bill-like types) and the parsed
+   * amendment number (for amendment types).
    *
    * ==Why the documentCongress > 0 gate==
    *
@@ -138,7 +139,6 @@ class SenateVoteConverter[F[_]: Async](
    */
   private[pipeline] def classifyDocument(
     document: SenateVoteDocumentDTO,
-    amendmentFields: SenateVoteAmendmentFields,
     voteCongress: Int,
     voteNaturalKey: String,
     logCtx: LogContext,
@@ -153,7 +153,9 @@ class SenateVoteConverter[F[_]: Async](
         Async[F].pure(
           DocumentClassification(
             billNaturalKey = Some(billNK),
-            legislationType = Some(billType),
+            legislationType = Some(LegislationKind.BILL),
+            billType = Some(billType),
+            amendmentType = None,
             legislationNumber = Some(document.documentNumber),
             legislationUrl = buildCongressGovBillUrl(document.documentCongress, billType, document.documentNumber),
           )
@@ -169,7 +171,7 @@ class SenateVoteConverter[F[_]: Async](
           )
           .as(DocumentClassification.empty)
       case Right(LegislationRef.Amendment(amendmentType)) =>
-        handleAmendment(amendmentType, amendmentFields, voteCongress, voteNaturalKey, logCtx)
+        handleAmendment(amendmentType, document, voteCongress, voteNaturalKey, logCtx)
       case Left(NonBillDocument(docType)) =>
         logger
           .info(
@@ -190,12 +192,12 @@ class SenateVoteConverter[F[_]: Async](
 
   private def handleAmendment(
     amendmentType: AmendmentType,
-    amendmentFields: SenateVoteAmendmentFields,
+    document: SenateVoteDocumentDTO,
     voteCongress: Int,
     voteNaturalKey: String,
     logCtx: LogContext,
   ): F[DocumentClassification] =
-    amendmentFields.amendmentNumber.flatMap(parseAmendmentNumber) match {
+    document.amendmentNumber.flatMap(parseAmendmentNumber) match {
       case None =>
         // Empty/missing/malformed <amendment_number> — persist without amendment linkage. Mirrors the empty-
         // documentCongress fallback for bill-typed votes: the vote itself still records, but no placeholder
@@ -204,7 +206,7 @@ class SenateVoteConverter[F[_]: Async](
           .info(
             logCtx,
             s"Senate vote $voteNaturalKey has amendment documentType '${amendmentType.toString}' but " +
-              s"<amendment_number> '${amendmentFields.amendmentNumber.getOrElse("")}' is missing or unparseable — " +
+              s"<amendment_number> '${document.amendmentNumber.getOrElse("")}' is missing or unparseable — " +
               "persisting with no amendment placeholder",
           )
           .as(DocumentClassification.empty)
@@ -230,7 +232,7 @@ class SenateVoteConverter[F[_]: Async](
             }
           }
         val parentBillEffect: F[Unit] =
-          amendmentFields.amendmentToDocumentNumber.flatMap(parseAmendedBillRef(_, voteCongress)) match {
+          document.amendmentToDocumentNumber.flatMap(parseAmendedBillRef(_, voteCongress)) match {
             case Some(billNK) if voteCongress >= Constants.MinAmendmentCongress =>
               // Reserve the parent bill so the amendments-pipeline's later hydration can resolve bill_id.
               // Errors at this step are logged + raised — same severity as the amendment placeholder itself.
@@ -250,9 +252,11 @@ class SenateVoteConverter[F[_]: Async](
           // billNaturalKey is the BILL key (used by the caller to invoke `billLookup` for surrogate-id resolution).
           // Amendments don't have a bill_id, so amendmentNK is NOT the billNaturalKey here.
           billNaturalKey = None,
-          // shared-models VoteDO.legislationType only accepts BillType — until shared-models bumps the type to a
-          // sealed bill-or-amendment kind, leave this None for amendment votes. legislationNumber still records.
-          legislationType = None,
+          // shared-models 0.1.45 introduced LegislationKind.AMENDMENT + AmendmentType discriminator on VoteDO; the
+          // amendment branch now writes the canonical (legislationType, billType, amendmentType) triple.
+          legislationType = Some(LegislationKind.AMENDMENT),
+          billType = None,
+          amendmentType = Some(amendmentType),
           legislationNumber = Some(amendmentNumber),
           legislationUrl = None,
         )
@@ -281,6 +285,8 @@ class SenateVoteConverter[F[_]: Async](
       voteDate = parsedDate,
       legislationNumber = classification.legislationNumber,
       legislationType = classification.legislationType,
+      billType = classification.billType,
+      amendmentType = classification.amendmentType,
       legislationUrl = classification.legislationUrl,
       sourceDataUrl = Some(sourceDataUrl),
       updateDate = parsedDate.map(_.atStartOfDay().toInstant(ZoneOffset.UTC)),
@@ -310,19 +316,22 @@ private[pipeline] object SenateVoteConverter {
 
   /**
    * Outcome of [[SenateVoteConverter.classifyDocument]]. When the document represents a bill or resolution the
-   * `billNaturalKey` + `legislationType` + `legislationNumber` + `legislationUrl` are all populated. Non-bill / non-
-   * amendment documents (PN, Treaty Doc., unknown) produce the empty classification. Amendment classifications populate
-   * `legislationNumber` only — see SenateVoteConverter scaladoc for the rationale.
+   * `billNaturalKey` + `legislationType=BILL` + `billType` + `legislationNumber` + `legislationUrl` are all populated.
+   * Amendment classifications populate `legislationType=AMENDMENT` + `amendmentType` + `legislationNumber` and leave
+   * `billNaturalKey` / `billType` / `legislationUrl` as `None`. Non-bill / non-amendment documents (PN, Treaty Doc.,
+   * unknown) produce the empty classification.
    */
   final case class DocumentClassification(
     billNaturalKey: Option[String],
-    legislationType: Option[BillType],
+    legislationType: Option[LegislationKind],
+    billType: Option[BillType],
+    amendmentType: Option[AmendmentType],
     legislationNumber: Option[String],
     legislationUrl: Option[String],
   )
 
   object DocumentClassification {
-    val empty: DocumentClassification = DocumentClassification(None, None, None, None)
+    val empty: DocumentClassification = DocumentClassification(None, None, None, None, None, None)
   }
 
   /**
@@ -417,7 +426,7 @@ private[pipeline] object SenateVoteConverter {
    * upstream uses the same canonical strings as `normalizeDocumentType`.
    *
    * Splits on the LAST whitespace run so we tolerate the same NBSP/multi-space variations that `<amendment_number>` can
-   * contain (`"H.R. 3684"`, `"H.R. 3684"`, etc.).
+   * contain (`"H.R. 3684"`, `"H.R. 3684"`, etc.).
    */
   private[pipeline] def parseAmendedBillRef(raw: String, congress: Int): Option[String] = {
     val cleaned = raw.trim
