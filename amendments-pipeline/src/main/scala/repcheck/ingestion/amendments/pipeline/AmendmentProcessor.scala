@@ -54,9 +54,13 @@ import repcheck.shared.models.congress.dto.conversions.AmendmentConversions._
  *
  * ==Streaming==
  *
- * `streamAll(runId)` iterates `config.congresses` sequentially. Each list page is grouped via `chunks` so that one
- * SELECT (`findByNaturalKeys`) covers up to `pageSize` items rather than `pageSize` SELECTs. Per-amendment work is
- * fanned out via `parEvalMap(config.parallelism)` and per-item failures are caught and emitted as
+ * `streamAll(runId)` issues a single global query against `/v3/amendment` (no `{congress}` in the path) with the
+ * configured `fromDateTime` lookback. The Congress.gov API returns every amendment edited inside the window regardless
+ * of congress, so iterating `config.congresses` per-call would only duplicate work and amplify the lookback overlap.
+ * Items whose `congress` falls outside `[congressesMin, congressesMax]` are filtered in-process (defensive — protects
+ * the 102-cutoff guard for `bills` / `amendments` schema CHECK constraints). Each list page is grouped via `chunks` so
+ * that one SELECT (`findByNaturalKeys`) covers up to `pageSize` items rather than `pageSize` SELECTs. Per-amendment
+ * work is fanned out via `parEvalMap(config.parallelism)` and per-item failures are caught and emitted as
  * `ProcessingResult.Failed` so the stream survives a single bad amendment.
  */
 class AmendmentProcessor[F[_]: Async](
@@ -75,10 +79,13 @@ class AmendmentProcessor[F[_]: Async](
   private val StepName = "amendments-pipeline"
 
   /**
-   * Top-level streaming entry point. Iterates `config.congresses` sequentially (per Q8 — mirrors votes-pipeline's
-   * per-congress pattern), drains `apiClient.fetchAll` for each one, batch-reads stored rows per page, and fans out the
-   * per-amendment work via `parEvalMap(config.parallelism)`. A single per-amendment failure is captured as
-   * `ProcessingResult.Failed` and the stream continues — only stream-level errors propagate up.
+   * Top-level streaming entry point. Issues a single global query against `/v3/amendment` (no `{congress}` in the path)
+   * with `fromDateTime = now - lookbackDays`; the Congress.gov endpoint returns every amendment edited inside that
+   * window across all congresses, so per-congress iteration would only duplicate work. Items outside `[congressesMin,
+   * congressesMax]` are filtered in-process — the bound is retained as a defensive guard for the 102-cutoff CHECK
+   * constraints on the `amendments` / `bills` tables. Each list page is then batch-read via one `findByNaturalKeys`
+   * SELECT and per-amendment work is fanned out via `parEvalMap(config.parallelism)`. A single per-amendment failure is
+   * captured as `ProcessingResult.Failed` and the stream continues — only stream-level errors propagate up.
    */
   def streamAll(runId: String): Stream[F, ProcessingResult] = {
     val fromDateTime = Instant.now().minus(config.lookbackDays.toLong, ChronoUnit.DAYS)
@@ -89,23 +96,12 @@ class AmendmentProcessor[F[_]: Async](
         runCtx,
         s"streamAll.start lookbackDays=${config.lookbackDays.toString} " +
           s"parallelism=${config.parallelism.toString} maxRecursionDepth=${config.maxRecursionDepth.toString} " +
-          s"congresses=${config.congresses.start.toString}..${config.congresses.end.toString}",
+          s"congressFilter=${config.congressesMin.toString}..${config.congressesMax.toString}",
       )
-    ) *> Stream
-      .emits(config.congresses.toList)
-      .flatMap(congress => streamCongress(congress, fromDateTime, runId, runCtx))
-  }
-
-  private[pipeline] def streamCongress(
-    congress: Int,
-    fromDateTime: Instant,
-    runId: String,
-    runCtx: LogContext,
-  ): Stream[F, ProcessingResult] =
-    apiClient
+    ) *> apiClient
       .fetchAll(
         FetchParams(
-          congress = Some(congress),
+          congress = None,
           fromDateTime = Some(fromDateTime),
           pageSize = config.pageSize,
         )
@@ -113,16 +109,34 @@ class AmendmentProcessor[F[_]: Async](
       .chunks
       .evalMap { chunk =>
         // P2 batch optimization: one SELECT per page rather than one per amendment.
-        val items = chunk.toList
-        val keys  = items.map(AmendmentNaturalKeys.fromListItem)
+        // The global feed returns rows from every congress edited in-window — apply the configured congress
+        // filter before the DB round-trip so out-of-range rows neither query stored state nor reach the worker pool.
+        val rawItems            = chunk.toList
+        val (inRange, outRange) = rawItems.partition(item => isInCongressRange(item.congress))
+        val keys                = inRange.map(AmendmentNaturalKeys.fromListItem)
         for {
-          _ <- logger.debug(runCtx, s"page.batch.start congress=${congress.toString} size=${items.size.toString}")
+          _ <- {
+            if (outRange.nonEmpty) {
+              Async[F].delay {
+                outRange.foreach(_ => metrics.incrementCongressOutOfRange())
+              } *>
+                logger.debug(
+                  runCtx,
+                  s"page.filter congresses=${outRange.map(_.congress.toString).distinct.mkString(",")} " +
+                    s"dropped=${outRange.size.toString}/${rawItems.size.toString}",
+                )
+            } else { Async[F].unit }
+          }
+          _ <- logger.debug(
+            runCtx,
+            s"page.batch.start size=${inRange.size.toString} (raw=${rawItems.size.toString})",
+          )
           storedMap <- amendmentRepository.findByNaturalKeys(keys).transact(xa)
           _ <- logger.debug(
             runCtx,
-            s"page.batch.done congress=${congress.toString} hits=${storedMap.size.toString}/${items.size.toString}",
+            s"page.batch.done hits=${storedMap.size.toString}/${inRange.size.toString}",
           )
-        } yield items.map(item => (item, storedMap.get(AmendmentNaturalKeys.fromListItem(item))))
+        } yield inRange.map(item => (item, storedMap.get(AmendmentNaturalKeys.fromListItem(item))))
       }
       .flatMap(Stream.emits)
       .parEvalMap(config.parallelism) {
@@ -130,20 +144,40 @@ class AmendmentProcessor[F[_]: Async](
           val naturalKey    = AmendmentNaturalKeys.fromListItem(item)
           val correlationId = UUID.randomUUID()
           val itemCtx       = LogContext(runId, StepName, Some(correlationId), Some(naturalKey))
-          processAmendment(naturalKey, Some(item), storedOpt, depth = 0, correlationId)
-            .handleErrorWith { e =>
-              logger.error(itemCtx, s"Amendment $naturalKey processing raised: ${e.getMessage}", Some(e)) *>
-                Async[F].pure[ProcessingResult](ProcessingResult.Failed(naturalKey, e.getMessage))
-            }
+          processAmendment(
+            naturalKey = naturalKey,
+            listItemOpt = Some(item),
+            detailUrlOpt = item.url,
+            storedOpt = storedOpt,
+            depth = 0,
+            correlationId = correlationId,
+          ).handleErrorWith { e =>
+            logger.error(itemCtx, s"Amendment $naturalKey processing raised: ${e.getMessage}", Some(e)) *>
+              Async[F].pure[ProcessingResult](ProcessingResult.Failed(naturalKey, e.getMessage))
+          }
       }
+  }
+
+  /**
+   * Inclusive `[congressesMin, congressesMax]` test for a list-page item. Surfaced separately so tests can pin the
+   * defensive 102-cutoff filter behavior directly.
+   */
+  private[pipeline] def isInCongressRange(congress: Int): Boolean =
+    congress >= config.congressesMin && congress <= config.congressesMax
 
   /**
    * The single recursive primitive. See class-doc for the step-by-step contract. Public for testability — every spec
    * exercises behavior through this entry point rather than through `streamAll`.
+   *
+   * `detailUrlOpt` carries the per-amendment detail URL handed over by the upstream list page (top-level call) or the
+   * parent `amendedAmendment` DTO (recursive call). When neither source surfaces a URL we synthesize one from
+   * `naturalKey` so the call still resolves against the configured `baseUrl` rather than blowing up with a malformed
+   * request.
    */
   def processAmendment(
     naturalKey: String,
     listItemOpt: Option[AmendmentListItemDTO],
+    detailUrlOpt: Option[String],
     storedOpt: Option[AmendmentDO],
     depth: Int,
     correlationId: UUID,
@@ -159,7 +193,7 @@ class AmendmentProcessor[F[_]: Async](
       logger.debug(ctx, s"idempotent skip — list updateDate <= stored updateDate") *>
         Async[F].pure[ProcessingResult](ProcessingResult.Skipped(naturalKey, "unchanged"))
     } else {
-      hydrateAndPersist(naturalKey, listItemOpt, depth, correlationId, ctx)
+      hydrateAndPersist(naturalKey, listItemOpt, detailUrlOpt, depth, correlationId, ctx)
     }
   }
 
@@ -171,15 +205,17 @@ class AmendmentProcessor[F[_]: Async](
   private[pipeline] def hydrateAndPersist(
     naturalKey: String,
     listItemOpt: Option[AmendmentListItemDTO],
+    detailUrlOpt: Option[String],
     depth: Int,
     correlationId: UUID,
     ctx: LogContext,
   ): F[ProcessingResult] = {
-    val _ = listItemOpt // listItem fields are not used past idempotency; keep the param for signature symmetry.
+    val _         = listItemOpt // listItem fields are not used past idempotency; keep the param for signature symmetry.
+    val detailUrl = detailUrlOpt.orElse(listItemOpt.flatMap(_.url)).getOrElse(naturalKey)
     for {
-      _      <- logger.debug(ctx, s"fetchDetail.start depth=${depth.toString}")
+      _      <- logger.debug(ctx, s"fetchDetail.start depth=${depth.toString} url=$detailUrl")
       _      <- Async[F].delay(metrics.incrementDetailFetches())
-      detail <- apiClient.fetchDetail(naturalKey, correlationId)
+      detail <- apiClient.fetchDetail(detailUrl, correlationId)
       _      <- logger.debug(ctx, s"fetchDetail.done")
 
       sponsorMemberId  <- resolveSponsorMemberId(detail, ctx)
@@ -291,39 +327,48 @@ class AmendmentProcessor[F[_]: Async](
     correlationId: UUID,
     ctx: LogContext,
   ): F[(Option[Long], Option[Long])] =
-    detail.amendedAmendment.flatMap(AmendmentNaturalKeys.parentAmendmentNaturalKey) match {
+    detail.amendedAmendment match {
       case None =>
         Async[F].pure((Option.empty[Long], Option.empty[Long]))
 
-      case Some(parentNk) =>
-        for {
-          _              <- logger.debug(ctx, s"resolveParent.start parentNk=$parentNk depth=${depth.toString}")
-          parentExisting <- amendmentRepository.findByNaturalKey(parentNk).transact(xa)
-          tuple <- parentExisting match {
-            case Some(p) if p.updateDate.isDefined =>
-              // Parent already fully hydrated — use as-is. No recursion, no extra detail fetch.
-              logger.debug(ctx, s"resolveParent.short-circuit parentNk=$parentNk") *>
-                Async[F].pure((Some(p.amendmentId), p.billId))
+      case Some(parentRef) =>
+        AmendmentNaturalKeys.parentAmendmentNaturalKey(parentRef) match {
+          case None =>
+            Async[F].pure((Option.empty[Long], Option.empty[Long]))
 
-            case otherwise =>
-              // Parent missing OR placeholder — recurse with the SAME correlationId + listItemOpt = None.
-              for {
-                _ <- Async[F].delay(metrics.incrementRecursionRedundant())
-                _ <- logger.debug(
-                  ctx,
-                  s"resolveParent.recurse parentNk=$parentNk parentExists=${otherwise.isDefined.toString}",
-                )
-                _ <- processAmendment(
-                  naturalKey = parentNk,
-                  listItemOpt = None,
-                  storedOpt = otherwise,
-                  depth = depth + 1,
-                  correlationId = correlationId,
-                )
-                hydrated <- amendmentRepository.findByNaturalKey(parentNk).transact(xa)
-              } yield (hydrated.map(_.amendmentId), hydrated.flatMap(_.billId))
-          }
-        } yield tuple
+          case Some(parentNk) =>
+            for {
+              _              <- logger.debug(ctx, s"resolveParent.start parentNk=$parentNk depth=${depth.toString}")
+              parentExisting <- amendmentRepository.findByNaturalKey(parentNk).transact(xa)
+              tuple <- parentExisting match {
+                case Some(p) if p.updateDate.isDefined =>
+                  // Parent already fully hydrated — use as-is. No recursion, no extra detail fetch.
+                  logger.debug(ctx, s"resolveParent.short-circuit parentNk=$parentNk") *>
+                    Async[F].pure((Some(p.amendmentId), p.billId))
+
+                case otherwise =>
+                  // Parent missing OR placeholder — recurse with the SAME correlationId, listItemOpt = None,
+                  // and the parent's `url` from the DTO (when present) so the recursive `fetchDetail` still
+                  // hits the right endpoint without us having to reconstruct the URL from the natural key.
+                  for {
+                    _ <- Async[F].delay(metrics.incrementRecursionRedundant())
+                    _ <- logger.debug(
+                      ctx,
+                      s"resolveParent.recurse parentNk=$parentNk parentExists=${otherwise.isDefined.toString}",
+                    )
+                    _ <- processAmendment(
+                      naturalKey = parentNk,
+                      listItemOpt = None,
+                      detailUrlOpt = parentRef.url,
+                      storedOpt = otherwise,
+                      depth = depth + 1,
+                      correlationId = correlationId,
+                    )
+                    hydrated <- amendmentRepository.findByNaturalKey(parentNk).transact(xa)
+                  } yield (hydrated.map(_.amendmentId), hydrated.flatMap(_.billId))
+              }
+            } yield tuple
+        }
     }
 
   /**

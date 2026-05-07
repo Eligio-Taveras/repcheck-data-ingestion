@@ -401,7 +401,16 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
 
     override def fetchDetail(detailUrl: String, correlationId: UUID): IO[AmendmentDetailDTO] = {
       val _ = calls.updateAndGet(_ :+ ApiCall(detailUrl, correlationId))
-      detailMap.get(detailUrl) match {
+      // Tests key the stub map by natural key (`{congress}-{TYPE}-{number}`); the production processor now
+      // hands us a URL like `https://api.congress.gov/v3/amendment/117/samdt/100`. Look up by URL first
+      // (so a test can target a specific URL if it cares), then fall back to extracting the natural key
+      // from the URL's last three segments. Pass `-1` to `split` so trailing empty segments survive — the
+      // "bad detail" test relies on `.../samdt/` (empty number) round-tripping to `117-SAMDT-`.
+      val nkFromUrl = detailUrl.split("/", -1).toList.takeRight(3) match {
+        case List(c, t, n) => Some(s"$c-${t.toUpperCase}-$n")
+        case _             => None
+      }
+      detailMap.get(detailUrl).orElse(nkFromUrl.flatMap(detailMap.get)) match {
         case Some(d) => IO.pure(d)
         case None    => IO.raiseError[AmendmentDetailDTO](new IllegalStateException(s"no stub detail for $detailUrl"))
       }
@@ -456,6 +465,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = baseConfig.maxRecursionDepth + 1,
         correlationId = testCorrelationId,
@@ -487,6 +497,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(item),
+        detailUrlOpt = None,
         storedOpt = Some(stored),
         depth = 0,
         correlationId = testCorrelationId,
@@ -511,6 +522,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(item),
+        detailUrlOpt = None,
         storedOpt = Some(storedAmendment(updateDate = Some(Instant.parse("2024-05-01T00:00:00Z")))),
         depth = 0,
         correlationId = testCorrelationId,
@@ -518,7 +530,9 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .unsafeRunSync()
 
     val _ = result shouldBe ProcessingResult.Succeeded("117-SAMDT-100")
-    val _ = calls.get().map(_.detailUrl) shouldBe List("117-SAMDT-100")
+    val _ = calls.get().map(_.detailUrl) shouldBe List(
+      "https://api.congress.gov/v3/amendment/117/samdt/100"
+    )
     aRepo.upsertCallsRef.get().size shouldBe 1
   }
 
@@ -537,6 +551,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = 0,
         correlationId = testCorrelationId,
@@ -561,6 +576,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = 0,
         correlationId = testCorrelationId,
@@ -594,6 +610,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = 0,
         correlationId = testCorrelationId,
@@ -617,6 +634,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = 0,
         correlationId = testCorrelationId,
@@ -649,6 +667,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = 0,
         correlationId = testCorrelationId,
@@ -657,7 +676,13 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
 
     val ids = calls.get().map(_.correlationId).distinct
     val _   = ids shouldBe List(testCorrelationId)
-    calls.get().map(_.detailUrl).toSet shouldBe Set("117-SAMDT-100", "117-SAMDT-90")
+    // Child fetch uses the listItem-supplied URL; parent recursion has no URL on its `amendedAmendment`
+    // ref, so the processor falls back to the natural key. The TestApiClient's stub map treats the URL
+    // last-3-segments (or the natural key directly) as a lookup, so both forms hit the right detail.
+    calls.get().map(_.detailUrl).toSet shouldBe Set(
+      "https://api.congress.gov/v3/amendment/117/samdt/100",
+      "117-SAMDT-90",
+    )
   }
 
   it should "short-circuit parent recursion when the parent is already hydrated (updateDate.isDefined)" in {
@@ -686,6 +711,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = 0,
         correlationId = testCorrelationId,
@@ -693,7 +719,9 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .unsafeRunSync()
 
     // Only the child detail should have been fetched; parent is already hydrated.
-    val _ = calls.get().map(_.detailUrl) shouldBe List("117-SAMDT-100")
+    val _ = calls.get().map(_.detailUrl) shouldBe List(
+      "https://api.congress.gov/v3/amendment/117/samdt/100"
+    )
     aRepo.upsertCallsRef.get().headOption match {
       case Some(saved) =>
         val _ = saved.parentAmendmentId shouldBe Some(parentStored.amendmentId)
@@ -743,6 +771,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = 0,
         correlationId = testCorrelationId,
@@ -766,6 +795,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-",
         listItemOpt = Some(listItem(number = "")),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = 0,
         correlationId = testCorrelationId,
@@ -794,6 +824,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = 0,
         correlationId = testCorrelationId,
@@ -858,7 +889,81 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
 
     val _ = results.count(_.isSkipped) shouldBe 1
     val _ = results.count(_.isSucceeded) shouldBe 1
-    calls.get().map(_.detailUrl) shouldBe List("117-SAMDT-101")
+    calls.get().map(_.detailUrl) shouldBe List(
+      "https://api.congress.gov/v3/amendment/117/samdt/101"
+    )
+  }
+
+  it should "filter out items whose congress falls outside [congressesMin, congressesMax] and bump the metric" in {
+    val items = List(
+      listItem(congress = 101, number = "10", updateDate = Some("2024-06-02T12:00:00Z")), // below 102 cutoff
+      listItem(congress = 117, number = "11", updateDate = Some("2024-06-02T12:00:00Z")), // in-range
+      listItem(congress = 130, number = "12", updateDate = Some("2024-06-02T12:00:00Z")), // above max
+    )
+    val details = items
+      .filter(it => it.congress >= 117 && it.congress <= 117)
+      .map(it => AmendmentNaturalKeys.fromListItem(it) -> detail(congress = it.congress, number = it.number))
+      .toMap
+
+    val (api, calls) = mockApi(detailMap = details, pageItems = items)
+    val aRepo        = new StubAmendmentRepo(Map.empty)
+    val bRepo        = new StubBillRepo
+    val mRepo        = new StubMemberRepo
+    val placeholder  = new StubPlaceholderCreator
+    val metrics      = AmendmentMetrics.make()
+    val processor =
+      buildProcessor(
+        api,
+        aRepo,
+        bRepo,
+        mRepo,
+        placeholder,
+        config = baseConfig.copy(congressesMin = 117, congressesMax = 117, parallelism = 1),
+        metrics = metrics,
+      )
+
+    val results = processor.streamAll("run-filter").compile.toList.unsafeRunSync()
+
+    val _ = results.size shouldBe 1
+    val _ = results.headOption.map(_.entityId) shouldBe Some("117-SAMDT-11")
+    val _ = calls.get().map(_.detailUrl) shouldBe List(
+      "https://api.congress.gov/v3/amendment/117/samdt/11"
+    )
+    val _ = aRepo.upsertCallsRef.get().size shouldBe 1
+    metrics.snapshot().congressOutOfRange shouldBe 2L
+  }
+
+  it should "issue findByNaturalKeys with only in-range keys when out-of-range items exist" in {
+    val items = List(
+      listItem(congress = 101, number = "10", updateDate = Some("2024-06-02T12:00:00Z")), // below cutoff
+      listItem(congress = 117, number = "11", updateDate = Some("2024-06-02T12:00:00Z")),
+    )
+    val details = Map(
+      "117-SAMDT-11" -> detail(congress = 117, number = "11")
+    )
+
+    val (api, _)    = mockApi(detailMap = details, pageItems = items)
+    val aRepo       = new StubAmendmentRepo(Map.empty)
+    val bRepo       = new StubBillRepo
+    val mRepo       = new StubMemberRepo
+    val placeholder = new StubPlaceholderCreator
+    val metrics     = AmendmentMetrics.make()
+    val processor =
+      buildProcessor(
+        api,
+        aRepo,
+        bRepo,
+        mRepo,
+        placeholder,
+        config = baseConfig.copy(congressesMin = 117, congressesMax = 117, parallelism = 1),
+        metrics = metrics,
+      )
+
+    val _ = processor.streamAll("run-filter-batch").compile.toList.unsafeRunSync()
+
+    val batchCalls = aRepo.findByNaturalKeysCallsRef.get()
+    val _          = batchCalls.size shouldBe 1
+    batchCalls.headOption shouldBe Some(List("117-SAMDT-11"))
   }
 
   it should "emit a unique correlationId per LIST-page amendment" in {
@@ -959,6 +1064,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       .processAmendment(
         naturalKey = "117-SAMDT-100",
         listItemOpt = Some(listItem(number = "100")),
+        detailUrlOpt = None,
         storedOpt = None,
         depth = 0,
         correlationId = testCorrelationId,

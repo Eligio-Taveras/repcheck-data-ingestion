@@ -11,7 +11,8 @@ class AmendmentMetricsSpec extends AnyFlatSpec with Matchers {
     val _ = s.detailFetches shouldBe 0L
     val _ = s.recursionRedundantFetches shouldBe 0L
     val _ = s.orphanResolved shouldBe 0L
-    s.recursionDepthExceeded shouldBe 0L
+    val _ = s.recursionDepthExceeded shouldBe 0L
+    s.congressOutOfRange shouldBe 0L
   }
 
   it should "increment each counter independently" in {
@@ -23,12 +24,17 @@ class AmendmentMetricsSpec extends AnyFlatSpec with Matchers {
     m.incrementOrphanResolved()
     m.incrementOrphanResolved()
     m.incrementRecursionDepthExceeded()
+    m.incrementCongressOutOfRange()
+    m.incrementCongressOutOfRange()
+    m.incrementCongressOutOfRange()
+    m.incrementCongressOutOfRange()
 
     val s = m.snapshot()
     val _ = s.detailFetches shouldBe 2L
     val _ = s.recursionRedundantFetches shouldBe 1L
     val _ = s.orphanResolved shouldBe 3L
-    s.recursionDepthExceeded shouldBe 1L
+    val _ = s.recursionDepthExceeded shouldBe 1L
+    s.congressOutOfRange shouldBe 4L
   }
 
   it should "be safe under concurrent increments" in {

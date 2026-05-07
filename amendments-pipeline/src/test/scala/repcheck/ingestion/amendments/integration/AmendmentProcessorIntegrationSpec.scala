@@ -52,7 +52,6 @@ class AmendmentProcessorIntegrationSpec
       .options()
       .bindAddress("127.0.0.1")
       .dynamicPort()
-      .usingFilesUnderClasspath("")
   )
 
   private lazy val httpClient = EmberClientBuilder
@@ -70,6 +69,26 @@ class AmendmentProcessorIntegrationSpec
     override def warn(context: LogContext, message: String): IO[Unit]                            = IO.unit
     override def error(context: LogContext, message: String, cause: Option[Throwable]): IO[Unit] = IO.unit
     override def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
+  }
+
+  /**
+   * Load a JSON fixture from `__files/...` as a UTF-8 string. WireMock 3.x's `withBodyFile` lookup is unreliable across
+   * the different sbt classpath layouts the integration suite hits (forked vs in-process, classes vs jar packaging), so
+   * we read the file into the JVM and pass it via `withBody` instead. Rewrites any literal `https://api.congress.gov`
+   * URLs in the fixture to point at the running WireMock instance — the captured fixtures embed the real Congress.gov
+   * host, but the parent-recursion path follows those URLs verbatim, so without rewriting them the test would call out
+   * to the live API (and 403, since we don't ship a real key).
+   */
+  private def loadBodyFile(path: String): String = {
+    val resource = s"__files/$path"
+    val stream = Option(getClass.getClassLoader.getResourceAsStream(resource)) match {
+      case Some(s) => s
+      case None    => sys.error(s"missing fixture: $resource")
+    }
+    val raw =
+      try new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+      finally stream.close()
+    raw.replace("https://api.congress.gov", s"http://localhost:${wireMock.port().toString}")
   }
 
   private def buildProcessor(
@@ -124,9 +143,10 @@ class AmendmentProcessorIntegrationSpec
   // --------------------------------------------------------------------------------------------
 
   "AmendmentProcessor.streamAll" should "hydrate a sub-amendment chain via inline recursion" taggedAs DockerRequired in {
-    // List page returns just the sub-amendment (depth=2).
+    // List page returns just the sub-amendment (depth=2). The processor now hits the GLOBAL
+    // `/v3/amendment` endpoint (no congress in path) and filters by `[congressesMin, congressesMax]` in-process.
     wireMock.stubFor(
-      get(urlPathEqualTo("/v3/amendment/117"))
+      get(urlPathEqualTo("/v3/amendment"))
         .willReturn(
           aResponse()
             .withStatus(200)
@@ -151,7 +171,7 @@ class AmendmentProcessorIntegrationSpec
         aResponse()
           .withStatus(200)
           .withHeader("Content-Type", "application/json")
-          .withBodyFile("wiremock/amendments/detail-117-suamdt-200.json")
+          .withBody(loadBodyFile("wiremock/amendments/detail-117-suamdt-200.json"))
       )
     )
 
@@ -160,7 +180,7 @@ class AmendmentProcessorIntegrationSpec
         aResponse()
           .withStatus(200)
           .withHeader("Content-Type", "application/json")
-          .withBodyFile("wiremock/amendments/detail-117-samdt-100.json")
+          .withBody(loadBodyFile("wiremock/amendments/detail-117-samdt-100.json"))
       )
     )
 
@@ -214,7 +234,7 @@ class AmendmentProcessorIntegrationSpec
 
   it should "persist a standalone amendment with direct bill resolution" taggedAs DockerRequired in {
     wireMock.stubFor(
-      get(urlPathEqualTo("/v3/amendment/117"))
+      get(urlPathEqualTo("/v3/amendment"))
         .willReturn(
           aResponse()
             .withStatus(200)
@@ -239,7 +259,7 @@ class AmendmentProcessorIntegrationSpec
         aResponse()
           .withStatus(200)
           .withHeader("Content-Type", "application/json")
-          .withBodyFile("wiremock/amendments/detail-117-samdt-100.json")
+          .withBody(loadBodyFile("wiremock/amendments/detail-117-samdt-100.json"))
       )
     )
 

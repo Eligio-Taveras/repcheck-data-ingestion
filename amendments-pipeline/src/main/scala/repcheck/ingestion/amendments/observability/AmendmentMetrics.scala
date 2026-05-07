@@ -21,6 +21,7 @@ final class AmendmentMetrics {
   private val orphanResolved            = new AtomicLong(0L)
   private val recursionDepthExceeded    = new AtomicLong(0L)
   private val totalDetailFetches        = new AtomicLong(0L)
+  private val congressOutOfRange        = new AtomicLong(0L)
 
   /**
    * Bump the redundant-detail-fetch counter when the recursion code path knowingly fetches a parent that another fiber
@@ -50,12 +51,22 @@ final class AmendmentMetrics {
     val _ = recursionDepthExceeded.incrementAndGet()
   }
 
+  /**
+   * Bump when a list-page item is filtered out because its `congress` falls outside `[congressesMin, congressesMax]`.
+   * The global `/v3/amendment` endpoint returns rows from every congress edited within the lookback window; this
+   * counter surfaces the rate at which we discard out-of-scope rows (most notably the pre-102 cutoff).
+   */
+  def incrementCongressOutOfRange(): Unit = {
+    val _ = congressOutOfRange.incrementAndGet()
+  }
+
   def snapshot(): AmendmentMetricsSnapshot =
     AmendmentMetricsSnapshot(
       detailFetches = totalDetailFetches.get(),
       recursionRedundantFetches = recursionRedundantFetches.get(),
       orphanResolved = orphanResolved.get(),
       recursionDepthExceeded = recursionDepthExceeded.get(),
+      congressOutOfRange = congressOutOfRange.get(),
     )
 
 }
@@ -74,4 +85,5 @@ final case class AmendmentMetricsSnapshot(
   recursionRedundantFetches: Long,
   orphanResolved: Long,
   recursionDepthExceeded: Long,
+  congressOutOfRange: Long,
 )
