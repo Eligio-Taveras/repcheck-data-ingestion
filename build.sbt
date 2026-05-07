@@ -290,6 +290,8 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
     assembly / assemblyJarName := "bill-text-pipeline.jar",
   )
 
+// `amendments-pipeline` — Component 7. Processor + IOApp pure-wiring (§7.3) lives here, on top
+// of the API client (§7.1) and repository (§7.2) merged earlier in Phase 2.
 lazy val amendmentsPipeline = (project in file("amendments-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
   .dependsOn(membersCommon % "compile->compile;test->test")
@@ -300,10 +302,17 @@ lazy val amendmentsPipeline = (project in file("amendments-pipeline"))
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ pubSub ++ fs2 ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
-    coverageExcludedFiles                  := ".*AmendmentsPipelineApp",
-    Test / parallelExecution               := false,
-    assembly / mainClass                   := Some("repcheck.ingestion.amendments.app.AmendmentsPipelineApp"),
-    assembly / assemblyJarName             := "amendments-pipeline.jar",
+    // Per CLAUDE.md testability rule: the IOApp + the production-only `AmendmentsPipelineRun` and
+    // `AmendmentsPipelineResources` are pure wiring — they construct the real EmberClient + AlloyDB
+    // transactor + WorkflowStateUpdater and delegate to the testable `AmendmentsPipeline.runWithFactories`.
+    // Everything else is covered (≥95% per-file).
+    coverageExcludedFiles := ".*AmendmentsPipelineApp;.*AmendmentsPipelineResources;.*AmendmentsPipelineRun",
+    // Shared SharedDockerPostgres singleton + per-suite table truncation make intra-subproject
+    // parallel execution unsafe; cross-subproject parallelism (configurable via
+    // `-Dsbt.testConcurrency=N`, default 2) still provides the speedup.
+    Test / parallelExecution   := false,
+    assembly / mainClass       := Some("repcheck.ingestion.amendments.app.AmendmentsPipelineApp"),
+    assembly / assemblyJarName := "amendments-pipeline.jar",
   )
 
 lazy val votesPipeline = (project in file("votes-pipeline"))
