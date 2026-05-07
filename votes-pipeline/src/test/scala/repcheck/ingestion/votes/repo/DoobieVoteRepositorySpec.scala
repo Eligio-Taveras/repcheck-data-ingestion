@@ -11,7 +11,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.votes.testing.TransactorFixture
 import repcheck.members.common.testing.DockerRequired
-import repcheck.shared.models.congress.common.{BillType, Chamber}
+import repcheck.shared.models.congress.common.{BillType, Chamber, LegislationKind}
 import repcheck.shared.models.congress.dos.vote.VoteDO
 import repcheck.shared.models.congress.vote.{VoteMethod, VoteType}
 
@@ -50,7 +50,9 @@ class DoobieVoteRepositorySpec extends AnyFlatSpec with Matchers with Transactor
       result = Some("Passed"),
       voteDate = voteDate,
       legislationNumber = Some("100"),
-      legislationType = Some(BillType.HR),
+      legislationType = Some(LegislationKind.BILL),
+      billType = Some(BillType.HR),
+      amendmentType = None,
       legislationUrl = Some("https://www.congress.gov/bill/118th-congress/house-bill/100"),
       sourceDataUrl = Some("https://clerk.house.gov/Votes/2024/roll1.xml"),
       updateDate = updateDate,

@@ -31,7 +31,7 @@ class DoobieVoteRepository extends VoteRepository {
   private val voteColumns: Fragment =
     fr"""id, natural_key, congress, chamber, roll_number, session_number, bill_id,
          question, vote_type, vote_method, result, vote_date, legislation_number,
-         legislation_type, legislation_url, source_data_url, update_date,
+         legislation_type, bill_type, amendment_type, legislation_url, source_data_url, update_date,
          created_at, updated_at"""
 
   override def findByNaturalKey(naturalKey: String): ConnectionIO[Option[VoteDO]] = {
@@ -67,13 +67,13 @@ class DoobieVoteRepository extends VoteRepository {
     sql"""INSERT INTO $table (
       natural_key, congress, chamber, roll_number, session_number, bill_id,
       question, vote_type, vote_method, result, vote_date, legislation_number,
-      legislation_type, legislation_url, source_data_url, update_date
+      legislation_type, bill_type, amendment_type, legislation_url, source_data_url, update_date
     ) VALUES (
       ${vote.naturalKey}, ${vote.congress}, ${vote.chamber}, ${vote.rollNumber},
       ${vote.sessionNumber}, ${vote.billId}, ${vote.question}, ${vote.voteType},
       ${vote.voteMethod}, ${vote.result}, ${vote.voteDate}, ${vote.legislationNumber},
-      ${vote.legislationType}, ${vote.legislationUrl}, ${vote.sourceDataUrl},
-      ${vote.updateDate}
+      ${vote.legislationType}, ${vote.billType}, ${vote.amendmentType},
+      ${vote.legislationUrl}, ${vote.sourceDataUrl}, ${vote.updateDate}
     )
     ON CONFLICT (natural_key) DO UPDATE SET
       congress = EXCLUDED.congress,
@@ -88,13 +88,15 @@ class DoobieVoteRepository extends VoteRepository {
       vote_date = EXCLUDED.vote_date,
       legislation_number = EXCLUDED.legislation_number,
       legislation_type = EXCLUDED.legislation_type,
+      bill_type = EXCLUDED.bill_type,
+      amendment_type = EXCLUDED.amendment_type,
       legislation_url = EXCLUDED.legislation_url,
       source_data_url = EXCLUDED.source_data_url,
       update_date = EXCLUDED.update_date,
       updated_at = NOW()
     RETURNING id, natural_key, congress, chamber, roll_number, session_number, bill_id,
               question, vote_type, vote_method, result, vote_date, legislation_number,
-              legislation_type, legislation_url, source_data_url, update_date,
+              legislation_type, bill_type, amendment_type, legislation_url, source_data_url, update_date,
               created_at, updated_at""".query[VoteDO].unique
   }
 

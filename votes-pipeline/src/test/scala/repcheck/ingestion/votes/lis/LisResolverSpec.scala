@@ -92,6 +92,9 @@ class LisResolverSpec extends AnyFlatSpec with Matchers with MockitoSugar {
         documentName = "S. 42",
         documentTitle = "Fixture bill title",
         documentShortTitle = None,
+        amendmentNumber = None,
+        amendmentToDocumentNumber = None,
+        amendmentToDocumentShortTitle = None,
       ),
       members = members,
     )

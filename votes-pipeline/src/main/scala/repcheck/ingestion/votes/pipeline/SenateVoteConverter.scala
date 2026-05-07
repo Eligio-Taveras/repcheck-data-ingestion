@@ -11,7 +11,8 @@ import cats.syntax.all._
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.xml.SenateVoteUrls
-import repcheck.shared.models.congress.common.{BillType, Chamber, Party, UsState}
+import repcheck.shared.models.congress.amendment.AmendmentType
+import repcheck.shared.models.congress.common.{BillType, Chamber, LegislationKind, Party, UsState}
 import repcheck.shared.models.congress.dos.results.{UnresolvedVotePosition, VoteConversionResult}
 import repcheck.shared.models.congress.dos.vote.VoteDO
 import repcheck.shared.models.congress.dto.conversions.{BillConversions, VoteConversions}
@@ -131,7 +132,9 @@ class SenateVoteConverter[F[_]: Async](
         Async[F].pure(
           DocumentClassification(
             billNaturalKey = Some(billNK),
-            legislationType = Some(billType),
+            legislationType = Some(LegislationKind.BILL),
+            billType = Some(billType),
+            amendmentType = None,
             legislationNumber = Some(document.documentNumber),
             legislationUrl = buildCongressGovBillUrl(document.documentCongress, billType, document.documentNumber),
           )
@@ -188,6 +191,8 @@ class SenateVoteConverter[F[_]: Async](
       voteDate = parsedDate,
       legislationNumber = classification.legislationNumber,
       legislationType = classification.legislationType,
+      billType = classification.billType,
+      amendmentType = classification.amendmentType,
       legislationUrl = classification.legislationUrl,
       sourceDataUrl = Some(sourceDataUrl),
       updateDate = parsedDate.map(_.atStartOfDay().toInstant(ZoneOffset.UTC)),
@@ -222,13 +227,15 @@ private[pipeline] object SenateVoteConverter {
    */
   final case class DocumentClassification(
     billNaturalKey: Option[String],
-    legislationType: Option[BillType],
+    legislationType: Option[LegislationKind],
+    billType: Option[BillType],
+    amendmentType: Option[AmendmentType],
     legislationNumber: Option[String],
     legislationUrl: Option[String],
   )
 
   object DocumentClassification {
-    val empty: DocumentClassification = DocumentClassification(None, None, None, None)
+    val empty: DocumentClassification = DocumentClassification(None, None, None, None, None, None)
   }
 
   /**

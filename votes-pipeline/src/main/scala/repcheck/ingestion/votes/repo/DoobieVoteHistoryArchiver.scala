@@ -69,12 +69,12 @@ class DoobieVoteHistoryArchiver extends VoteHistoryArchiver {
       INSERT INTO $historyTable (
         vote_id, congress, chamber, roll_number, session_number, bill_id,
         question, vote_type, vote_method, result, vote_date, legislation_number,
-        legislation_type, legislation_url, source_data_url, update_date
+        legislation_type, bill_type, amendment_type, legislation_url, source_data_url, update_date
       )
       SELECT
         id, congress, chamber, roll_number, session_number, bill_id,
         question, vote_type, vote_method, result, vote_date, legislation_number,
-        legislation_type, legislation_url, source_data_url, update_date
+        legislation_type, bill_type, amendment_type, legislation_url, source_data_url, update_date
       FROM $votesTable
       WHERE id = $voteId
       RETURNING id

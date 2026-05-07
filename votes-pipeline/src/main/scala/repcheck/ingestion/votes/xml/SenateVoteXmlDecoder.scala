@@ -226,6 +226,9 @@ object SenateVoteXmlDecoder {
             documentName = "",
             documentTitle = "",
             documentShortTitle = None,
+            amendmentNumber = None,
+            amendmentToDocumentNumber = None,
+            amendmentToDocumentShortTitle = None,
           )
         )
       case Some(docNode) =>
@@ -254,6 +257,9 @@ object SenateVoteXmlDecoder {
             documentName = docName,
             documentTitle = docTitle,
             documentShortTitle = docShortTitle,
+            amendmentNumber = None,
+            amendmentToDocumentNumber = None,
+            amendmentToDocumentShortTitle = None,
           )
         )
     }
