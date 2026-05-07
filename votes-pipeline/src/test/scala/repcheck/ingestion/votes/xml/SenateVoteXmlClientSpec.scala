@@ -356,4 +356,43 @@ class SenateVoteXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     succeed
   }
 
+  // ------------------------------------------------------------------
+  // §7.4 — amendment-vote XML integration: amendment fields are folded into the canonical document DTO
+  // ------------------------------------------------------------------
+
+  it should "decode an amendment-vote XML body with amendment fields populated on the document DTO" in {
+    val amendmentXml =
+      """<?xml version="1.0" encoding="UTF-8"?>
+        |<roll_call_vote>
+        |  <congress>117</congress>
+        |  <session>1</session>
+        |  <vote_number>312</vote_number>
+        |  <question>On the Amendment</question>
+        |  <vote_date>2025-01-25T11:30:00</vote_date>
+        |  <vote_result>Amendment Agreed To</vote_result>
+        |  <document>
+        |    <document_congress>117</document_congress>
+        |    <document_type>S.Amdt.</document_type>
+        |    <document_number/>
+        |    <document_name/>
+        |    <document_title/>
+        |    <document_short_title/>
+        |  </document>
+        |  <amendment_number>S.Amdt. 2137</amendment_number>
+        |  <amendment_to_document_number>H.R. 3684</amendment_to_document_number>
+        |  <amendment_to_document_short_title>INVEST in America Act</amendment_to_document_short_title>
+        |  <members/>
+        |</roll_call_vote>""".stripMargin
+    stubXml("/roll_call_votes/vote1171/vote_117_1_00312.xml", amendmentXml)
+
+    val dto = makeClient().fetchVote(117, 1, 312).unsafeRunSync()
+
+    val _ = dto.congress shouldBe 117
+    val _ = dto.document.documentType shouldBe "S.Amdt."
+    val _ = dto.document.documentNumber shouldBe ""
+    val _ = dto.document.amendmentNumber shouldBe Some("S.Amdt. 2137")
+    val _ = dto.document.amendmentToDocumentNumber shouldBe Some("H.R. 3684")
+    dto.document.amendmentToDocumentShortTitle shouldBe Some("INVEST in America Act")
+  }
+
 }

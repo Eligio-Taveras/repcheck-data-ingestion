@@ -90,6 +90,11 @@ object SenateVoteXmlDecoder {
    * vote's `<members>` list is decoded entry-by-entry; if any entry is missing a required field (for example
    * `<lis_member_id>`), the whole decode fails rather than silently dropping members — ingestion correctness matters
    * more than best-effort tolerance for roll-call positions.
+   *
+   * Per shared-models 0.1.45, [[SenateVoteDocumentDTO]] now carries `amendmentNumber`, `amendmentToDocumentNumber`, and
+   * `amendmentToDocumentShortTitle` directly. Senate.gov emits those three elements top-level on `<roll_call_vote>`
+   * (not nested under `<document>`) and only populates them on amendment votes; the decoder reads them at the root
+   * level and writes them into the canonical document DTO.
    */
   def decodeVote(elem: Elem): Either[XmlParseFailed, SenateVoteXmlDTO] =
     if (elem.label != "roll_call_vote") {
@@ -116,7 +121,11 @@ object SenateVoteXmlDecoder {
         question = question,
         voteDate = voteDate,
         result = result,
-        document = document,
+        document = document.copy(
+          amendmentNumber = textOpt(elem, "amendment_number"),
+          amendmentToDocumentNumber = textOpt(elem, "amendment_to_document_number"),
+          amendmentToDocumentShortTitle = textOpt(elem, "amendment_to_document_short_title"),
+        ),
         members = members,
       )
     }

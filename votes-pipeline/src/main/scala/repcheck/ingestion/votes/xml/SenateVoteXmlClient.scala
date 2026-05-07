@@ -79,7 +79,10 @@ class SenateVoteXmlClient[F[_]: Async](
   }
 
   /**
-   * Fetch a single Senate roll-call vote and decode it into a [[SenateVoteXmlDTO]].
+   * Fetch a single Senate roll-call vote and decode it into a [[SenateVoteXmlDTO]]. Per shared-models 0.1.45 the DTO's
+   * `document` member carries the amendment-vote fields (`amendmentNumber`, `amendmentToDocumentNumber`,
+   * `amendmentToDocumentShortTitle`) directly — populated by the decoder from the top-level `<roll_call_vote>` siblings
+   * for amendment votes, and `None` for bill votes.
    *
    * `voteNumber` must satisfy `1 <= voteNumber < 100000` (senate.gov's 5-digit URL segment). Values outside that range
    * fail fast with [[SenateVoteFetchFailed]] before any HTTP call is made.

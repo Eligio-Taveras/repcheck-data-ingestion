@@ -310,6 +310,10 @@ lazy val votesPipeline = (project in file("votes-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
   .dependsOn(membersCommon % "compile->compile;test->test")
   .dependsOn(billsCommon % "compile->compile;test->test")
+  // §7.4: votes-pipeline writes amendment placeholders when a roll-call references S.Amdt./H.Amdt.
+  // legislation. amendments-pipeline owns AmendmentRepository + DoobieAmendmentRepository; only two
+  // consumers (this and amendments-pipeline itself) → no separate amendments-common module per design.
+  .dependsOn(amendmentsPipeline % "compile->compile;test->test")
   .settings(pipelineSettings)
   .settings(
     name := "votes-pipeline",
