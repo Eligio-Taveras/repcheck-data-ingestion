@@ -45,9 +45,9 @@ import repcheck.shared.models.congress.vote.{VoteCast, VoteType}
  *     `{congress}-{TYPE}-{number}`, and calls [[AmendmentRepository.upsertPlaceholder]] to reserve a row that the
  *     amendments-pipeline will hydrate later. `VoteDO.billId = None` (votes don't FK to amendments per §7.4 OQ2),
  *     `legislationType = Some(LegislationKind.AMENDMENT)`, `billType = None`, `amendmentType = Some(...)`,
- *     `legislationNumber = Some(number)`. If `document.amendmentToDocumentNumber` is populated the converter ALSO
- *     calls `billRepo.upsertPlaceholder` for the parent bill's natural key — that gives the amendments-pipeline
- *     somewhere to attach `bill_id` when it later hydrates the amendment.
+ *     `legislationNumber = Some(number)`. If `document.amendmentToDocumentNumber` is populated the converter ALSO calls
+ *     `billRepo.upsertPlaceholder` for the parent bill's natural key — that gives the amendments-pipeline somewhere to
+ *     attach `bill_id` when it later hydrates the amendment.
  *   - `"PN"` / `"Treaty Doc."`: non-bill, non-amendment. Persisted with `billId = None` + INFO log.
  *   - Any other documentType: `billId = None`, WARN log.
  *
@@ -122,9 +122,9 @@ class SenateVoteConverter[F[_]: Async](
   }
 
   /**
-   * Classify the `<document>` element (which now carries amendment-vote fields directly per shared-models 0.1.45),
-   * log at the appropriate level, perform the amendment-side placeholder upserts when the vote is amendment-classified,
-   * and return a [[DocumentClassification]] with the derived bill natural key (for bill-like types) and the parsed
+   * Classify the `<document>` element (which now carries amendment-vote fields directly per shared-models 0.1.45), log
+   * at the appropriate level, perform the amendment-side placeholder upserts when the vote is amendment-classified, and
+   * return a [[DocumentClassification]] with the derived bill natural key (for bill-like types) and the parsed
    * amendment number (for amendment types).
    *
    * ==Why the documentCongress > 0 gate==
