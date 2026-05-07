@@ -55,8 +55,8 @@ lazy val commonSettings = Seq(
   libraryDependencies ++= Seq(
     "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.25",
     "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.28",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.34" % Test,
-    "com.repcheck" %% "repchecksharedmodels"          % "0.1.43",
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.35" % Test,
+    "com.repcheck" %% "repchecksharedmodels"          % "0.1.45",
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
@@ -151,7 +151,7 @@ lazy val commonTesting = (project in file("common-testing"))
     name := "common-testing",
     libraryDependencies ++= catsEffect ++ doobie ++ Seq(
       "org.scalatest" %% "scalatest"                     % "3.2.18",
-      "com.repcheck"  %% "repcheck-db-migrations-runner" % "0.1.34",
+      "com.repcheck"  %% "repcheck-db-migrations-runner" % "0.1.35",
     ),
   )
 
@@ -294,8 +294,8 @@ lazy val billTextPipeline = (project in file("bill-text-pipeline"))
 // of the API client (§7.1) and repository (§7.2) merged earlier in Phase 2.
 lazy val amendmentsPipeline = (project in file("amendments-pipeline"))
   .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
-  .dependsOn(billsCommon % "compile->compile;test->test")
   .dependsOn(membersCommon % "compile->compile;test->test")
+  .dependsOn(billsCommon % "compile->compile;test->test")
   .settings(pipelineSettings)
   .settings(
     name := "amendments-pipeline",

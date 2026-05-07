@@ -87,6 +87,9 @@ class VoteNaturalKeysSpec extends AnyFlatSpec with Matchers {
         documentName = s"$docType $docNumber",
         documentTitle = "Title",
         documentShortTitle = None,
+        amendmentNumber = None,
+        amendmentToDocumentNumber = None,
+        amendmentToDocumentShortTitle = None,
       ),
       members = List.empty,
     )
