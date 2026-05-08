@@ -64,8 +64,6 @@ class AmendmentTextCheckerIntegrationSpec
     minCongress = 117,
     staleAfter = 1.second,
     parallelism = 1,
-    pageDelay = 1.millis,
-    pageSize = 250,
     eventPublishRetry = testRetryConfig,
   )
 

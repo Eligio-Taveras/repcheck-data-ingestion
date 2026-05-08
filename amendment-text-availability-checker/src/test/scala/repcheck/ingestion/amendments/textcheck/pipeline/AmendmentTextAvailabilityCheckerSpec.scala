@@ -45,8 +45,6 @@ class AmendmentTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers wit
     minCongress = 117,
     staleAfter = 1.hour,
     parallelism = 1,
-    pageDelay = 0.millis,
-    pageSize = 250,
   )
 
   private case class TestFixture(
@@ -360,10 +358,22 @@ class AmendmentTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers wit
 
     val _ = f.checker.checkAll(runId).compile.toList.unsafeRunSync()
 
-    val captor         = org.mockito.ArgumentCaptor.forClass(classOf[AmendmentTextAvailableEvent])
-    val _              = verify(f.eventPublisher, times(2)).publish(captor.capture(), any[UUID])
-    val correlationIds = captor.getAllValues.toArray(Array.empty[Object]).toSet
-    correlationIds.size shouldBe 2
+    // Capture both the event payload and the correlationId arg passed alongside it. Asserting on the captured
+    // UUIDs (rather than on the captured events themselves) is the only way to actually verify the correlationIds
+    // differ — events differ by amendment fields anyway, so a Set of events would be size=2 even if both
+    // publishes had reused the same UUID.
+    val eventCaptor = org.mockito.ArgumentCaptor.forClass(classOf[AmendmentTextAvailableEvent])
+    val uuidCaptor  = org.mockito.ArgumentCaptor.forClass(classOf[UUID])
+    val _           = verify(f.eventPublisher, times(2)).publish(eventCaptor.capture(), uuidCaptor.capture())
+
+    import scala.jdk.CollectionConverters._
+    val capturedUuids = uuidCaptor.getAllValues.asScala.toList.toSet
+    val capturedEventCorrIds =
+      eventCaptor.getAllValues.asScala.toList.map(_.correlationId).toSet
+    val _ = capturedUuids.size shouldBe 2
+    val _ = capturedEventCorrIds.size shouldBe 2
+    // The UUID arg and the event's correlationId must agree per call (same correlation thread).
+    capturedUuids shouldBe capturedEventCorrIds
   }
 
   "stampLastChecked" should "delegate to the repository" in {
