@@ -20,7 +20,7 @@ import repcheck.ingestion.amendments.textcheck.pipeline.AmendmentTextAvailabilit
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
-import repcheck.ingestion.common.logging.PipelineLogger
+import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.errors.{ErrorClass, RetryWrapper}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
@@ -44,6 +44,14 @@ private[app] object AmendmentTextCheckerRun {
     eventPublisher: EventPublisherConfig,
   ) derives pureconfig.ConfigReader
 
+  /**
+   * @param runId
+   *   workflow-run identifier passed from the IOApp's CLI args. Defaults to `0L` when absent — placeholder until
+   *   `workflow_runs` registration is wired up. Threaded into `buildStream` and `PipelineExecutor.execute`.
+   * @param stepRunId
+   *   workflow_run_steps row identifier from the IOApp's CLI args. Defaults to `0L` — placeholder until
+   *   `workflow_run_steps` registration is wired up.
+   */
   private[app] def runWithFactories[F[_]: Async](
     configLoader: F[AppConfig],
     loggerFactory: String => F[PipelineLogger[F]],
@@ -58,7 +66,10 @@ private[app] object AmendmentTextCheckerRun {
     streamFactory: (
       AmendmentTextAvailabilityChecker[F],
       PipelineLogger[F],
+      Long,
     ) => Stream[F, ProcessingResult],
+    runId: Long = 0L,
+    stepRunId: Long = 0L,
   ): F[ExitCode] =
     for {
       config <- configLoader
@@ -71,22 +82,46 @@ private[app] object AmendmentTextCheckerRun {
           config,
           logger,
         )
-        val resultStream = streamFactory(checker, logger)
+        val resultStream = streamFactory(checker, logger, runId)
         PipelineExecutor.execute[F](
           resultStream = resultStream,
           logger = logger,
           pipelineName = PipelineName,
-          runId = 0L,
+          runId = runId,
+          stepRunId = stepRunId,
         )
       }
     } yield exitCode
 
   /**
-   * No-op retry logger — used when we don't need per-attempt logging on retries. Extracted as a named method (rather
-   * than inlined as a lambda) so tests can invoke it directly and cover its body.
+   * No-op retry logger — used by tests that don't want retry warnings polluting captured output. Extracted as a named
+   * method (rather than inlined as a lambda) so tests can invoke it directly and cover its body.
    */
   private[app] def noOpRetryLogger[F[_]: Async]: (Int, Int, Long, ErrorClass, String, UUID) => F[Unit] =
     (_, _, _, _, _, _) => Async[F].unit
+
+  /**
+   * Per-attempt retry logger used in production. Logs each retry as a `WARN` with the attempt number, max-attempts cap,
+   * scheduled delay, error classification, and originating message. Correlation ID is attached so the warning lines up
+   * with the surrounding per-amendment work in log aggregation.
+   *
+   * Constructed in `buildChecker` with the live [[PipelineLogger]] so retries emit through the same backend as the rest
+   * of the pipeline (structured JSON in production, line-formatted in tests).
+   */
+  private[app] def loggingRetryLogger[F[_]](
+    logger: PipelineLogger[F],
+    stepName: String,
+  ): (Int, Int, Long, ErrorClass, String, UUID) => F[Unit] =
+    (attempt, maxAttempts, delayMs, errorClass, errorMessage, correlationId) =>
+      logger.warn(
+        LogContext(
+          runId = correlationId.toString,
+          stepName = stepName,
+          correlationId = Some(correlationId),
+        ),
+        s"Retry ${attempt.toString}/${maxAttempts.toString} in ${delayMs.toString}ms after " +
+          s"${errorClass.toString} error: $errorMessage",
+      )
 
   private[app] def buildChecker[F[_]: Async](
     httpClient: Client[F],
@@ -97,7 +132,7 @@ private[app] object AmendmentTextCheckerRun {
   ): AmendmentTextAvailabilityChecker[F] = {
     val amendmentRepo     = new DoobieAmendmentRepository
     val textVersionLookup = new DoobieAmendmentTextVersionLookup
-    val retryWrapper      = new RetryWrapper[F](noOpRetryLogger[F])
+    val retryWrapper      = new RetryWrapper[F](loggingRetryLogger[F](logger, PipelineName))
     val eventPublisher = new DefaultAmendmentTextEventPublisher[F](
       publisher = pubSubPublisher,
       topicName = config.eventPublisher.topicName,
@@ -120,9 +155,10 @@ private[app] object AmendmentTextCheckerRun {
   private[app] def buildStream[F[_]](
     checker: AmendmentTextAvailabilityChecker[F],
     logger: PipelineLogger[F],
+    runId: Long,
   ): Stream[F, ProcessingResult] = {
     val _ = logger // reserved for future pre/post-stream logging
-    checker.checkAll(0L)
+    checker.checkAll(runId)
   }
 
   private[app] def buildResources[F[_]](

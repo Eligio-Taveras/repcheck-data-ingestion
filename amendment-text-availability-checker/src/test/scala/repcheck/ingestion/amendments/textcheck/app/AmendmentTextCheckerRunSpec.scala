@@ -118,7 +118,7 @@ class AmendmentTextCheckerRunSpec extends AnyFlatSpec with Matchers with Mockito
         resourceBuilder = (_: AppConfig, _: PipelineLogger[IO]) =>
           Resource.pure[IO, AmendmentTextCheckerResources[IO]](stubResources()),
         checkerFactory = (_, _, _, _, _) => mock[AmendmentTextAvailabilityChecker[IO]],
-        streamFactory = (_, _) => Stream.empty,
+        streamFactory = (_, _, _) => Stream.empty,
       )
       .unsafeRunSync()
     exit.code shouldBe 0
@@ -133,7 +133,7 @@ class AmendmentTextCheckerRunSpec extends AnyFlatSpec with Matchers with Mockito
         resourceBuilder = (_: AppConfig, _: PipelineLogger[IO]) =>
           Resource.pure[IO, AmendmentTextCheckerResources[IO]](stubResources()),
         checkerFactory = (_, _, _, _, _) => mock[AmendmentTextAvailabilityChecker[IO]],
-        streamFactory = (_, _) => Stream.empty,
+        streamFactory = (_, _, _) => Stream.empty,
       )
       .attempt
       .unsafeRunSync()
@@ -150,7 +150,7 @@ class AmendmentTextCheckerRunSpec extends AnyFlatSpec with Matchers with Mockito
         resourceBuilder = (_: AppConfig, _: PipelineLogger[IO]) =>
           Resource.pure[IO, AmendmentTextCheckerResources[IO]](stubResources()),
         checkerFactory = (_, _, _, _, _) => mock[AmendmentTextAvailabilityChecker[IO]],
-        streamFactory = (_, _) => Stream.empty,
+        streamFactory = (_, _, _) => Stream.empty,
       )
       .unsafeRunSync()
     logger.messages.exists(_.contains("Pipeline completed")) shouldBe true
@@ -235,7 +235,7 @@ class AmendmentTextCheckerRunSpec extends AnyFlatSpec with Matchers with Mockito
     val expectedResult = ProcessingResult.Succeeded(entityId = "117-SAMDT-1")
     when(checker.checkAll(anyLong())).thenReturn(Stream.emit(expectedResult))
 
-    val results = AmendmentTextCheckerRun.buildStream[IO](checker, logger).compile.toList.unsafeRunSync()
+    val results = AmendmentTextCheckerRun.buildStream[IO](checker, logger, 0L).compile.toList.unsafeRunSync()
     val _       = results.size shouldBe 1
     results.headOption.map(_.entityId) shouldBe Some("117-SAMDT-1")
   }
@@ -244,7 +244,36 @@ class AmendmentTextCheckerRunSpec extends AnyFlatSpec with Matchers with Mockito
     val logger  = new StubPipelineLogger
     val checker = mock[AmendmentTextAvailabilityChecker[IO]]
     when(checker.checkAll(anyLong())).thenReturn(Stream.empty)
-    AmendmentTextCheckerRun.buildStream[IO](checker, logger).compile.toList.unsafeRunSync() shouldBe empty
+    AmendmentTextCheckerRun.buildStream[IO](checker, logger, 0L).compile.toList.unsafeRunSync() shouldBe empty
+  }
+
+  it should "pass the runId through to checker.checkAll" in {
+    val logger  = new StubPipelineLogger
+    val checker = mock[AmendmentTextAvailabilityChecker[IO]]
+    val captured =
+      new java.util.concurrent.atomic.AtomicReference[Long](-1L)
+    when(checker.checkAll(anyLong())).thenAnswer { invocation =>
+      captured.set(invocation.getArgument[Long](0))
+      Stream.empty
+    }
+    val _ = AmendmentTextCheckerRun.buildStream[IO](checker, logger, 999L).compile.drain.unsafeRunSync()
+    captured.get shouldBe 999L
+  }
+
+  "loggingRetryLogger" should "emit a WARN with attempt/max/delay/correlationId context" in {
+    val logger      = new StubPipelineLogger
+    val correlation = UUID.fromString("11111111-2222-3333-4444-555555555555")
+    val _ = AmendmentTextCheckerRun
+      .loggingRetryLogger[IO](logger, "amendment-text-availability-checker")
+      .apply(2, 5, 250L, ErrorClass.Transient, "boom", correlation)
+      .unsafeRunSync()
+    val warns = logger.messages.filter(_.startsWith("WARN:"))
+    val _     = warns.size shouldBe 1
+    val msg   = warns.headOption.getOrElse("")
+    val _     = msg should include("Retry 2/5")
+    val _     = msg should include("250ms")
+    val _     = msg should include("Transient")
+    msg should include("boom")
   }
 
 }

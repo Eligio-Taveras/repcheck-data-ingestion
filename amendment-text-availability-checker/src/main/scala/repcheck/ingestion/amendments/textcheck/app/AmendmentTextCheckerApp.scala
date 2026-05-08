@@ -1,7 +1,5 @@
 package repcheck.ingestion.amendments.textcheck.app
 
-import scala.concurrent.duration._
-
 import cats.effect.{ExitCode, IO, IOApp, Sync}
 
 import org.http4s.ember.client.EmberClientBuilder
@@ -18,11 +16,19 @@ import repcheck.ingestion.common.logging.PipelineLoggerFactory
  * One-shot Cloud Run Job entry point. Loads config, builds resources, runs the stream to completion, exits.
  *
  * Pure wiring — every line here is a factory call into [[AmendmentTextCheckerRun]] (the testable companion).
+ *
+ * CLI args (positional, both optional, default `0L`):
+ *   - `args(0)` — `runId`: workflow-run identifier (Long); placeholder until the workflow_runs table is wired up.
+ *   - `args(1)` — `stepRunId`: workflow_run_steps row identifier (Long); placeholder until that table exists.
+ *
+ * Both default to `0L` when missing or unparseable so the app remains runnable without a workflow registrar.
  */
 object AmendmentTextCheckerApp extends IOApp {
 
   override def run(args: List[String]): IO[ExitCode] = {
-    val _ = args // args reserved for future CLI config override support
+    val runId     = args.lift(0).flatMap(_.toLongOption).getOrElse(0L)
+    val stepRunId = args.lift(1).flatMap(_.toLongOption).getOrElse(0L)
+
     AmendmentTextCheckerRun.runWithFactories[IO](
       configLoader = Sync[IO].delay(ConfigSource.default.loadOrThrow[AppConfig]),
       loggerFactory = (name: String) => PipelineLoggerFactory.make[IO](name),
@@ -31,12 +37,15 @@ object AmendmentTextCheckerApp extends IOApp {
           config,
           logger,
           TransactorResource.make[IO](_),
-          // 30s request timeout + 60s idle eviction matches the bill-side checker — protects against half-open
-          // connections hanging the JVM and against stale-pool reuse on long-running runs.
+          // Timeouts come from `congressApi.http` (HttpClientConfig in ingestion-common): a stuck request
+          // would otherwise hang on a half-open connection (no timeout = unbounded wait), and idle eviction
+          // stops stale connections from accumulating across long-running runs and silently failing on first
+          // reuse. Defaults are 30s request / 60s idle in HttpClientConfig — overridable via
+          // `congress-api.http.request-timeout` / `idle-timeout` in application.conf.
           EmberClientBuilder
             .default[IO]
-            .withTimeout(30.seconds)
-            .withIdleConnectionTime(60.seconds)
+            .withTimeout(config.congressApi.http.requestTimeout)
+            .withIdleConnectionTime(config.congressApi.http.idleTimeout)
             .build
             .flatMap { raw =>
               // permits=1L mirrors the bill-side default — shared API key across multiple pipelines means the
@@ -47,6 +56,8 @@ object AmendmentTextCheckerApp extends IOApp {
         ),
       checkerFactory = AmendmentTextCheckerRun.buildChecker[IO],
       streamFactory = AmendmentTextCheckerRun.buildStream[IO],
+      runId = runId,
+      stepRunId = stepRunId,
     )
   }
 

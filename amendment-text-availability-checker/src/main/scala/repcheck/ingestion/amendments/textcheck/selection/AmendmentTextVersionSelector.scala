@@ -10,14 +10,21 @@ import repcheck.shared.models.congress.dto.amendment.{AmendmentFormatDTO, Amendm
  * Per Q8 of the §7.5 plan: emit events for ALL new versions (Submitted + any subsequent Modified both get ingested as
  * historical evidence), not just the latest canonical.
  *
- * Within a single upstream version, format priority is HTML > PDF — HTML extraction is lossless; PDF requires the
- * PdfStreamExtractor and is lossier. XML is NOT a supported format for amendment text per upstream docs and is filtered
- * out unconditionally (an XML-only version is dropped, not propagated).
+ * Supported upstream format types:
+ *   - "HTML" — preferred (lossless extraction via HtmlStreamExtractor downstream)
+ *   - "PDF" — fallback (PdfStreamExtractor; lossier)
+ *
+ * Verified against the live Congress.gov endpoint (e.g. `/v3/amendment/117/samdt/2137/text`) and codified in
+ * `repcheck-db-migrations` 037: amendment text granules are emitted ONLY as `"PDF"` or `"HTML"` (no `"TXT"`,
+ * `"Formatted Text"`, or `"Formatted XML"` — those are bill-side variants only). Bills do receive `"Formatted XML"`
+ * (structured legislative XML), but the amendment endpoint does not — so there is no XML granule to drop here. An
+ * upstream `formats[].type` that doesn't match `"HTML"` or `"PDF"` is treated as unsupported and skipped, keeping
+ * downstream extractors strictly aligned with what this checker actually emits.
  */
 object AmendmentTextVersionSelector {
 
-  // Format priority — HTML preferred over PDF. No XML entry: amendments don't have Formatted XML granules per upstream
-  // docs. Anything not in this map is treated as unsupported and skipped.
+  // Format priority — HTML preferred over PDF. Verified upstream values are exactly these two; anything else is
+  // unsupported and skipped (see object Scaladoc for verification details).
   private val FormatPriority: Map[String, Int] = Map(
     "HTML" -> 0,
     "PDF"  -> 1,
@@ -44,9 +51,10 @@ object AmendmentTextVersionSelector {
    *
    * Algorithm:
    *   1. For each upstream version, derive `versionTypeCode` (skip versions where it's `None`). 2. Filter to that
-   *      version's formats with a known `FormatPriority` entry (HTML or PDF). Drops XML-only versions entirely. 3.
-   *      Within those, pick the highest-priority format (HTML beats PDF). 4. Subtract any (versionTypeCode, formatType)
-   *      tuple already in `existing`. 5. Return the remaining tuples.
+   *      version's formats with a known `FormatPriority` entry. The amendment endpoint emits only `"HTML"` and `"PDF"`;
+   *      any other type is treated as unsupported and skipped. 3. Within those, pick the highest-priority format (HTML
+   *      beats PDF). 4. Subtract any (versionTypeCode, formatType) tuple already in `existing`. 5. Return the remaining
+   *      tuples.
    *
    * `existing` is a list of `(versionTypeCode, formatType)` pairs read from `amendment_text_versions` (the §7.6 table)
    * for this amendment. `AmendmentTextVersionDO` is intentionally NOT used here — that lives in §7.6's scope. A minimal

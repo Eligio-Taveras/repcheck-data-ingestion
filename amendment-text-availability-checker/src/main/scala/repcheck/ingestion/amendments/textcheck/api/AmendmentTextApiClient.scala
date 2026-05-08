@@ -21,13 +21,17 @@ import repcheck.shared.models.congress.amendment.AmendmentType
 import repcheck.shared.models.congress.dto.amendment.{AmendmentTextItemDTO, AmendmentTextResponseDTO}
 
 /**
- * Single-shot GET against Congress.gov's `/v3/amendment/{congress}/{type}/{number}/text` endpoint. Mirrors the
- * `BillTextApiClient` shape: builds the URL with `api_key` + `format=json`, decodes the
- * `{"textVersions":[...],"pagination":{...}}` envelope into `List[AmendmentTextItemDTO]`, and wraps the call with
- * [[RetryWrapper]] + [[AmendmentTextCheckErrorClassifier]].
+ * Single-shot GET against Congress.gov's `/v3/amendment/{congress}/{type}/{amendmentNumber}/text` endpoint. Builds the
+ * URL with `api_key` + `format=json`, decodes the `{"textVersions":[...],"pagination":{...}}` envelope into
+ * `List[AmendmentTextItemDTO]`, and wraps the call with [[RetryWrapper]] + [[AmendmentTextCheckErrorClassifier]].
  *
- * URL casing: path lowercase (`/amendment/{c}/{type-lower}/{number}/text`); query parameters camelCase. `api_key` is
- * passed as a query parameter (Congress.gov's documented auth scheme).
+ * Casing convention (consistent with the rest of the codebase, including `AmendmentsApiClient` and
+ * `BillTextApiClient`):
+ *   - URL path uses LOWERCASE amendment-type code (`samdt`, `hamdt`) — Congress.gov accepts only lowercase in path
+ *     segments.
+ *   - Natural key uses UPPERCASE amendment-type code (`SAMDT`, `HAMDT`) to match the values stored in the
+ *     `amendment_type_enum` PostgreSQL enum (so logs and error messages line up with what queries against the DB
+ *     produce).
  *
  * 404 maps to `Right(Nil)` — many House amendments have no text granules upstream, so a 404 is a normal "no text
  * available" signal, not an error. Other non-success responses raise [[AmendmentTextCheckHttpError]] which the
@@ -62,19 +66,27 @@ class AmendmentTextApiClient[F[_]: Temporal](
   /**
    * Fetch all text versions for the given amendment. Returns `Nil` on 404 (amendment has no text granules).
    *
+   * @param amendmentNumber
+   *   Congress.gov-assigned amendment number (string because upstream emits it as a string, e.g. `"2137"`). This is the
+   *   `{number}` path segment in the upstream URL — not a synthetic ID.
    * @param correlationId
-   *   Per-amendment correlation ID propagated from the calling pipeline so retry-wrapper logs share context with
-   *   surrounding work for that amendment. Do NOT mint a fresh UUID here.
+   *   Per-amendment correlation ID minted by the calling pipeline (`AmendmentTextAvailabilityChecker.checkAll`
+   *   generates one UUID per amendment in `parEvalMap`). The same UUID is propagated end-to-end: retry-wrapper logs
+   *   here, the `AmendmentTextAvailableEvent` payload, and the downstream `amendment-text-pipeline` consumer that
+   *   processes the event. This gives a single correlation thread per amendment across the availability checker AND the
+   *   text-ingestion service. Do NOT mint a fresh UUID here.
    */
   def fetchTextVersions(
     congress: Int,
     amendmentType: AmendmentType,
-    number: String,
+    amendmentNumber: String,
     correlationId: UUID,
   ): F[List[AmendmentTextItemDTO]] = {
-    val naturalKey = s"$congress-${amendmentType.apiValue.toUpperCase}-$number"
+    // UPPERCASE for natural key (matches amendment_type_enum DB values); LOWERCASE for URL path (Congress.gov
+    // accepts only lowercase in `/amendment/{type}` path segments).
+    val naturalKey = s"$congress-${amendmentType.apiValue.toUpperCase}-$amendmentNumber"
     val typePath   = amendmentType.apiValue.toLowerCase
-    val rawUrl     = s"${config.baseUrl}/amendment/$congress/$typePath/$number/text"
+    val rawUrl     = s"${config.baseUrl}/amendment/$congress/$typePath/$amendmentNumber/text"
 
     parseUri(rawUrl, naturalKey).flatMap { baseUri =>
       val uri = baseUri
