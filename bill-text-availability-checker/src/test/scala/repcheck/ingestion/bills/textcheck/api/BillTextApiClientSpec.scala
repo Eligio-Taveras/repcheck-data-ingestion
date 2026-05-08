@@ -1,5 +1,7 @@
 package repcheck.ingestion.bills.textcheck.api
 
+import java.util.UUID
+
 import scala.concurrent.duration._
 
 import cats.effect.IO
@@ -19,6 +21,8 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 
 class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
+
+  private val testCorrelationId = UUID.fromString("00000000-0000-0000-0000-000000000001")
 
   private val wireMock = new WireMockServer(
     WireMockConfiguration
@@ -114,7 +118,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
 
     val client = makeClient()
-    val result = client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+    val result = client.fetchTextVersions(118, "hr", "1234", testCorrelationId).unsafeRunSync()
 
     val _ = result.size shouldBe 1
     result.headOption.flatMap(_.type_) shouldBe Some("Introduced in House")
@@ -127,7 +131,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
 
     val client = makeClient()
-    val result = client.fetchTextVersions(118, "hr", "9999").unsafeRunSync()
+    val result = client.fetchTextVersions(118, "hr", "9999", testCorrelationId).unsafeRunSync()
     result shouldBe empty
   }
 
@@ -143,7 +147,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
 
     val client = makeClient()
-    val result = client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+    val result = client.fetchTextVersions(118, "hr", "1234", testCorrelationId).unsafeRunSync()
     result.size shouldBe 3
   }
 
@@ -159,7 +163,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
 
     val client  = makeClient()
-    val result  = client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+    val result  = client.fetchTextVersions(118, "hr", "1234", testCorrelationId).unsafeRunSync()
     val formats = result.headOption.flatMap(_.formats).getOrElse(List.empty)
     val _       = formats.size shouldBe 3
     formats.map(_.type_) should contain allOf ("Formatted Text", "PDF", "XML")
@@ -178,7 +182,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
 
     val client = makeClient()
-    val _      = client.fetchTextVersions(118, "hr", "100").unsafeRunSync()
+    val _      = client.fetchTextVersions(118, "hr", "100", testCorrelationId).unsafeRunSync()
     wireMock.verify(
       getRequestedFor(urlPathEqualTo("/v3/bill/118/hr/100/text"))
         .withQueryParam("api_key", equalTo("test-api-key"))
@@ -197,7 +201,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
 
     val client = makeClient()
-    val _      = client.fetchTextVersions(117, "s", "500").unsafeRunSync()
+    val _      = client.fetchTextVersions(117, "s", "500", testCorrelationId).unsafeRunSync()
     wireMock.verify(getRequestedFor(urlPathEqualTo("/v3/bill/117/s/500/text")))
   }
 
@@ -223,7 +227,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
 
     val client = makeClient()
-    val result = client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+    val result = client.fetchTextVersions(118, "hr", "1234", testCorrelationId).unsafeRunSync()
     result.size shouldBe 1
   }
 
@@ -249,7 +253,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
 
     val client = makeClient()
-    val result = client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+    val result = client.fetchTextVersions(118, "hr", "1234", testCorrelationId).unsafeRunSync()
     result.size shouldBe 1
   }
 
@@ -261,7 +265,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
 
     val client = makeClient()
     val ex = intercept[BillTextCheckFailed] {
-      client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+      client.fetchTextVersions(118, "hr", "1234", testCorrelationId).unsafeRunSync()
     }
     ex.getMessage should include("118-HR-1234")
   }
@@ -279,7 +283,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
 
     val client = makeClient()
     val _ = intercept[Exception] {
-      client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+      client.fetchTextVersions(118, "hr", "1234", testCorrelationId).unsafeRunSync()
     }
   }
 
@@ -293,7 +297,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
     val client = new BillTextApiClient[IO](badConfig, httpClient, retryWrapper)
     intercept[Exception] {
-      client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+      client.fetchTextVersions(118, "hr", "1234", testCorrelationId).unsafeRunSync()
     }
   }
 
@@ -309,7 +313,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
 
     val client = makeClient()
-    val result = client.fetchTextVersions(118, "hr", "100").unsafeRunSync()
+    val result = client.fetchTextVersions(118, "hr", "100", testCorrelationId).unsafeRunSync()
     result shouldBe empty
   }
 
@@ -326,7 +330,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
 
     val client = makeClient()
-    val _      = client.fetchTextVersions(118, "hr", "200").unsafeRunSync()
+    val _      = client.fetchTextVersions(118, "hr", "200", testCorrelationId).unsafeRunSync()
     wireMock.verify(
       getRequestedFor(urlPathEqualTo("/v3/bill/118/hr/200/text"))
         .withQueryParam("format", equalTo("json"))
@@ -346,7 +350,7 @@ class BillTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     )
     val client = new BillTextApiClient[IO](config, badClient, retryWrapper)
     val ex = intercept[BillTextCheckFailed] {
-      client.fetchTextVersions(118, "hr", "1234").unsafeRunSync()
+      client.fetchTextVersions(118, "hr", "1234", testCorrelationId).unsafeRunSync()
     }
     ex.getMessage should include("118-HR-1234")
   }

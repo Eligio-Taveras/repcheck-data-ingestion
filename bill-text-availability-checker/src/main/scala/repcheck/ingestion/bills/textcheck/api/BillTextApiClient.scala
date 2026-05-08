@@ -38,10 +38,20 @@ class BillTextApiClient[F[_]: Temporal](
       case Left(err)  => Temporal[F].raiseError(err)
     }
 
+  /**
+   * Fetch all text versions for the given bill.
+   *
+   * @param correlationId
+   *   Per-bill correlation ID minted by the calling pipeline (`BillTextAvailabilityChecker.checkAll`'s `parEvalMap`).
+   *   The same UUID is propagated end-to-end: retry-wrapper logs here, the `BillTextAvailableEvent` payload, and the
+   *   downstream `bill-text-pipeline` consumer that processes the event. This gives a single correlation thread per
+   *   bill across the availability checker AND the text-ingestion service. Do NOT mint a fresh UUID here.
+   */
   def fetchTextVersions(
     congress: Int,
     billType: String,
     number: String,
+    correlationId: UUID,
   ): F[List[TextVersionDTO]] = {
     val billId = s"$congress-${billType.toUpperCase}-$number"
 
@@ -70,7 +80,7 @@ class BillTextApiClient[F[_]: Temporal](
             detail = msg,
             cause = cause,
           ),
-        correlationId = UUID.randomUUID(),
+        correlationId = correlationId,
       )
     }
   }

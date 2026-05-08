@@ -76,7 +76,7 @@ class BillTextAvailabilityChecker[F[_]: Async](
     val check: F[ProcessingResult] = for {
       _        <- logger.info(logCtx, s"Checking bill $billId")
       _        <- logger.info(logCtx, s"Fetching text versions for $billId from Congress.gov")
-      selected <- fetchBestVersion(bill)
+      selected <- fetchBestVersion(bill, correlationId)
       _ <- logger.info(
         logCtx,
         s"Got ${selected.fold("0")(_ => "1+")} selected version for $billId, evaluating",
@@ -87,12 +87,16 @@ class BillTextAvailabilityChecker[F[_]: Async](
     check.handleErrorWith(error => handleCheckError(billId, error, logCtx))
   }
 
-  private[pipeline] def fetchBestVersion(bill: BillDO): F[Option[TextVersionSelector.SelectedVersion]] =
+  private[pipeline] def fetchBestVersion(
+    bill: BillDO,
+    correlationId: UUID,
+  ): F[Option[TextVersionSelector.SelectedVersion]] =
     textApiClient
       .fetchTextVersions(
         congress = bill.congress,
         billType = bill.billType.apiValue,
         number = bill.number,
+        correlationId = correlationId,
       )
       .map(TextVersionSelector.selectBestVersion)
 
