@@ -8,6 +8,55 @@ This file is the **execution-ordered companion** to the area files. The area fil
 
 ---
 
+## Status snapshot (as of 2026-05-08)
+
+Live state across all phases. Detailed phase descriptions remain unchanged below — this section is the at-a-glance index of what's landed, what's in flight, and what's outstanding.
+
+### Phase status
+
+| Phase | Scope | Status | Reference |
+|---|---|---|---|
+| 0 — Upstream artifact bumps | shared-models, pipeline-models, db-migrations, ingestion-common | ✅ **Done** (current pins below) | see Artifact pins |
+| 1 — `text-extraction-common` refactor | Lift bills text infrastructure into shared module | ✅ **Done** | shipped before §7.6 |
+| 2 — Amendments-pipeline core (§7.1–§7.3) | API client + repository + processor + IOApp | ✅ **Done** | data-ingestion PR #117 |
+| 3 — Votes-pipeline amendment integration (§7.4) | Senate/House amendment-vote dispatch + placeholder upserts | ✅ **Done** | data-ingestion PR #118 |
+| 4 — Amendment text availability checker (§7.5) | Cron job, emits `amendment.text.available` events | ✅ **Done** | data-ingestion PR #120 |
+| 5 — Amendment text pipeline (§7.6) | Cloud Run Service: subscribe → download → chunk → embed → persist | 🟡 **In review** (CI green) | data-ingestion PR #121 |
+| 6 — Cross-pipeline E2E (§7.7) | docker-compose.{local,e2e}.yml, ofelia cron, e2e specs | 🔴 **Not started** | — |
+| 7 — Local backfill + production cutover | Sequential per-congress ingest, dump/restore to prod | 🔴 **Not started** | — |
+
+### In-flight follow-ups (not blocking phase progression)
+
+| Task | Status | What |
+|---|---|---|
+| **Schema cleanup**: add `UNIQUE (amendment_id, version_type_code, format_type)` constraint on `amendment_text_versions` + rename enum `amendment_text_version_code_type` values from `Submitted/Modified` to spec-mandated `SUB/MOD` | 🟡 In progress | `repcheck-db-migrations` cleanup PR (one-shot ALTER) |
+| **Drop translation shim**: remove `AmendmentTextVersionTypeMapping` from §7.6 once the rename lands; switch §7.6 upsert from the SELECT-then-INSERT/UPDATE workaround to canonical `ON CONFLICT DO UPDATE` (constraint will exist) | 🟡 In progress | data-ingestion follow-up PR (sequenced after db-migrations bump) |
+
+### Bug fixes during this rollout (already merged)
+
+| Issue | Fix | PR |
+|---|---|---|
+| `BillTextApiClient.fetchTextVersions` minted `UUID.randomUUID()` internally — broke single-correlation-thread-per-bill invariant | Threaded `correlationId: UUID` from `BillTextAvailabilityChecker.checkBill` through `fetchBestVersion` → API client retries → `BillTextAvailableEvent` payload | rolled into PR #120 |
+| `DoobieAmendmentRepository.upsertPlaceholder` / `insertIfNotExists` used `ON CONFLICT (natural_key) DO NOTHING` — only caught one of two unique constraints. Concurrent inserts could surface `duplicate key` exception (parTraverse stress test flake) | Switched to bare `ON CONFLICT DO NOTHING` to catch all unique-constraint violations | rolled into PR #120 |
+| Reference-data drift: `LegislationKind` enum codec name mismatch (`legislation_kind_enum` vs `legislation_type_enum`); votes table needed `bill_type` + `amendment_type` + `legislation_type` discriminator | Schema reworked across shared-models + db-migrations + votes-pipeline | merged earlier in rollout |
+
+### Artifact pins (current `build.sbt`)
+
+| Artifact | Pinned version | Notes |
+|---|---|---|
+| `repcheck-shared-models` | 0.1.45 (will be 0.1.46 after PR #121 merges, which adds `AmendmentTextVersionDO` + `AmendmentTextChunkDO` from upstream PR #47) | LegislationKind, all amendment DOs |
+| `repcheck-pipeline-models` | 0.1.25 | Tables.AmendmentTextVersions / AmendmentTextChunks, AmendmentTextAvailableEvent, MinAmendmentCongress |
+| `repcheck-ingestion-common` | 0.1.28 | `transientNetworkAware` helper (P7.11) |
+| `repcheck-db-migrations-runner` | 0.1.35 | migrations 037 (enum) + 038 (amendments cols) + 039 (text-versions cols) + 040 (amendment_text_chunks). Cleanup migration in flight |
+
+### Outstanding work to close out §7
+
+1. **Phase 6 (§7.7)** — wire amendment-text-availability-checker + amendment-text-pipeline into `docker-compose.local.yml`, `docker-compose.e2e.yml`, `ofelia-config.ini` cron entries (4h cadence, offsets per L10), pubsub-init topics, e2e specs.
+2. **Phase 7** — local backfill (sequential per-congress, ~24-30h wall-clock with `LOOKBACK_DAYS=999999, PAGE_DELAY=750ms`), `pg_dump` + `pg_restore` to production AlloyDB, production deploys.
+3. **Terraform** ([P7.12](PRODUCTION_TASKS.md#p712)) — Cloud Run Service for amendment-text-pipeline (long-running subscriber), Cloud Run Job for amendment-text-availability-checker (cron), `tf-repcheck-infra` PR.
+
+---
+
 ## Part 1 — Implementation phases (sequenced)
 
 Each phase produces a shippable, testable deliverable. Don't start phase N+1 until N is published / merged unless explicitly noted as parallel.
