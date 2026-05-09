@@ -67,28 +67,63 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
   private val StepName = "cross-amendment-embedder"
 
   override def processChunks(ctx: AmendmentEmbedCtx, chunkStream: Stream[F, String]): F[ProcessingResult] =
-    Resource
-      .make(register(ctx))(_ => cleanupIfStillRegistered(ctx))
-      .use { awaitResult =>
-        for {
-          chunkCount <- chunkStream.zipWithIndex
-            .evalMap { case (text, idx) => offerChunk(ctx, idx.toInt, text) }
-            .compile
-            .count
-          _      <- finalizeSubmission(ctx, chunkCount.toInt)
-          result <- awaitResult
-        } yield result
-      }
+    register(ctx).flatMap {
+      case (awaitResult, true) =>
+        // Fresh registration — drive the chunk pipeline. Cleanup-on-cancel is only registered for the FRESH path
+        // because only the fresh registrar owns the entry in `state.amendments`; the joined-existing path must NOT
+        // remove the entry on its own resource release (that would orphan the original fiber).
+        Resource
+          .make(Async[F].unit)(_ => cleanupIfStillRegistered(ctx))
+          .use { _ =>
+            for {
+              chunkCount <- chunkStream.zipWithIndex
+                .evalMap { case (text, idx) => offerChunk(ctx, idx.toInt, text) }
+                .compile
+                .count
+              _      <- finalizeSubmission(ctx, chunkCount.toInt)
+              result <- awaitResult
+            } yield result
+          }
+      case (awaitResult, false) =>
+        // Joined an in-flight submission for the same versionId. Skip the chunk pipeline entirely — driving it would
+        // (a) double-pull the upstream HTTP response, (b) inject duplicate chunks into the embedder buffer, and (c)
+        // hit the `(version_id, chunk_index)` UNIQUE constraint on the chunk INSERT. Just wait for the original
+        // submission's outcome and return the same result. ACK behavior at the subscriber is identical for both
+        // deliveries on the same outcome.
+        awaitResult
+    }
 
-  private[embedding] def register(ctx: AmendmentEmbedCtx): F[F[ProcessingResult]] =
-    Deferred[F, ProcessingResult].flatMap { deferred =>
-      val initial = AmendmentEmbedProgress[F](
-        ctx = ctx,
-        expected = None,
-        persisted = 0,
-        deferred = deferred,
-      )
-      state.update(s => s.copy(amendments = s.amendments + (ctx.versionId -> initial))).as(deferred.get)
+  /**
+   * Register a submission for the given `ctx.versionId`. Idempotent in `versionId`: if a prior submission for the same
+   * versionId is still in flight (typical race: Pub/Sub redelivers a message before the first delivery's
+   * `processChunks` acks), the second caller joins the existing in-flight Deferred rather than installing a competing
+   * one. Replacing the Deferred would orphan the first fiber — it would keep awaiting a Deferred no progress path
+   * resolves anymore, hanging indefinitely.
+   *
+   * Returns `(awaitResult, isFresh)`:
+   *   - `isFresh = true` → caller is the original registrar; should drive the chunk pipeline + own the cleanup hook.
+   *   - `isFresh = false` → caller joined an existing in-flight submission; should skip the chunk pipeline entirely and
+   *     just await the same outcome the original is waiting on. Both callers ACK their respective Pub/Sub deliveries on
+   *     the shared result, so the redelivery becomes a transparent no-op.
+   */
+  private[embedding] def register(ctx: AmendmentEmbedCtx): F[(F[ProcessingResult], Boolean)] =
+    Deferred[F, ProcessingResult].flatMap { freshDeferred =>
+      state.modify { s =>
+        s.amendments.get(ctx.versionId) match {
+          case Some(existing) =>
+            // Concurrent redelivery — return the in-flight Deferred so this caller awaits the first submission's
+            // outcome. The freshDeferred we just allocated is discarded by GC.
+            (s, (existing.deferred.get, false))
+          case None =>
+            val initial = AmendmentEmbedProgress[F](
+              ctx = ctx,
+              expected = None,
+              persisted = 0,
+              deferred = freshDeferred,
+            )
+            (s.copy(amendments = s.amendments + (ctx.versionId -> initial)), (freshDeferred.get, true))
+        }
+      }
     }
 
   private[embedding] def offerChunk(ctx: AmendmentEmbedCtx, chunkIdx: Int, text: String): F[Unit] = {

@@ -17,7 +17,6 @@ class AmendmentTextPipelineConfigSpec extends AnyFlatSpec with Matchers {
     // when the case class is constructed programmatically (e.g., the testConfig in AmendmentTextPipelinePipelineSpec).
     val raw = ConfigFactory.parseString("""
       parallelism = 2
-      download-timeout-seconds = 30
       page-delay = 50ms
       gov-info-api-key = "my-key"
       gov-info-base-url = "https://api.govinfo.gov"
@@ -37,7 +36,6 @@ class AmendmentTextPipelineConfigSpec extends AnyFlatSpec with Matchers {
     """)
     val config = ConfigSource.fromConfig(raw).loadOrThrow[AmendmentTextPipelineConfig]
     val _      = config.parallelism shouldBe 2
-    val _      = config.downloadTimeoutSeconds shouldBe 30
     val _      = config.pageDelay shouldBe 50.millis
     val _      = config.govInfoApiKey shouldBe "my-key"
     val _      = config.govInfoBaseUrl shouldBe "https://api.govinfo.gov"
@@ -54,7 +52,6 @@ class AmendmentTextPipelineConfigSpec extends AnyFlatSpec with Matchers {
     // though the case class supplies defaults — so the test here mirrors what the real application.conf provides.
     val raw = ConfigFactory.parseString("""
       parallelism = 2
-      download-timeout-seconds = 30
       page-delay = 50ms
       gov-info-api-key = "my-key"
       gov-info-base-url = "https://api.govinfo.gov"
@@ -83,7 +80,6 @@ class AmendmentTextPipelineConfigSpec extends AnyFlatSpec with Matchers {
   it should "fail to load when a required field is missing" in {
     val raw = ConfigFactory.parseString("""
       parallelism = 2
-      download-timeout-seconds = 30
       page-delay = 50ms
       gov-info-base-url = "https://api.govinfo.gov"
     """)

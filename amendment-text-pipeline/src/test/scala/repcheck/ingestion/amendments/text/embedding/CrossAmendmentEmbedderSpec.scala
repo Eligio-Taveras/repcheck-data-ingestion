@@ -246,4 +246,54 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
     repo.rows.flatten.map(_.amendmentId).toSet shouldBe Set(42L, 99L)
   }
 
+  it should "share a single outcome between concurrent submissions for the same versionId (Pub/Sub redelivery)" in {
+    // Two concurrent processChunks calls for the same `versionId` (e.g., Pub/Sub redelivers a message before the
+    // first delivery's processChunks acks). The second submission must NOT install a competing Deferred — the first
+    // fiber would otherwise hang forever awaiting an orphaned reference. Both fibers must observe the same outcome,
+    // and the chunk pipeline must run only once (no duplicate inserts hitting the (version_id, chunk_index) UNIQUE).
+    import cats.effect.Deferred
+    import cats.syntax.all._
+    val embedSvc = new RecordingEmbeddingService
+    val repo     = new RecordingRepo
+
+    // Track whether the second call's chunkStream is iterated. After the test we assert it never was — proving the
+    // duplicate's pipeline was short-circuited.
+    val secondStreamWasIterated = new java.util.concurrent.atomic.AtomicBoolean(false)
+
+    val program = (Deferred[IO, Unit], Deferred[IO, Unit]).tupled
+      .flatMap {
+        case (gate, fiber1Registered) =>
+          // Fiber1's stream blocks on `gate` AFTER signaling that fiber1 has entered the stream pipeline (which
+          // implies register has already run). Fiber2 races in once we observe `fiber1Registered`, then we open the
+          // gate so fiber1 can finish.
+          val firstStream: Stream[IO, String] =
+            Stream.exec(fiber1Registered.complete(()).void) ++
+              Stream.eval(gate.get.as("first-chunk"))
+          val secondStream: Stream[IO, String] =
+            Stream("dup-only-chunk").evalTap(_ => IO(secondStreamWasIterated.set(true)))
+
+          CrossAmendmentEmbedder
+            .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
+            .use { embedder =>
+              for {
+                fiber1  <- embedder.processChunks(testCtx, firstStream).start
+                _       <- fiber1Registered.get
+                fiber2  <- embedder.processChunks(testCtx, secondStream).start
+                _       <- IO.sleep(20.millis) // give fiber2 a moment to hit register
+                _       <- gate.complete(())
+                result1 <- fiber1.joinWithNever
+                result2 <- fiber2.joinWithNever
+              } yield (result1, result2)
+            }
+      }
+      .timeout(TestTimeout)
+
+    val (r1, r2) = program.unsafeRunSync()
+    val _        = r1.isSucceeded shouldBe true
+    val _        = r2.isSucceeded shouldBe true
+    val _        = r1 shouldBe r2
+    val _        = secondStreamWasIterated.get shouldBe false
+    repo.rows.flatten.size shouldBe 1
+  }
+
 }

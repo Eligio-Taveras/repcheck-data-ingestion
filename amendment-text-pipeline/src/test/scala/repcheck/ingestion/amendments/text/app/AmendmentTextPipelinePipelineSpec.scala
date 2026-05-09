@@ -52,7 +52,6 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
     ),
     pipeline = AmendmentTextPipelineConfig(
       parallelism = 1,
-      downloadTimeoutSeconds = 5,
       pageDelay = 100.millis,
       govInfoApiKey = "test-key",
       govInfoBaseUrl = "https://api.govinfo.gov",
