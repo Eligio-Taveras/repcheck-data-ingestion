@@ -46,8 +46,8 @@ class AmendmentTextDownloader[F[_]: Async](
 
   /**
    * Stream the response body bytes for `textUrl`. Status-code handling mirrors the bill-side: 404 →
-   * [[AmendmentTextDownloadFailed]], non-success other than 404 → [[AmendmentTextDownloadFailed]] including the
-   * response body for debugging, success → emit `response.body`.
+   * [[AmendmentTextDownloadFailed]], non-success other than 404 →
+   * [[AmendmentTextDownloadHttpError]] including the response body for debugging, success → emit `response.body`.
    *
    * @param textUrl
    *   URL emitted in the event for the chosen `(versionType, formatType)` tuple. Rewritten to api.govinfo.gov when it
