@@ -72,7 +72,7 @@ class DoobieAmendmentTextVersionRepository extends AmendmentTextVersionRepositor
    */
   override def upsert(version: AmendmentTextVersionDO): ConnectionIO[(Long, Boolean, Boolean)] =
     sql"""
-      INSERT INTO $table (
+      INSERT INTO $table AS atv (
         amendment_id, version_type, version_date, format_type, url, download_url, text_length, fetched_at
       ) VALUES (
         ${version.amendmentId},
@@ -86,24 +86,24 @@ class DoobieAmendmentTextVersionRepository extends AmendmentTextVersionRepositor
       )
       ON CONFLICT (amendment_id, version_type, format_type) DO UPDATE SET
         version_date = CASE
-          WHEN EXCLUDED.version_date > amendment_text_versions.version_date THEN EXCLUDED.version_date
-          ELSE amendment_text_versions.version_date
+          WHEN EXCLUDED.version_date > atv.version_date THEN EXCLUDED.version_date
+          ELSE atv.version_date
         END,
         url = CASE
-          WHEN EXCLUDED.version_date > amendment_text_versions.version_date THEN EXCLUDED.url
-          ELSE amendment_text_versions.url
+          WHEN EXCLUDED.version_date > atv.version_date THEN EXCLUDED.url
+          ELSE atv.url
         END,
         download_url = CASE
-          WHEN EXCLUDED.version_date > amendment_text_versions.version_date THEN EXCLUDED.download_url
-          ELSE amendment_text_versions.download_url
+          WHEN EXCLUDED.version_date > atv.version_date THEN EXCLUDED.download_url
+          ELSE atv.download_url
         END,
         fetched_at = CASE
-          WHEN EXCLUDED.version_date > amendment_text_versions.version_date THEN NULL
-          ELSE amendment_text_versions.fetched_at
+          WHEN EXCLUDED.version_date > atv.version_date THEN NULL
+          ELSE atv.fetched_at
         END,
         text_length = CASE
-          WHEN EXCLUDED.version_date > amendment_text_versions.version_date THEN NULL
-          ELSE amendment_text_versions.text_length
+          WHEN EXCLUDED.version_date > atv.version_date THEN NULL
+          ELSE atv.text_length
         END
       RETURNING id, (xmax = 0) AS inserted, (fetched_at IS NOT NULL) AS already_complete
     """.query[(Long, Boolean, Boolean)].unique
