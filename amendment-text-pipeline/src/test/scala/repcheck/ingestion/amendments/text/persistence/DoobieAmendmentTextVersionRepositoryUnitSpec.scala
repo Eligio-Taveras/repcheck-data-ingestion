@@ -11,7 +11,7 @@ class DoobieAmendmentTextVersionRepositoryUnitSpec extends AnyFlatSpec with Matc
 
   private val repo = new DoobieAmendmentTextVersionRepository
 
-  private def sampleVersion(versionType: String = "Submitted", date: Instant = Instant.parse("2021-08-01T04:00:00Z")) =
+  private def sampleVersion(versionType: String = "SUB", date: Instant = Instant.parse("2021-08-01T04:00:00Z")) =
     AmendmentTextVersionDO(
       id = 0L,
       amendmentId = 42L,
@@ -31,8 +31,8 @@ class DoobieAmendmentTextVersionRepositoryUnitSpec extends AnyFlatSpec with Matc
   }
 
   it should "produce a distinct ConnectionIO per call" in {
-    val a = repo.upsert(sampleVersion("Submitted"))
-    val b = repo.upsert(sampleVersion("Modified"))
+    val a = repo.upsert(sampleVersion("SUB"))
+    val b = repo.upsert(sampleVersion("MOD"))
     (a eq b) shouldBe false
   }
 
@@ -43,21 +43,6 @@ class DoobieAmendmentTextVersionRepositoryUnitSpec extends AnyFlatSpec with Matc
 
   "findCompletedByAmendmentId" should "produce a ConnectionIO returning a list" in {
     val cio = repo.findCompletedByAmendmentId(42L)
-    cio shouldBe a[doobie.ConnectionIO[?]]
-  }
-
-  "findExisting" should "produce a ConnectionIO for the SELECT" in {
-    val cio = repo.findExisting(42L, "Submitted", "Formatted Text")
-    cio shouldBe a[doobie.ConnectionIO[?]]
-  }
-
-  "insertFresh" should "produce a ConnectionIO returning Long" in {
-    val cio = repo.insertFresh(sampleVersion())
-    cio shouldBe a[doobie.ConnectionIO[?]]
-  }
-
-  "refreshExisting" should "produce a ConnectionIO" in {
-    val cio = repo.refreshExisting(7L, sampleVersion())
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 

@@ -120,6 +120,27 @@ class AmendmentTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeA
     }
   }
 
+  it should "cap the error response body at MaxErrorBodyBytes (~2 KiB) so a multi-MB error can't OOM" in {
+    val giantBody = "X".repeat(64 * 1024) // 64 KiB; well over the 2 KiB cap
+    wireMock.stubFor(
+      get(urlPathEqualTo("/amendment")).willReturn(aResponse().withStatus(502).withBody(giantBody))
+    )
+
+    val attempt = downloaderResource
+      .use(d => streamBodyAsString(d, s"${wireMock.baseUrl()}/amendment", "HTML"))
+      .attempt
+      .unsafeRunSync()
+
+    attempt match {
+      case Left(err: AmendmentTextDownloadFailed) =>
+        val _ = err.getMessage should include("502")
+        // The cap is at the byte layer; total error message must be far below the 64 KiB sent body and bounded by
+        // a small constant — proves the body was truncated rather than slurped whole.
+        err.getMessage.length should be <= 4096
+      case other => fail(s"Expected AmendmentTextDownloadFailed, got $other")
+    }
+  }
+
   it should "stream a body of arbitrary size without imposing a cap" in {
     val largeBody = "X".repeat(512 * 1024)
     wireMock.stubFor(

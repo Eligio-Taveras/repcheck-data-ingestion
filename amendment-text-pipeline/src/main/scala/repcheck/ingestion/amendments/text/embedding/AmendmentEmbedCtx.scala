@@ -51,16 +51,22 @@ final private[embedding] case class AmendmentEmbedProgress[F[_]](
 
 /**
  * Atomic state for the foreground-only cross-amendment embedder. Mirror of the bill-side `EmbedderState` — keeping the
- * buffer and per-amendment progress map together in one Ref means a single `state.modify` can transactionally:
+ * buffer and per-version progress map together in one Ref means a single `state.modify` can transactionally:
  *
  *   - add a chunk + decide whether to flush (in `offerChunk`)
- *   - increment `persisted` counters and remove fully-completed amendments (in `applyBatchResult`)
+ *   - increment `persisted` counters and remove fully-completed versions (in `applyBatchResult`)
  *   - drain the residual buffer + set `expected` (in `finalizeSubmission`)
  *
  * No background fiber, no `Queue`. Each producer's `offerChunk` is the only path that can flush, triggered when the
  * buffer hits `batchSize`. A producer's `finalizeSubmission` is the second flush trigger — it always force-flushes the
  * residual buffer to guarantee a small amendment's chunks are processed even if no other producer fills the buffer
  * afterward.
+ *
+ * The progress map is keyed by `versionId` rather than `amendmentId`. A single amendment can produce multiple
+ * concurrent in-flight events — distinct `(version_type, format_type)` tuples (e.g., SUB vs MOD, or HTML vs PDF) all
+ * map to distinct `amendment_text_versions.id` values, but to the same `amendmentId`. Keying on `versionId` keeps each
+ * concurrent submission's Deferred isolated; without this, the second event's `register` would clobber the first's
+ * progress entry and leave one of the producers waiting indefinitely.
  */
 final private[embedding] case class AmendmentEmbedderState[F[_]](
   buffer: Vector[AmendmentChunkSubmission],

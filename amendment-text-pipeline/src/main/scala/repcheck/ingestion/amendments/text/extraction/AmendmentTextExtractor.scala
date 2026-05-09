@@ -13,12 +13,14 @@ import repcheck.ingestion.text.extraction.PdfStreamExtractor
  * [[CrecHtmlExtractor]] purpose-built for Congressional Record markup; PDF reuses the format-agnostic
  * [[PdfStreamExtractor]] from `text-extraction-common`.
  *
- * Unknown formats raise an error rather than silently degrading — §7.5 only emits HTML/PDF and a third value indicates
- * a contract drift that the operator should know about.
+ * Unknown formats raise an error rather than silently degrading. In practice [[AmendmentTextProcessor]] now fails fast
+ * on unknown formats before this point is reached, so the unsupported-format branch here is a defense-in-depth — but if
+ * it does fire, the caller-supplied `naturalKey` makes the resulting log + ProcessingResult name the actual amendment
+ * instead of `<unknown>`.
  */
 object AmendmentTextExtractor {
 
-  def extractStream[F[_]: Async](bytes: Stream[F, Byte], formatType: String): Stream[F, String] =
+  def extractStream[F[_]: Async](bytes: Stream[F, Byte], formatType: String, naturalKey: String): Stream[F, String] =
     formatType match {
       case "HTML" => CrecHtmlExtractor.extract[F](bytes)
       case "PDF"  => PdfStreamExtractor.extract[F](bytes)
@@ -26,7 +28,7 @@ object AmendmentTextExtractor {
         Stream.raiseError[F](
           repcheck.ingestion.amendments.text.errors
             .AmendmentTextProcessingFailed(
-              "<unknown>",
+              naturalKey,
               s"Unsupported amendment text formatType: '$other' (expected 'HTML' or 'PDF')",
             )
         )

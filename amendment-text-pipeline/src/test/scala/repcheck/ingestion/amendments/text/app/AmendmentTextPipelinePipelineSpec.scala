@@ -56,7 +56,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
       pageDelay = 100.millis,
       govInfoApiKey = "test-key",
       govInfoBaseUrl = "https://api.govinfo.gov",
-    ),
+    ), // remaining fields (govInfoPermits, govInfoHttp, ollamaHttp) use case-class defaults
     eventSubscriber = EventSubscriberConfig(
       projectId = "repcheck-test",
       subscriptionId = "test-sub",
@@ -93,7 +93,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
   private def stubResources(subscriber: PubSubEventSubscriber[IO] = emptySubscriber): PipelineResources[IO] = {
     val noOpClient = Client.fromHttpApp(org.http4s.HttpApp.notFound[IO])
     PipelineResources(
-      xa = testXa,
+      transactor = testXa,
       govInfoClient = noOpClient,
       ollamaClient = noOpClient,
       pubSubSubscriber = subscriber,
@@ -135,7 +135,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
         loggerFactory = _ => IO.pure(logger),
         resourceBuilder = (_, _) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => processor,
-        streamFactory = (_, _, _, _) => Stream.empty,
+        streamFactory = (_, _, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
       )
       .unsafeRunSync()
@@ -153,7 +153,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
         loggerFactory = _ => IO.pure(logger),
         resourceBuilder = (_, _) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => processor,
-        streamFactory = (_, _, _, _) => Stream.emit(ProcessingResult.Failed("a", "boom", "Systemic")),
+        streamFactory = (_, _, _, _, _) => Stream.emit(ProcessingResult.Failed("a", "boom", "Systemic")),
         workflowStateUpdaterFactory = (_, _) => None,
       )
       .unsafeRunSync()
@@ -183,7 +183,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
     }
 
     val result = AmendmentTextPipelinePipeline
-      .buildStream[IO](subscriber, processor, testConfig, logger)
+      .buildStream[IO](subscriber, processor, testConfig, logger, runId = 0L)
       .compile
       .toList
       .unsafeRunSync()
@@ -205,7 +205,13 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
   "extractTextFn" should "dispatch HTML through the CrecHtmlExtractor" in {
     val bytes = Stream.emits("<html><body><pre>amendment</pre></body></html>".getBytes("UTF-8")).covary[IO]
     val text =
-      AmendmentTextPipelinePipeline.extractTextFn[IO].apply(bytes, "HTML").compile.toList.unsafeRunSync().mkString(" ")
+      AmendmentTextPipelinePipeline
+        .extractTextFn[IO]
+        .apply(bytes, "HTML", "117-SAMDT-2137")
+        .compile
+        .toList
+        .unsafeRunSync()
+        .mkString(" ")
     text should include("amendment")
   }
 
@@ -245,7 +251,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
     val cfg = testConfig.copy(eventSubscriber = testConfig.eventSubscriber.copy(pullTimeout = 100.millis))
 
     val result = AmendmentTextPipelinePipeline
-      .buildStream[IO](subscriber, processor, cfg, logger)
+      .buildStream[IO](subscriber, processor, cfg, logger, runId = 99L)
       .compile
       .toList
       .unsafeRunSync()

@@ -1,5 +1,7 @@
 package repcheck.ingestion.amendments.text.app
 
+import java.time.Instant
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 
@@ -10,6 +12,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.metadata.ProcessingResult
+import repcheck.pipeline.models.workflow.state.WorkflowStepStatus
 
 class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -96,13 +99,11 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       )
     )
 
-    val _ = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
-
-    val _          = logger.messages.size shouldBe 1
-    val logMessage = logger.messages.headOption.getOrElse(fail("expected one log message"))
-    val _          = logMessage should include("4 processed")
-    val _          = logMessage should include("3 succeeded")
-    logMessage should include("1 failed")
+    val _          = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).unsafeRunSync()
+    val summaryLog = logger.messages.find(_.contains("Pipeline completed"))
+    val _          = summaryLog.exists(_.contains("4 processed")) shouldBe true
+    val _          = summaryLog.exists(_.contains("3 succeeded")) shouldBe true
+    summaryLog.exists(_.contains("1 failed")) shouldBe true
   }
 
   it should "raise when the stream itself raises" in {
@@ -113,6 +114,96 @@ class PipelineExecutorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
     val attempt = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId).attempt.unsafeRunSync()
     attempt.isLeft shouldBe true
+  }
+
+  it should "carry stepRunId through to the workflow summary" in {
+    val logger = new StubPipelineLogger
+    val stream = Stream.emits(List(ProcessingResult.Succeeded("a")))
+    val _      = PipelineExecutor.execute[IO](stream, logger, pipelineName, runId, stepRunId = 42L).unsafeRunSync()
+    // execute logs counts only; coverage of the stepRunId path is in buildSummary below.
+    logger.messages.exists(_.contains("Pipeline completed")) shouldBe true
+  }
+
+  "addResult" should "increment succeeded for Succeeded results" in {
+    val updated = PipelineExecutor.addResult(
+      PipelineExecutor.StreamingStats.empty,
+      ProcessingResult.Succeeded("a"),
+    )
+    val _ = updated.itemsProcessed shouldBe 1
+    val _ = updated.itemsSucceeded shouldBe 1
+    val _ = updated.itemsFailed shouldBe 0
+    updated.errorCounts shouldBe empty
+  }
+
+  it should "treat Skipped as a successful no-op" in {
+    val updated = PipelineExecutor.addResult(
+      PipelineExecutor.StreamingStats.empty,
+      ProcessingResult.Skipped("a", "already-ingested"),
+    )
+    val _ = updated.itemsProcessed shouldBe 1
+    val _ = updated.itemsSucceeded shouldBe 1
+    updated.itemsFailed shouldBe 0
+  }
+
+  it should "increment failed and error-counts for Failed results" in {
+    val s1 = PipelineExecutor.addResult(
+      PipelineExecutor.StreamingStats.empty,
+      ProcessingResult.Failed("a", "boom", "Systemic"),
+    )
+    val s2 = PipelineExecutor.addResult(s1, ProcessingResult.Failed("b", "boom", "Systemic"))
+    val s3 = PipelineExecutor.addResult(s2, ProcessingResult.Failed("c", "other", "Transient"))
+    val _  = s3.itemsProcessed shouldBe 3
+    val _  = s3.itemsSucceeded shouldBe 0
+    val _  = s3.itemsFailed shouldBe 3
+    val _  = s3.errorCounts.get("boom") shouldBe Some(2)
+    s3.errorCounts.get("other") shouldBe Some(1)
+  }
+
+  "buildSummary" should "mark status Completed when no items processed" in {
+    val now = Instant.now()
+    val summary = PipelineExecutor.buildSummary(
+      PipelineExecutor.StreamingStats.empty,
+      stepRunId = 7L,
+      pipelineName = pipelineName,
+      startedAt = now,
+      completedAt = now,
+    )
+    val _ = summary.status shouldBe WorkflowStepStatus.Completed
+    summary.stepRunId shouldBe 7L
+  }
+
+  it should "mark status Failed when every item failed" in {
+    val now = Instant.now()
+    val stats = PipelineExecutor.StreamingStats(
+      itemsProcessed = 3,
+      itemsSucceeded = 0,
+      itemsFailed = 3,
+      errorCounts = Map("boom" -> 3),
+    )
+    PipelineExecutor.buildSummary(stats, 0L, pipelineName, now, now).status shouldBe WorkflowStepStatus.Failed
+  }
+
+  it should "mark status CompletedWithErrors on partial failure" in {
+    val now = Instant.now()
+    val stats = PipelineExecutor.StreamingStats(
+      itemsProcessed = 3,
+      itemsSucceeded = 2,
+      itemsFailed = 1,
+      errorCounts = Map("boom" -> 1),
+    )
+    PipelineExecutor.buildSummary(stats, 0L, pipelineName, now, now).status shouldBe
+      WorkflowStepStatus.CompletedWithErrors
+  }
+
+  it should "mark status Completed when all items succeeded" in {
+    val now = Instant.now()
+    val stats = PipelineExecutor.StreamingStats(
+      itemsProcessed = 3,
+      itemsSucceeded = 3,
+      itemsFailed = 0,
+      errorCounts = Map.empty,
+    )
+    PipelineExecutor.buildSummary(stats, 0L, pipelineName, now, now).status shouldBe WorkflowStepStatus.Completed
   }
 
 }

@@ -19,7 +19,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.amendments.text.download.AmendmentTextDownloader
 import repcheck.ingestion.amendments.text.embedding.{AmendmentChunkEmbedder, AmendmentEmbedCtx}
-import repcheck.ingestion.amendments.text.errors.{AmendmentTextProcessingFailed, UnsupportedAmendmentTextVersionCode}
+import repcheck.ingestion.amendments.text.errors.AmendmentTextProcessingFailed
 import repcheck.ingestion.amendments.text.persistence.{AmendmentTextChunkRepository, AmendmentTextVersionRepository}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.embedding.EmbeddingConfig
@@ -80,7 +80,7 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
         embeddingConfig = testEmbeddingConfig,
         xa = testXa,
         logger = logger,
-        extractText = (_, _) => Stream.eval(contentResponseRef.get()).flatMap(Stream.emit),
+        extractText = (_, _, _) => Stream.eval(contentResponseRef.get()).flatMap(Stream.emit),
       )
 
     def stubSuccessfulDownload(content: String): Unit = {
@@ -186,13 +186,13 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     verify(f.chunkRepository, times(1)).deleteByVersionId(testVersionId)
   }
 
-  it should "raise UnsupportedAmendmentTextVersionCode for unknown wire codes (Systemic)" in {
+  it should "fail Systemic when the formatType is not HTML or PDF (no upsert, no embed)" in {
     val f      = newFixture
-    val result = f.processor.processEvent(buildEvent(versionTypeCode = "XYZ")).unsafeRunSync()
+    val result = f.processor.processEvent(buildEvent(formatType = "XML")).unsafeRunSync()
     val _ = result match {
       case ProcessingResult.Failed(_, message, errorClass) =>
         val _ = errorClass shouldBe "Systemic"
-        message should include("XYZ")
+        message should include("XML")
       case other => fail(s"Expected Failed(Systemic), got $other")
     }
     val _ = verify(f.versionRepository, never()).upsert(any[AmendmentTextVersionDO])
@@ -243,27 +243,31 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     captor.getValue shouldBe correlationId
   }
 
-  "buildTextVersion" should "convert HTML format to FormatType.FormattedText for storage" in {
-    val f       = newFixture
-    val event   = buildEvent(formatType = "HTML")
-    val version = f.processor.buildTextVersion(event, storedVersionType = "Submitted")
-    val _       = version.formatType.text shouldBe "Formatted Text"
-    val _       = version.amendmentId shouldBe testAmendmentId
-    val _       = version.versionType shouldBe "Submitted"
+  "buildTextVersion" should "preserve the wire versionTypeCode verbatim (no translation)" in {
+    val f     = newFixture
+    val event = buildEvent(versionTypeCode = "SUB", formatType = "HTML")
+    val version =
+      f.processor.buildTextVersion(event, formatType = repcheck.shared.models.congress.common.FormatType.FormattedText)
+    val _ = version.formatType.text shouldBe "Formatted Text"
+    val _ = version.amendmentId shouldBe testAmendmentId
+    val _ = version.versionType shouldBe "SUB"
     version.url shouldBe event.url
   }
 
-  it should "convert PDF format to FormatType.PDF" in {
-    val f       = newFixture
-    val event   = buildEvent(formatType = "PDF")
-    val version = f.processor.buildTextVersion(event, storedVersionType = "Modified")
+  it should "carry through MOD when the wire code is MOD" in {
+    val f     = newFixture
+    val event = buildEvent(versionTypeCode = "MOD", formatType = "PDF")
+    val version =
+      f.processor.buildTextVersion(event, formatType = repcheck.shared.models.congress.common.FormatType.PDF)
+    val _ = version.versionType shouldBe "MOD"
     version.formatType.text shouldBe "PDF"
   }
 
   it should "fall back to Instant.EPOCH when publishedDate is None" in {
     val f     = newFixture
     val event = buildEvent().copy(publishedDate = None)
-    val v     = f.processor.buildTextVersion(event, storedVersionType = "Submitted")
+    val v =
+      f.processor.buildTextVersion(event, formatType = repcheck.shared.models.congress.common.FormatType.FormattedText)
     v.versionDate shouldBe Instant.EPOCH
   }
 
@@ -279,7 +283,6 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
 
   "classifyError" should "classify all known cases per the bill-side pattern" in {
     val f = newFixture
-    val _ = f.processor.classifyError(UnsupportedAmendmentTextVersionCode("XYZ")) shouldBe "Systemic"
     val _ = f.processor.classifyError(AmendmentTextProcessingFailed("X", "Y")) shouldBe "Systemic"
     val _ = f.processor.classifyError(new java.io.IOException("net glitch")) shouldBe "Transient"
     val _ = f.processor.classifyError(new java.net.SocketTimeoutException("t")) shouldBe "Transient"

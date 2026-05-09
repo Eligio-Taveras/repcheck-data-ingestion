@@ -192,6 +192,36 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "isolate concurrent submissions for the same amendmentId via distinct versionIds" in {
+    // Same amendmentId (42L) emitting both SUB and MOD versions concurrently — keying on versionId in the
+    // embedder state ensures the second register() doesn't clobber the first's Deferred.
+    val embedSvc       = new RecordingEmbeddingService
+    val repo           = new RecordingRepo
+    val ctxSubmittedV1 = AmendmentEmbedCtx(amendmentId = 42L, versionId = 100L, naturalKey = "117-SAMDT-2137-SUB")
+    val ctxModifiedV1  = AmendmentEmbedCtx(amendmentId = 42L, versionId = 101L, naturalKey = "117-SAMDT-2137-MOD")
+    val program = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
+      .use { embedder =>
+        for {
+          fiber1 <- embedder.processChunks(ctxSubmittedV1, Stream.emit("submitted text")).start
+          fiber2 <- embedder.processChunks(ctxModifiedV1, Stream.emit("modified text")).start
+          r1     <- fiber1.joinWithNever
+          r2     <- fiber2.joinWithNever
+        } yield (r1, r2)
+      }
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    val (r1, r2) = program
+    val _        = r1.isSucceeded shouldBe true
+    val _        = r2.isSucceeded shouldBe true
+    val flat     = repo.rows.flatten
+    // Both versions persisted, distinct version_ids, same amendment_id.
+    val _ = flat.size shouldBe 2
+    val _ = flat.map(_.amendmentId).distinct shouldBe List(42L)
+    flat.flatMap(_.versionId).toSet shouldBe Set(100L, 101L)
+  }
+
   it should "complete two amendments via cross-amendment batching when batchSize triggers a shared flush" in {
     val embedSvc = new RecordingEmbeddingService
     val repo     = new RecordingRepo

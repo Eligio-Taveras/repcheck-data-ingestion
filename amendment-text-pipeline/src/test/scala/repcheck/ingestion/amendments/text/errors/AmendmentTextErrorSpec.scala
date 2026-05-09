@@ -41,11 +41,6 @@ class AmendmentTextErrorSpec extends AnyFlatSpec with Matchers {
     error.getMessage should include("embedder unexpectedly skipped")
   }
 
-  "UnsupportedAmendmentTextVersionCode" should "carry the rejected code" in {
-    val error = UnsupportedAmendmentTextVersionCode("XYZ")
-    error.getMessage should include("XYZ")
-  }
-
   "AmendmentTextDownloadHttpError" should "carry the status code and body" in {
     val error = AmendmentTextDownloadHttpError(429, "rate limit exceeded")
     val _     = error.statusCode shouldBe 429

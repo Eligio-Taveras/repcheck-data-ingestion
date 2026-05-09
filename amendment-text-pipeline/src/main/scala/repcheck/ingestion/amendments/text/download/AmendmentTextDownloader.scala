@@ -36,6 +36,10 @@ class AmendmentTextDownloader[F[_]: Async](
 
   private val StepName = "amendment-text-download"
 
+  // 2 KiB cap for error-response body reads (see `boundedErrorBody`). Plenty for realistic API error payloads —
+  // bounded so a pathological multi-MB error response can never OOM the process.
+  private val MaxErrorBodyBytes = 2048L
+
   /**
    * Stream the response body bytes for `textUrl`. Status-code handling mirrors the bill-side: 404 →
    * [[AmendmentTextDownloadFailed]], non-success other than 404 → [[AmendmentTextDownloadFailed]] including the
@@ -74,13 +78,27 @@ class AmendmentTextDownloader[F[_]: Async](
               case status if status.isSuccess =>
                 response.body
               case status =>
-                Stream.eval(response.as[String]).flatMap { body =>
-                  Stream.raiseError[F](AmendmentTextDownloadFailed(textUrl, formatType, s"HTTP ${status.code}: $body"))
+                // Bound the error-body read so a pathological multi-MB error response can't OOM the process.
+                // 2KB is plenty for any realistic API error payload (Cloudflare HTML pages, GovInfo JSON errors,
+                // upstream 5xx text). On read failure we fall back to the empty string so the exception still
+                // raises with the status code.
+                Stream.eval(boundedErrorBody(response)).flatMap { body =>
+                  Stream.raiseError[F](
+                    AmendmentTextDownloadFailed(textUrl, formatType, s"HTTP ${status.code}: $body")
+                  )
                 }
             }
           }
     }
   }
+
+  private[download] def boundedErrorBody(response: org.http4s.Response[F]): F[String] =
+    response.body
+      .take(MaxErrorBodyBytes)
+      .through(fs2.text.utf8.decode)
+      .compile
+      .string
+      .handleError(_ => "")
 
   /**
    * Translate the caller-supplied URL into the actual `Request[F]`. Returns the request alongside a redacted effective

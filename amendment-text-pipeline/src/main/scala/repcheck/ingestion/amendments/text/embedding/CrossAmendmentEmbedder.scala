@@ -88,7 +88,7 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
         persisted = 0,
         deferred = deferred,
       )
-      state.update(s => s.copy(amendments = s.amendments + (ctx.amendmentId -> initial))).as(deferred.get)
+      state.update(s => s.copy(amendments = s.amendments + (ctx.versionId -> initial))).as(deferred.get)
     }
 
   private[embedding] def offerChunk(ctx: AmendmentEmbedCtx, chunkIdx: Int, text: String): F[Unit] = {
@@ -108,15 +108,15 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
   private[embedding] def finalizeSubmission(ctx: AmendmentEmbedCtx, count: Int): F[Unit] =
     state
       .modify { s =>
-        s.amendments.get(ctx.amendmentId) match {
+        s.amendments.get(ctx.versionId) match {
           case Some(progress) =>
             val updated = progress.copy(expected = Some(count))
             val flush   = s.buffer.toList
             val newAmendments =
               if (updated.shouldComplete) {
-                s.amendments - ctx.amendmentId
+                s.amendments - ctx.versionId
               } else {
-                s.amendments.updated(ctx.amendmentId, updated)
+                s.amendments.updated(ctx.versionId, updated)
               }
             val maybeDone = if (updated.shouldComplete) Some(updated) else None
             (s.copy(buffer = Vector.empty, amendments = newAmendments), (maybeDone, flush))
@@ -136,9 +136,9 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
   private[embedding] def cleanupIfStillRegistered(ctx: AmendmentEmbedCtx): F[Unit] =
     state
       .modify { s =>
-        s.amendments.get(ctx.amendmentId) match {
+        s.amendments.get(ctx.versionId) match {
           case Some(progress) =>
-            (s.copy(amendments = s.amendments - ctx.amendmentId), Some(progress))
+            (s.copy(amendments = s.amendments - ctx.versionId), Some(progress))
           case None => (s, None)
         }
       }
@@ -190,21 +190,21 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
     }
 
   private[embedding] def applyBatchResult(batch: List[AmendmentChunkSubmission]): F[Unit] = {
-    val perAmendmentCounts: Map[Long, Int] = batch.groupMapReduce(_.ctx.amendmentId)(_ => 1)(_ + _)
+    val perVersionCounts: Map[Long, Int] = batch.groupMapReduce(_.ctx.versionId)(_ => 1)(_ + _)
     state
       .modify { s =>
-        perAmendmentCounts.foldLeft((s, List.empty[AmendmentEmbedProgress[F]])) {
-          case ((acc, completed), (amendmentId, count)) =>
-            acc.amendments.get(amendmentId) match {
+        perVersionCounts.foldLeft((s, List.empty[AmendmentEmbedProgress[F]])) {
+          case ((acc, completed), (versionId, count)) =>
+            acc.amendments.get(versionId) match {
               case Some(progress) =>
                 val updated = progress.copy(persisted = progress.persisted + count)
                 if (updated.shouldComplete) {
-                  (acc.copy(amendments = acc.amendments - amendmentId), updated :: completed)
+                  (acc.copy(amendments = acc.amendments - versionId), updated :: completed)
                 } else {
-                  (acc.copy(amendments = acc.amendments.updated(amendmentId, updated)), completed)
+                  (acc.copy(amendments = acc.amendments.updated(versionId, updated)), completed)
                 }
               case None =>
-                // Amendment was removed (e.g. by a prior failBatch). Chunks still got embedded + INSERTed; the
+                // Version was removed (e.g. by a prior failBatch). Chunks still got embedded + INSERTed; the
                 // orphan rows are cleaned up by the next pipeline tick's `clearOrphanChunks`.
                 (acc, completed)
             }
@@ -220,26 +220,26 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
   }
 
   private[embedding] def failBatch(batch: List[AmendmentChunkSubmission], error: Throwable): F[Unit] = {
-    val amendmentsInBatch = batch.map(_.ctx).distinctBy(_.amendmentId)
+    val versionsInBatch = batch.map(_.ctx).distinctBy(_.versionId)
     val logCtx = LogContext(
       runId = "<batch>",
       stepName = StepName,
       correlationId = None,
-      entityId = Some(s"${amendmentsInBatch.size}-amendments"),
+      entityId = Some(s"${versionsInBatch.size}-versions"),
     )
     val errorMessage = Option(error.getMessage).getOrElse(error.getClass.getSimpleName)
     logger.error(
       logCtx,
-      s"Embed/INSERT batch failed for ${amendmentsInBatch.size} amendment(s); failing each: $errorMessage",
+      s"Embed/INSERT batch failed for ${versionsInBatch.size} version(s); failing each: $errorMessage",
       Some(error),
     ) *>
       state
         .modify { s =>
-          amendmentsInBatch.foldLeft((s, List.empty[AmendmentEmbedProgress[F]])) {
+          versionsInBatch.foldLeft((s, List.empty[AmendmentEmbedProgress[F]])) {
             case ((acc, removed), ctx) =>
-              acc.amendments.get(ctx.amendmentId) match {
+              acc.amendments.get(ctx.versionId) match {
                 case Some(progress) =>
-                  (acc.copy(amendments = acc.amendments - ctx.amendmentId), progress :: removed)
+                  (acc.copy(amendments = acc.amendments - ctx.versionId), progress :: removed)
                 case None => (acc, removed)
               }
           }

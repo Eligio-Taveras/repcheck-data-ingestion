@@ -11,12 +11,8 @@ import doobie._
 
 import repcheck.ingestion.amendments.text.download.AmendmentTextDownloader
 import repcheck.ingestion.amendments.text.embedding.{AmendmentChunkEmbedder, AmendmentEmbedCtx}
-import repcheck.ingestion.amendments.text.errors.{AmendmentTextProcessingFailed, UnsupportedAmendmentTextVersionCode}
-import repcheck.ingestion.amendments.text.persistence.{
-  AmendmentTextChunkRepository,
-  AmendmentTextVersionRepository,
-  AmendmentTextVersionTypeMapping,
-}
+import repcheck.ingestion.amendments.text.errors.AmendmentTextProcessingFailed
+import repcheck.ingestion.amendments.text.persistence.{AmendmentTextChunkRepository, AmendmentTextVersionRepository}
 import repcheck.ingestion.bills.common.persistence.TransactionRunner
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.chunking.TextChunker
@@ -31,11 +27,12 @@ import repcheck.shared.models.congress.dos.amendment.AmendmentTextVersionDO
  * [[repcheck.ingestion.bills.text.pipeline.BillTextProcessor]] for the amendment side. Crash semantics, heap profile,
  * and back-pressure behavior are identical to the bill-side processor.
  *
- *   1. **Translate the wire `versionTypeCode`** (`SUB`/`MOD`) to the stored enum value (`Submitted`/`Modified`) via
- *      [[AmendmentTextVersionTypeMapping.wireToStored]]. Unrecognized → Systemic failure.
- *   1. **Single-roundtrip upsert** via [[AmendmentTextVersionRepository.upsert]]. Returns `(versionId, inserted,
- *      alreadyComplete)`. If `alreadyComplete = true` (existing complete row, no newer `versionDate` upstream),
- *      short-circuit to `Skipped("already-ingested")` and ACK the message.
+ *   1. **Resolve the storage `FormatType`** from the wire `formatType` (`HTML` → FormattedText, `PDF` → PDF). An
+ *      unknown value raises [[AmendmentTextProcessingFailed]] BEFORE the upsert — no fallback row is ever written.
+ *   1. **Single-roundtrip upsert** via [[AmendmentTextVersionRepository.upsert]]. The wire `versionTypeCode`
+ *      (`SUB`/`MOD`) is now exactly the value the DB enum stores (since db-migrations 0.1.36), so it is bound directly.
+ *      Returns `(versionId, inserted, alreadyComplete)`. If `alreadyComplete = true`, short-circuit to
+ *      `Skipped("already-ingested")` and ACK the message.
  *   1. **Clear orphan chunks** for this `version_id` (idempotent — no-op when row was just inserted).
  *   1. **Open the streaming pipeline**: HTTP body bytes → format-dispatched extractor (HTML/PDF) → chunker →
  *      cross-amendment embedder → per-batch INSERT. Backpressure flows end-to-end as in the bill side.
@@ -56,7 +53,7 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
   embeddingConfig: EmbeddingConfig,
   xa: Transactor[F],
   logger: PipelineLogger[F],
-  extractText: (Stream[F, Byte], String) => Stream[F, String],
+  extractText: (Stream[F, Byte], String, String) => Stream[F, String],
 ) {
 
   private val StepName = "amendment-text-processing"
@@ -90,8 +87,9 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
         logCtx,
         s"Processing amendment text for ${event.naturalKey} (versionTypeCode=${event.versionTypeCode}, formatType=${event.formatType})",
       )
-      storedVersion <- mapWireVersionType(event.versionTypeCode)
-      pendingVersion = buildTextVersion(event, storedVersion)
+      // Resolve the format BEFORE the upsert so an unknown formatType never produces a misleading row.
+      formatType <- resolveFormatType(event.naturalKey, event.formatType)
+      pendingVersion = buildTextVersion(event, formatType)
       upsertResult <- upsertVersion(pendingVersion)
       result <- upsertResult match {
         case (versionId, _, true) =>
@@ -107,14 +105,18 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
     } yield result
 
   /**
-   * Map the wire-format `versionTypeCode` ("SUB"/"MOD") to the stored enum value ("Submitted"/"Modified") via
-   * [[AmendmentTextVersionTypeMapping]]. An unrecognized code raises [[UnsupportedAmendmentTextVersionCode]] through
-   * the F effect channel — the outer `handleErrorWith` classifies that as Systemic.
+   * Resolve the wire `formatType` to the DB-stored [[FormatType]]. Unknown values raise
+   * [[AmendmentTextProcessingFailed]] (Systemic) through the F effect channel — the natural key is in scope here so the
+   * error message names the exact amendment, not `<unknown>`.
    */
-  private[pipeline] def mapWireVersionType(wire: String): F[String] =
-    AmendmentTextVersionTypeMapping.wireToStored(wire) match {
-      case Right(stored) => Async[F].pure(stored)
-      case Left(error)   => Async[F].raiseError(error)
+  private[pipeline] def resolveFormatType(naturalKey: String, wireFormat: String): F[FormatType] =
+    wireFormat match {
+      case "HTML" => Async[F].pure(FormatType.FormattedText)
+      case "PDF"  => Async[F].pure(FormatType.PDF)
+      case other =>
+        Async[F].raiseError(
+          AmendmentTextProcessingFailed(naturalKey, s"Unsupported format type: '$other' (expected 'HTML' or 'PDF')")
+        )
     }
 
   private[pipeline] def upsertVersion(version: AmendmentTextVersionDO): F[(Long, Boolean, Boolean)] =
@@ -175,7 +177,7 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
   ): F[ProcessingResult] = {
     val ctx   = AmendmentEmbedCtx(amendmentId = event.amendmentId, versionId = versionId, naturalKey = event.naturalKey)
     val bytes = downloader.streamBody(event.url, event.formatType, event.correlationId)
-    val chunkStream = extractText(bytes, event.formatType)
+    val chunkStream = extractText(bytes, event.formatType, event.naturalKey)
       .map(stripNullBytes)
       .filter(_.nonEmpty)
       .through(TextChunker.chunkPipe(embeddingConfig.maxChunkChars))
@@ -206,19 +208,19 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
       }
     }
 
+  /**
+   * Build the `AmendmentTextVersionDO` that goes into the upsert. The `versionType` is the wire `versionTypeCode`
+   * verbatim — both `SUB` and `MOD` are valid values of the `amendment_text_version_code_type` enum as of db-migrations
+   * 0.1.36, so no translation is needed.
+   */
   private[pipeline] def buildTextVersion(
     event: AmendmentTextAvailableEvent,
-    storedVersionType: String,
-  ): AmendmentTextVersionDO = {
-    val formatType = event.formatType match {
-      case "HTML" => FormatType.FormattedText
-      case "PDF"  => FormatType.PDF
-      case _      => FormatType.FormattedText // fallback; extractor will raise on unknowns
-    }
+    formatType: FormatType,
+  ): AmendmentTextVersionDO =
     AmendmentTextVersionDO(
       id = 0L,
       amendmentId = event.amendmentId,
-      versionType = storedVersionType,
+      versionType = event.versionTypeCode,
       versionDate = event.publishedDate.getOrElse(Instant.EPOCH),
       formatType = formatType,
       url = event.url,
@@ -230,11 +232,9 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
       fetchedAt = None,
       createdAt = None,
     )
-  }
 
   private[pipeline] def classifyError(error: Throwable): String =
     error match {
-      case _: UnsupportedAmendmentTextVersionCode  => "Systemic"
       case _: AmendmentTextProcessingFailed        => "Systemic"
       case _: EmbeddingContextLengthExceeded       => "Systemic"
       case _: EmbeddingGenerationFailed            => "Transient"

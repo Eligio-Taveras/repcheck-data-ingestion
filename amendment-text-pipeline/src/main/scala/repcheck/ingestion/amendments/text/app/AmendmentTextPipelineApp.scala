@@ -2,8 +2,6 @@ package repcheck.ingestion.amendments.text.app
 
 import java.util.concurrent.TimeUnit
 
-import scala.concurrent.duration.DurationInt
-
 import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Sync}
 
 import org.http4s.ember.client.EmberClientBuilder
@@ -27,6 +25,14 @@ import repcheck.ingestion.common.logging.PipelineLoggerFactory
  * IOApp entry point for the amendment-text-pipeline (Cloud Run Service). Pure wiring; all logic lives in the testable
  * [[AmendmentTextPipelinePipeline]] companion object. Mirror of
  * [[repcheck.ingestion.bills.text.app.BillTextPipelineApp]].
+ *
+ * CLI args (positional, both optional, default `0L`):
+ *   - `args(0)` — `runId`: workflow-run identifier (Long); placeholder until the workflow_runs table is wired up.
+ *   - `args(1)` — `stepRunId`: workflow_run_steps row identifier (Long); placeholder until that table exists.
+ *
+ * Both default to `0L` when missing or unparseable so the app remains runnable without a workflow registrar. The
+ * `WorkflowStateUpdater` is constructed only when a non-zero `runId` is supplied — the placeholder `0L` means no
+ * workflow registration is in scope and the updater would have nothing real to write to.
  */
 object AmendmentTextPipelineApp extends IOApp {
 
@@ -55,7 +61,9 @@ object AmendmentTextPipelineApp extends IOApp {
     }
 
   override def run(args: List[String]): IO[ExitCode] = {
-    val _ = args // args reserved for future CLI config override support
+    val runId     = args.lift(0).flatMap(_.toLongOption).getOrElse(0L)
+    val stepRunId = args.lift(1).flatMap(_.toLongOption).getOrElse(0L)
+
     AmendmentTextPipelinePipeline.runWithFactories[IO](
       configLoader = Sync[IO].delay(ConfigSource.default.loadOrThrow[AppConfig]),
       loggerFactory = (name: String) => PipelineLoggerFactory.make[IO](name),
@@ -64,23 +72,28 @@ object AmendmentTextPipelineApp extends IOApp {
           config,
           logger,
           TransactorResource.make[IO](_),
-          // GovInfo client: external API rate-limited per the published 36000-req/hour budget. permits=2 mirrors
-          // the bill-side empirical sweet spot — keeps the embedder GPU saturated without overshooting GovInfo.
+          // GovInfo client: external API rate-limited per the published 36000-req/hour budget. Timeouts and
+          // permits come from `pipeline.gov-info-http` / `pipeline.gov-info-permits` so the operator can tune
+          // both without a code change. Defaults reuse the bill-side empirical values (120s/120s, permits=2).
           EmberClientBuilder
             .default[IO]
-            .withTimeout(120.seconds)
-            .withIdleConnectionTime(120.seconds)
+            .withTimeout(config.pipeline.govInfoHttp.requestTimeout)
+            .withIdleConnectionTime(config.pipeline.govInfoHttp.idleTimeout)
             .build
             .flatMap { raw =>
-              RateLimitedHttpClient.make[IO](raw, pageDelay = config.pipeline.pageDelay, permits = 2L)
+              RateLimitedHttpClient.make[IO](
+                raw,
+                pageDelay = config.pipeline.pageDelay,
+                permits = config.pipeline.govInfoPermits,
+              )
             },
           // Ollama client: local sidecar; no external quota; no rate limit so a leaked GovInfo permit can never
           // wedge the embedder. Tighter idle timeout than the GovInfo client because local connections are cheap
-          // to re-establish.
+          // to re-establish — both timeouts come from `pipeline.ollama-http` for operator control.
           EmberClientBuilder
             .default[IO]
-            .withTimeout(120.seconds)
-            .withIdleConnectionTime(60.seconds)
+            .withTimeout(config.pipeline.ollamaHttp.requestTimeout)
+            .withIdleConnectionTime(config.pipeline.ollamaHttp.idleTimeout)
             .build,
           (subConfig, log) =>
             // Compose the channel resource OUTSIDE the subscriber resource so the channel is closed AFTER the
@@ -104,8 +117,14 @@ object AmendmentTextPipelineApp extends IOApp {
         ),
       processorFactory = AmendmentTextPipelinePipeline.buildProcessor[IO],
       streamFactory = AmendmentTextPipelinePipeline.buildStream[IO],
-      workflowStateUpdaterFactory =
-        (xa, cfg) => sys.env.get("WORKFLOW_RUN_ID").map(_ => new WorkflowStateUpdater[IO](xa, cfg)),
+      // Construct the WorkflowStateUpdater only when a non-zero runId is in scope — `0L` is the placeholder used
+      // when this Cloud Run Service runs without a workflow registrar (e.g., local dev or pre-§3.7 wiring), and
+      // there is nothing meaningful to write in that case.
+      workflowStateUpdaterFactory = (transactor, cfg) =>
+        if (runId == 0L) { None }
+        else { Some(new WorkflowStateUpdater[IO](transactor, cfg)) },
+      runId = runId,
+      stepRunId = stepRunId,
     )
   }
 
