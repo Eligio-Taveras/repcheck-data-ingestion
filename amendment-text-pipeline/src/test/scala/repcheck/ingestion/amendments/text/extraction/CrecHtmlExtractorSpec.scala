@@ -52,6 +52,23 @@ class CrecHtmlExtractorSpec extends AnyFlatSpec with Matchers {
     twice shouldBe once
   }
 
+  it should "collapse runs of whitespace left behind by pattern removals" in {
+    // The strip-then-trim alone would leave double-spaces wherever a pattern was removed
+    // mid-sentence. After the fix, every run of whitespace collapses to a single space.
+    val raw = "Section 1. [[Page S5256]] Some text. Pg S5255 More text."
+    val out = CrecHtmlExtractor.stripCrecNoise(raw)
+    val _   = out should not include "  " // no double spaces
+    out shouldBe "Section 1. Some text. More text."
+  }
+
+  it should "collapse tabs and newlines into single spaces" in {
+    val raw = "Mr. SCHUMER.\n\n\tThe text continues.\n[Time: 10:30] Continuing."
+    val out = CrecHtmlExtractor.stripCrecNoise(raw)
+    val _   = out should not include "\n"
+    val _   = out should not include "\t"
+    out shouldBe "Mr. SCHUMER. The text continues. Continuing."
+  }
+
   "extract" should "extract body text from a CREC-shaped HTML document" in {
     val html = """
       |<html>

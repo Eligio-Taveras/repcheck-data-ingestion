@@ -267,6 +267,21 @@ class AmendmentTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeA
     request.uri.toString should not include "api_key"
   }
 
+  it should "redact query params on the passthrough branch so an inbound api_key never lands in logs" in {
+    // Inbound URLs from §7.5 events can already carry query params (the rewriter regex tolerates them);
+    // if the URL doesn't match the rewriter pattern we still pass the inbound URL into the GET, but
+    // the *effective URL* returned for logging must drop the query string entirely.
+    val program = downloaderResource.use(d =>
+      d.buildRequest("https://example.com/some-amendment.txt?api_key=SECRET&token=ALSO-SECRET")
+    )
+    val (request, effectiveUrl) = program.unsafeRunSync()
+    val _                       = effectiveUrl shouldBe "https://example.com/some-amendment.txt"
+    val _                       = effectiveUrl should not include "api_key"
+    val _                       = effectiveUrl should not include "SECRET"
+    // The actual GET still uses the inbound URL verbatim — caller controls what they hand us.
+    request.uri.toString should include("api_key=SECRET")
+  }
+
   "redactQueryParams" should "drop api_key from a URL that already carries one" in {
     AmendmentTextDownloader.redactQueryParams(
       "https://api.govinfo.gov/packages/CREC-2021-08-01/granules/CREC-2021-08-01-pt1-PgS5255/htm?api_key=SECRET"

@@ -48,17 +48,24 @@ object CrecHtmlExtractor {
   private[extraction] val TimeAnnotationPattern: scala.util.matching.Regex =
     """\[\s*Time:\s*[^\]]+\]""".r
 
+  // Captures any run of whitespace (spaces, tabs, newlines) — replaced with a single space after the
+  // CREC noise patterns above are stripped, so the leftover gaps don't show up as multi-space artifacts
+  // in the embedded chunk text.
+  private[extraction] val WhitespaceRunPattern: scala.util.matching.Regex =
+    """\s+""".r
+
   /**
    * Apply the CREC-specific noise removal in sequence. Order matters: strip the time annotations first (they may
    * contain numbers that look like page refs), then page references, then page footers. After stripping, collapse any
-   * extra whitespace that the removal left behind.
+   * runs of whitespace (spaces, tabs, newlines) the removal left behind into single spaces, then trim leading/trailing
+   * whitespace.
    */
   private[extraction] def stripCrecNoise(raw: String): String = {
-    val noTime  = TimeAnnotationPattern.replaceAllIn(raw, "")
-    val noPage  = InlinePageRefPattern.replaceAllIn(noTime, "")
-    val noFoot  = PageNumberFooterPattern.replaceAllIn(noPage, "")
-    val cleaned = noFoot.trim
-    cleaned
+    val noTime          = TimeAnnotationPattern.replaceAllIn(raw, "")
+    val noPage          = InlinePageRefPattern.replaceAllIn(noTime, "")
+    val noFoot          = PageNumberFooterPattern.replaceAllIn(noPage, "")
+    val collapsedSpaces = WhitespaceRunPattern.replaceAllIn(noFoot, " ")
+    collapsedSpaces.trim
   }
 
   def extract[F[_]: Async](bytes: Stream[F, Byte]): Stream[F, String] = {

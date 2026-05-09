@@ -108,8 +108,10 @@ class AmendmentTextDownloader[F[_]: Async](
 
   /**
    * Translate the caller-supplied URL into the actual `Request[F]`. Returns the request alongside a redacted effective
-   * URL string (without the api_key) for logging — matches the bill-side downloader to keep logs free of secret
-   * material.
+   * URL string (no `api_key`, no other query params) suitable for logs and exception messages. The api.govinfo.gov
+   * branch builds `govInfoUrl` without an api key and only adds the key onto the request URI; the passthrough branch
+   * runs `redactQueryParams` on the inbound URL because the §7.5 event payload could carry an `api_key` (or any other
+   * query-param secret) that must not flow into observable text.
    */
   private[download] def buildRequest(textUrl: String): F[(Request[F], String)] =
     CrecGovInfoUrlRewriter.parseCongressGovCrecUrl(textUrl) match {
@@ -120,7 +122,7 @@ class AmendmentTextDownloader[F[_]: Async](
           (Request[F](uri = authedUri), govInfoUrl)
         }
       case None =>
-        parseUrl(textUrl).map(uri => (Request[F](uri = uri), textUrl))
+        parseUrl(textUrl).map(uri => (Request[F](uri = uri), AmendmentTextDownloader.redactQueryParams(textUrl)))
     }
 
   private[download] def parseUrl(textUrl: String): F[Uri] =
