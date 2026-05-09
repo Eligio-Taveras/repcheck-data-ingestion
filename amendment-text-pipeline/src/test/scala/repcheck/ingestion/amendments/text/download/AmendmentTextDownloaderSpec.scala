@@ -14,7 +14,11 @@ import com.github.tomakehurst.wiremock.core.WireMockConfiguration
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
-import repcheck.ingestion.amendments.text.errors.{AmendmentTextDownloadFailed, InvalidAmendmentTextUrl}
+import repcheck.ingestion.amendments.text.errors.{
+  AmendmentTextDownloadFailed,
+  AmendmentTextDownloadHttpError,
+  InvalidAmendmentTextUrl,
+}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 /**
@@ -102,7 +106,7 @@ class AmendmentTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeA
     }
   }
 
-  it should "raise AmendmentTextDownloadFailed on non-success status with body text included" in {
+  it should "raise AmendmentTextDownloadHttpError (typed, status-aware) on non-404 non-success status" in {
     wireMock.stubFor(
       get(urlPathEqualTo("/amendment")).willReturn(aResponse().withStatus(500).withBody("server crashed"))
     )
@@ -113,10 +117,10 @@ class AmendmentTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeA
       .unsafeRunSync()
 
     attempt match {
-      case Left(err: AmendmentTextDownloadFailed) =>
-        val _ = err.getMessage should include("500")
-        err.getMessage should include("server crashed")
-      case other => fail(s"Expected AmendmentTextDownloadFailed, got $other")
+      case Left(err: AmendmentTextDownloadHttpError) =>
+        val _ = err.statusCode shouldBe 500
+        err.body should include("server crashed")
+      case other => fail(s"Expected AmendmentTextDownloadHttpError, got $other")
     }
   }
 
@@ -132,12 +136,12 @@ class AmendmentTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeA
       .unsafeRunSync()
 
     attempt match {
-      case Left(err: AmendmentTextDownloadFailed) =>
-        val _ = err.getMessage should include("502")
-        // The cap is at the byte layer; total error message must be far below the 64 KiB sent body and bounded by
+      case Left(err: AmendmentTextDownloadHttpError) =>
+        val _ = err.statusCode shouldBe 502
+        // The cap is at the byte layer; the captured body must be far below the 64 KiB sent body and bounded by
         // a small constant — proves the body was truncated rather than slurped whole.
-        err.getMessage.length should be <= 4096
-      case other => fail(s"Expected AmendmentTextDownloadFailed, got $other")
+        err.body.length should be <= 4096
+      case other => fail(s"Expected AmendmentTextDownloadHttpError, got $other")
     }
   }
 

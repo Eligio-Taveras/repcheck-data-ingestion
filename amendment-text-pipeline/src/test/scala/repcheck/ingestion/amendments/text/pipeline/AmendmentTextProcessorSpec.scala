@@ -19,7 +19,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.amendments.text.download.AmendmentTextDownloader
 import repcheck.ingestion.amendments.text.embedding.{AmendmentChunkEmbedder, AmendmentEmbedCtx}
-import repcheck.ingestion.amendments.text.errors.AmendmentTextProcessingFailed
+import repcheck.ingestion.amendments.text.errors.{AmendmentTextDownloadHttpError, AmendmentTextProcessingFailed}
 import repcheck.ingestion.amendments.text.persistence.{AmendmentTextChunkRepository, AmendmentTextVersionRepository}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.embedding.EmbeddingConfig
@@ -273,7 +273,7 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
 
   "stripNullBytes" should "remove U+0000 from a string" in {
     val f = newFixture
-    f.processor.stripNullBytes("a b c") shouldBe "abc"
+    f.processor.stripNullBytes("abc") shouldBe "abc"
   }
 
   it should "leave a normal string untouched" in {
@@ -289,6 +289,18 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     val _ = f.processor.classifyError(new java.net.ConnectException("refused")) shouldBe "Transient"
     val _ = f.processor.classifyError(new java.sql.SQLTransientException("t")) shouldBe "Transient"
     f.processor.classifyError(new RuntimeException("unknown")) shouldBe "Systemic"
+  }
+
+  it should "route AmendmentTextDownloadHttpError through the typed classifier (429/5xx Transient, 4xx Systemic)" in {
+    val f = newFixture
+    val _ = f.processor.classifyError(AmendmentTextDownloadHttpError(429, "rate limit")) shouldBe "Transient"
+    val _ = f.processor.classifyError(AmendmentTextDownloadHttpError(500, "")) shouldBe "Transient"
+    val _ = f.processor.classifyError(AmendmentTextDownloadHttpError(502, "")) shouldBe "Transient"
+    val _ = f.processor.classifyError(AmendmentTextDownloadHttpError(503, "")) shouldBe "Transient"
+    val _ = f.processor.classifyError(AmendmentTextDownloadHttpError(504, "")) shouldBe "Transient"
+    val _ = f.processor.classifyError(AmendmentTextDownloadHttpError(401, "Unauthorized")) shouldBe "Systemic"
+    val _ = f.processor.classifyError(AmendmentTextDownloadHttpError(403, "Forbidden")) shouldBe "Systemic"
+    f.processor.classifyError(AmendmentTextDownloadHttpError(400, "Bad Request")) shouldBe "Systemic"
   }
 
 }

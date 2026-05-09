@@ -11,12 +11,17 @@ import doobie._
 
 import repcheck.ingestion.amendments.text.download.AmendmentTextDownloader
 import repcheck.ingestion.amendments.text.embedding.{AmendmentChunkEmbedder, AmendmentEmbedCtx}
-import repcheck.ingestion.amendments.text.errors.AmendmentTextProcessingFailed
+import repcheck.ingestion.amendments.text.errors.{
+  AmendmentTextDownloadErrorClassifier,
+  AmendmentTextDownloadHttpError,
+  AmendmentTextProcessingFailed,
+}
 import repcheck.ingestion.amendments.text.persistence.{AmendmentTextChunkRepository, AmendmentTextVersionRepository}
 import repcheck.ingestion.bills.common.persistence.TransactionRunner
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.chunking.TextChunker
 import repcheck.ingestion.text.embedding.{EmbeddingConfig, EmbeddingContextLengthExceeded, EmbeddingGenerationFailed}
+import repcheck.pipeline.models.errors.ErrorClass
 import repcheck.pipeline.models.events.AmendmentTextAvailableEvent
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.common.FormatType
@@ -235,6 +240,14 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
 
   private[pipeline] def classifyError(error: Throwable): String =
     error match {
+      case http: AmendmentTextDownloadHttpError =>
+        // Delegate to the typed classifier so 429 / 5xx route to Transient and 401/403 (invalid api_key) + other
+        // 4xx route to Systemic. Without this case the typed error fell into the default Systemic bucket and the
+        // classifier was effectively dead code.
+        AmendmentTextDownloadErrorClassifier.classify(http) match {
+          case ErrorClass.Transient => "Transient"
+          case ErrorClass.Systemic  => "Systemic"
+        }
       case _: AmendmentTextProcessingFailed        => "Systemic"
       case _: EmbeddingContextLengthExceeded       => "Systemic"
       case _: EmbeddingGenerationFailed            => "Transient"

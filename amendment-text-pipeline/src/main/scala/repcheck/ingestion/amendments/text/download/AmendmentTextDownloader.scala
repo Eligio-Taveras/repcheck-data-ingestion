@@ -10,7 +10,11 @@ import org.http4s.{Request, Status, Uri}
 
 import fs2.Stream
 
-import repcheck.ingestion.amendments.text.errors.{AmendmentTextDownloadFailed, InvalidAmendmentTextUrl}
+import repcheck.ingestion.amendments.text.errors.{
+  AmendmentTextDownloadFailed,
+  AmendmentTextDownloadHttpError,
+  InvalidAmendmentTextUrl,
+}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 /**
@@ -78,6 +82,9 @@ class AmendmentTextDownloader[F[_]: Async](
           Stream.resource(client.run(request)).flatMap { response =>
             response.status match {
               case Status.NotFound =>
+                // 404 stays as the generic-failure type because retrying isn't going to fix "content doesn't exist
+                // upstream" — it's not an HTTP error in the retry-classification sense, just a deterministic
+                // not-found. Surfaces through the processor's Systemic default.
                 Stream.raiseError[F](
                   AmendmentTextDownloadFailed(redactedUrl, formatType, "HTTP 404 - amendment text not found")
                 )
@@ -88,10 +95,15 @@ class AmendmentTextDownloader[F[_]: Async](
                 // 2KB is plenty for any realistic API error payload (Cloudflare HTML pages, GovInfo JSON errors,
                 // upstream 5xx text). On read failure we fall back to the empty string so the exception still
                 // raises with the status code.
+                //
+                // Use the typed `AmendmentTextDownloadHttpError(statusCode, body)` so
+                // `AmendmentTextDownloadErrorClassifier` can route 429 / 5xx to Transient and the rest (401/403 —
+                // invalid api_key — and other 4xx) to Systemic. Without the typed shape the classifier never sees
+                // a status code and every status falls through to the processor's Systemic default. The body is
+                // already bounded so the exception message stays small; URL is intentionally NOT included on this
+                // exception (the carrier is statusCode + body only — `redactedUrl` flowed into the log line above).
                 Stream.eval(boundedErrorBody(response)).flatMap { body =>
-                  Stream.raiseError[F](
-                    AmendmentTextDownloadFailed(redactedUrl, formatType, s"HTTP ${status.code}: $body")
-                  )
+                  Stream.raiseError[F](AmendmentTextDownloadHttpError(status.code, body))
                 }
             }
           }
