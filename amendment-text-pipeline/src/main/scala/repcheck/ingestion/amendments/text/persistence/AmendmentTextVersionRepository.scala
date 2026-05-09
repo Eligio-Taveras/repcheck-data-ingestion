@@ -21,14 +21,21 @@ trait AmendmentTextVersionRepository[F[_]] {
    * Single-statement upsert: returns `(versionId, inserted, alreadyComplete)`.
    *
    *   - `versionId` — surrogate id of the row that's now in the table (whether just inserted or pre-existing).
-   *   - `inserted` — true iff a new row was inserted (xmax = 0); false iff this was an UPDATE or NO-OP.
-   *   - `alreadyComplete` — true iff the existing row was already complete (`fetched_at IS NOT NULL`) AND we did NOT
-   *     trigger a refresh path. The processor short-circuits to Skipped when this is true.
+   *   - `inserted` — true iff a new row was inserted (xmax = 0); false iff this was an UPDATE.
+   *   - `alreadyComplete` — true iff after the upsert the row's `fetched_at IS NOT NULL`. Implies either (a) the row
+   *     was already complete AND the upstream wasn't strictly newer (so CASE left it untouched), or (b) something else
+   *     in this family of paths — never true on inserts. The processor short-circuits to `Skipped` when this is true.
    *
-   * Re-submission semantics (per L6): the ON CONFLICT DO UPDATE clause has a `WHERE` that only fires the refresh when
-   * the upstream `versionDate` is strictly newer than the stored `version_date`, OR when the existing row never
-   * completed (`fetched_at IS NULL` — recovery from a previous crash). Stale re-deliveries with an older `versionDate`
-   * short-circuit through `alreadyComplete = true` and the processor returns Skipped.
+   * Re-submission semantics (per L6): the implementation uses CASE expressions over every mutable column gated on
+   * `EXCLUDED.version_date > stored.version_date`. When the upstream `versionDate` is strictly newer, all of
+   * `version_date`, `url`, `download_url` are refreshed and `fetched_at`/`text_length` are reset to NULL so the
+   * processor re-streams. Otherwise — stale or duplicate redelivery — the CASE expressions select the stored values
+   * unchanged, the row reports `alreadyComplete = true` if it was complete, and the processor returns Skipped.
+   *
+   * Why CASE rather than a `WHERE` on the UPDATE: a top-level `WHERE` on `ON CONFLICT DO UPDATE` causes Postgres to
+   * skip the UPDATE on stale redeliveries and emit no row in `RETURNING`, which would break `.unique` decoding. CASE
+   * always emits the row (with stored values flowing through on the no-op branch), giving the processor a clean
+   * `(versionId, inserted, alreadyComplete)` triple for every event regardless of staleness.
    */
   def upsert(version: AmendmentTextVersionDO): F[(Long, Boolean, Boolean)]
 

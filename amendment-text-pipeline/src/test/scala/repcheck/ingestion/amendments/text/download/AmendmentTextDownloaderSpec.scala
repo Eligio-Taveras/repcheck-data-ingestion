@@ -267,4 +267,27 @@ class AmendmentTextDownloaderSpec extends AnyFlatSpec with Matchers with BeforeA
     request.uri.toString should not include "api_key"
   }
 
+  "redactQueryParams" should "drop api_key from a URL that already carries one" in {
+    AmendmentTextDownloader.redactQueryParams(
+      "https://api.govinfo.gov/packages/CREC-2021-08-01/granules/CREC-2021-08-01-pt1-PgS5255/htm?api_key=SECRET"
+    ) shouldBe
+      "https://api.govinfo.gov/packages/CREC-2021-08-01/granules/CREC-2021-08-01-pt1-PgS5255/htm"
+  }
+
+  it should "drop the entire query string (not just api_key) so future query-param secrets are also redacted" in {
+    AmendmentTextDownloader.redactQueryParams(
+      "https://api.govinfo.gov/x?api_key=SECRET&token=SECRET2&debug=true"
+    ) shouldBe "https://api.govinfo.gov/x"
+  }
+
+  it should "leave a URL with no query string unchanged" in {
+    val url = "https://api.govinfo.gov/packages/CREC-2021-08-01/granules/CREC-2021-08-01-pt1-PgS5255/htm"
+    AmendmentTextDownloader.redactQueryParams(url) shouldBe url
+  }
+
+  it should "fall back to the original input when the URL is unparseable" in {
+    val malformed = "not a url at all :: %%%"
+    AmendmentTextDownloader.redactQueryParams(malformed) shouldBe malformed
+  }
+
 }

@@ -59,21 +59,27 @@ class AmendmentTextDownloader[F[_]: Async](
     formatType: String,
     correlationId: UUID,
   ): Stream[F, Byte] = {
+    // Redact `api_key` (and any other query params) before this URL goes anywhere observable. The inbound `textUrl`
+    // can already carry a query string per the rewriter regex (`(?:\?.*)?$` is allowed), and the actual GET request
+    // adds `?api_key=...` for the api.govinfo.gov path. The redacted form is what we log + embed in
+    // `AmendmentTextDownloadFailed`; the unredacted `textUrl` only flows into the `Request[F]` URI.
+    val redactedUrl = AmendmentTextDownloader.redactQueryParams(textUrl)
     val logCtx = LogContext(
       runId = correlationId.toString,
       stepName = StepName,
       correlationId = Some(correlationId),
-      entityId = Some(textUrl),
+      entityId = Some(redactedUrl),
     )
 
     Stream.eval(buildRequest(textUrl)).flatMap {
       case (request, effectiveUrl) =>
+        // `effectiveUrl` is already api_key-free per `buildRequest` — both branches return the URL without secrets.
         Stream.exec(logger.info(logCtx, s"Opening HTTP request to $effectiveUrl (format=$formatType)")) ++
           Stream.resource(client.run(request)).flatMap { response =>
             response.status match {
               case Status.NotFound =>
                 Stream.raiseError[F](
-                  AmendmentTextDownloadFailed(textUrl, formatType, "HTTP 404 - amendment text not found")
+                  AmendmentTextDownloadFailed(redactedUrl, formatType, "HTTP 404 - amendment text not found")
                 )
               case status if status.isSuccess =>
                 response.body
@@ -84,7 +90,7 @@ class AmendmentTextDownloader[F[_]: Async](
                 // raises with the status code.
                 Stream.eval(boundedErrorBody(response)).flatMap { body =>
                   Stream.raiseError[F](
-                    AmendmentTextDownloadFailed(textUrl, formatType, s"HTTP ${status.code}: $body")
+                    AmendmentTextDownloadFailed(redactedUrl, formatType, s"HTTP ${status.code}: $body")
                   )
                 }
             }
@@ -133,6 +139,26 @@ class AmendmentTextDownloader[F[_]: Async](
     CrecGovInfoUrlRewriter.parseCongressGovCrecUrl(textUrl).map {
       case (packageId, granuleId, formatSuffix) =>
         CrecGovInfoUrlRewriter.toGovInfoUrl(packageId, granuleId, formatSuffix, govInfoBaseUrl)
+    }
+
+}
+
+object AmendmentTextDownloader {
+
+  /**
+   * Drop the entire query string from a URL for safe logging. The inbound event URL can carry an `api_key` query param
+   * (Congress.gov sometimes includes one), and the rewritten api.govinfo.gov URL has `api_key` appended at
+   * request-build time. Either way, anything observable (logs, exception messages, ProcessingResult reasons) goes
+   * through this redactor first so a key never lands in retained text. URI parsing is best-effort — on parse failure we
+   * return the original input rather than throw, so a malformed URL doesn't take down the error-reporting path.
+   *
+   * Keeping this drop-the-whole-query-string rule (rather than allow-listing non-secret params) is the safer default:
+   * any future query-param secret automatically gets covered without code changes.
+   */
+  private[download] def redactQueryParams(url: String): String =
+    Uri.fromString(url) match {
+      case Right(uri) => uri.copy(query = org.http4s.Query.empty).renderString
+      case Left(_)    => url
     }
 
 }

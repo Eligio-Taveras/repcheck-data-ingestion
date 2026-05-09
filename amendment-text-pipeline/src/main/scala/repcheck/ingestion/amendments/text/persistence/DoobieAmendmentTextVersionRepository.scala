@@ -47,6 +47,18 @@ class DoobieAmendmentTextVersionRepository extends AmendmentTextVersionRepositor
    * Single-statement INSERT ... ON CONFLICT DO UPDATE. Keys on the unique tuple `(amendment_id, version_type,
    * format_type)` introduced in db-migrations 0.1.36.
    *
+   * Every mutable column (`version_date`, `url`, `download_url`, `fetched_at`, `text_length`) is gated by the same
+   * `EXCLUDED.version_date > stored.version_date` predicate via a CASE expression. The CASE form is intentional rather
+   * than a top-level `WHERE` on the UPDATE: with `WHERE EXCLUDED.version_date > stored.version_date`, Postgres would
+   * skip the UPDATE entirely on stale redeliveries and `RETURNING` would emit no row, breaking `.query[...].unique`.
+   * The CASE form always returns the row (the existing values flow through unchanged on stale events) so the processor
+   * can read `(versionId, inserted, alreadyComplete)` for every event.
+   *
+   * Stale redeliveries (`EXCLUDED.version_date <= stored.version_date`) leave the existing row's metadata untouched —
+   * `version_date`, `url`, `download_url`, `fetched_at`, and `text_length` all stay at their stored values, so the
+   * `ORDER BY version_date DESC` audit reads remain monotonic and a duplicate Pub/Sub delivery cannot regress a newer
+   * stored URL onto a stale event's URL.
+   *
    * Returns `(versionId, inserted, alreadyComplete)`:
    *
    *   - `versionId` is the row's surrogate `id`.
@@ -73,9 +85,18 @@ class DoobieAmendmentTextVersionRepository extends AmendmentTextVersionRepositor
         ${version.fetchedAt}
       )
       ON CONFLICT (amendment_id, version_type, format_type) DO UPDATE SET
-        version_date = EXCLUDED.version_date,
-        url = EXCLUDED.url,
-        download_url = EXCLUDED.download_url,
+        version_date = CASE
+          WHEN EXCLUDED.version_date > amendment_text_versions.version_date THEN EXCLUDED.version_date
+          ELSE amendment_text_versions.version_date
+        END,
+        url = CASE
+          WHEN EXCLUDED.version_date > amendment_text_versions.version_date THEN EXCLUDED.url
+          ELSE amendment_text_versions.url
+        END,
+        download_url = CASE
+          WHEN EXCLUDED.version_date > amendment_text_versions.version_date THEN EXCLUDED.download_url
+          ELSE amendment_text_versions.download_url
+        END,
         fetched_at = CASE
           WHEN EXCLUDED.version_date > amendment_text_versions.version_date THEN NULL
           ELSE amendment_text_versions.fetched_at
