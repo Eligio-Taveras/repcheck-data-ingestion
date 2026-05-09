@@ -7,7 +7,7 @@ import cats.effect.unsafe.implicits.global
 
 import doobie._
 
-import org.mockito.ArgumentMatchers.{any, anyInt, anyString}
+import org.mockito.ArgumentMatchers.{any, anyInt, anyString, eq => eqTo}
 import org.mockito.Mockito.{never, times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -137,7 +137,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val bill     = makeBill(textVersionType = None, textUrl = None)
     val versions = List(makeTextVersion())
 
-    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
       .thenReturn(IO.pure(versions))
     when(f.eventPublisher.billTextAvailable(any[BillTextAvailableEvent], any[UUID]))
       .thenReturn(IO.pure("msg-id-1"))
@@ -156,7 +156,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     )
     val versions = List(makeTextVersion(versionType = Some("Engrossed in House"), url = "https://new-url.com"))
 
-    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
       .thenReturn(IO.pure(versions))
     when(f.eventPublisher.billTextAvailable(any[BillTextAvailableEvent], any[UUID]))
       .thenReturn(IO.pure("msg-id-2"))
@@ -176,7 +176,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val bill     = makeBill(textVersionType = None, textUrl = None)
     val versions = List(makeTextVersion(versionType = None))
 
-    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
       .thenReturn(IO.pure(versions))
 
     val result = f.checker.checkBill(bill, correlationId).unsafeRunSync()
@@ -197,7 +197,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     )
     val versions = List(makeTextVersion(versionType = Some("Introduced in House")))
 
-    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
       .thenReturn(IO.pure(versions))
 
     val result = f.checker.checkBill(bill, correlationId).unsafeRunSync()
@@ -209,7 +209,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val f    = createFixture()
     val bill = makeBill()
 
-    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
       .thenReturn(IO.pure(List.empty))
 
     val result = f.checker.checkBill(bill, correlationId).unsafeRunSync()
@@ -220,7 +220,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val f    = createFixture()
     val bill = makeBill()
 
-    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
       .thenReturn(IO.raiseError(new RuntimeException("API unavailable")))
 
     val result = f.checker.checkBill(bill, correlationId).unsafeRunSync()
@@ -233,7 +233,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val bill     = makeBill(textVersionType = None)
     val versions = List(makeTextVersion())
 
-    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
       .thenReturn(IO.pure(versions))
     when(f.eventPublisher.billTextAvailable(any[BillTextAvailableEvent], any[UUID]))
       .thenReturn(IO.raiseError(new RuntimeException("Pub/Sub down")))
@@ -258,7 +258,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       )
     )
 
-    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
       .thenReturn(IO.pure(versions))
     when(f.eventPublisher.billTextAvailable(any[BillTextAvailableEvent], any[UUID]))
       .thenReturn(IO.pure("msg-id"))
@@ -280,11 +280,11 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     val f    = createFixture()
     val bill = makeBill(billType = BillType.S, number = "100", naturalKey = "118-S-100")
 
-    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
       .thenReturn(IO.pure(List.empty))
 
     val _ = f.checker.checkBill(bill, correlationId).unsafeRunSync()
-    verify(f.textApiClient).fetchTextVersions(118, "s", "100")
+    verify(f.textApiClient).fetchTextVersions(eqTo(118), eqTo("s"), eqTo("100"), eqTo(correlationId))
   }
 
   "checkAll" should "stream results for all bills" in {
@@ -296,7 +296,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
 
     when(f.billRepo.findBillsNeedingTextCheck(any[List[Int]]))
       .thenReturn(doobie.free.connection.pure(bills))
-    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString()))
+    when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
       .thenReturn(IO.pure(List.empty))
 
     val results = f.checker.checkAll(runId).compile.toList.unsafeRunSync()
@@ -315,9 +315,9 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       .thenReturn(doobie.free.connection.pure(bills))
 
     // First bill fails, second succeeds with empty versions
-    when(f.textApiClient.fetchTextVersions(118, "hr", "1"))
+    when(f.textApiClient.fetchTextVersions(eqTo(118), eqTo("hr"), eqTo("1"), any[UUID]))
       .thenReturn(IO.raiseError(new RuntimeException("API error")))
-    when(f.textApiClient.fetchTextVersions(118, "hr", "2"))
+    when(f.textApiClient.fetchTextVersions(eqTo(118), eqTo("hr"), eqTo("2"), any[UUID]))
       .thenReturn(IO.pure(List.empty))
 
     val results = f.checker.checkAll(runId).compile.toList.unsafeRunSync()

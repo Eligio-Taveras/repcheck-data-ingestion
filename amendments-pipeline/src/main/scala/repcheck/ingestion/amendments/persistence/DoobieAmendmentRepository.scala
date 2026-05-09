@@ -139,12 +139,18 @@ class DoobieAmendmentRepository extends AmendmentRepository[ConnectionIO] {
     parsePlaceholderNaturalKey(naturalKey) match {
       case Right((congress, amendmentType, number)) =>
         val chamber = chamberFromAmendmentType(amendmentType)
-        // Single statement per call — `ON CONFLICT (natural_key) DO NOTHING` makes repeated calls idempotent.
+        // Single statement per call — `ON CONFLICT DO NOTHING` (without column spec) makes repeated calls idempotent
+        // against ALL unique constraints. The amendments table has two: `uq_amendments_natural_key` on
+        // `(congress, amendment_type, number)` and `uq_amendments_natural_key_pk` on `(natural_key)`. A column-targeted
+        // `ON CONFLICT (natural_key)` only catches the latter; under concurrent inserts (parTraverse stress) Postgres
+        // can detect the composite-key constraint first and surface an unhandled `duplicate key` exception. The bare
+        // `ON CONFLICT DO NOTHING` form catches both.
+        //
         // Mirrors the BillRepository.upsertPlaceholder precedent: writers reserve a FK target with the minimum
         // viable row, and the owning pipeline overwrites with the real row via [[upsert]] on its next pass.
         sql"""INSERT INTO $table (natural_key, congress, amendment_type, number, chamber)
               VALUES ($naturalKey, $congress, $amendmentType, $number, $chamber)
-              ON CONFLICT (natural_key) DO NOTHING""".update.run.void
+              ON CONFLICT DO NOTHING""".update.run.void
 
       case Left(err) =>
         doobie.free.connection.raiseError[Unit](err)
@@ -177,7 +183,7 @@ class DoobieAmendmentRepository extends AmendmentRepository[ConnectionIO] {
         ${entity.parentAmendmentId},
         ${entity.lastTextCheckAt}
       )
-      ON CONFLICT (natural_key) DO NOTHING
+      ON CONFLICT DO NOTHING
     """.update.run.void
 
   override def findById(id: Long): ConnectionIO[Option[AmendmentDO]] =

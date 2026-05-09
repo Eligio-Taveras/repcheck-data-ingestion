@@ -1,0 +1,19 @@
+{
+  "textVersions": [
+    {
+      "type": "Submitted",
+      "date": "2024-04-01T12:00:00Z",
+      "formats": [
+        { "type": "HTML", "url": "https://www.congress.gov/117/amdt/SAMDT2137/SUB/text.htm" }
+      ]
+    },
+    {
+      "type": "Modified",
+      "date": "2024-04-15T12:00:00Z",
+      "formats": [
+        { "type": "PDF", "url": "https://www.congress.gov/117/amdt/SAMDT2137/MOD/text.pdf" }
+      ]
+    }
+  ],
+  "pagination": { "count": 2 }
+}
