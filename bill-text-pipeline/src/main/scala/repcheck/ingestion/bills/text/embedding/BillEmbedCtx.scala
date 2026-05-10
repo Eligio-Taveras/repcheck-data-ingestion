@@ -19,8 +19,8 @@ final case class BillEmbedCtx(
 
 /**
  * A single chunk submission flowing through the cross-bill embedder's queue. `ackId` is the Pub/Sub ack id of the
- * message whose processing produced this chunk; the embedder uses it to credit the per-ackId `submitted` / `written`
- * counters and to ack/nack at completion.
+ * message whose processing produced this chunk; the embedder uses it to credit the per-ackId `submitted` counter and to
+ * ack/nack at completion.
  */
 final case class ChunkSubmission(
   ctx: BillEmbedCtx,
@@ -39,8 +39,10 @@ final case class ChunkSubmission(
  * @param ctx
  *   the bill's identifying info (versionId for trim+markFetched, naturalKey for logs).
  * @param ack
- *   the effect that calls `subscriber.acknowledge(ackId)`. Fires when `submitted == expected` — i.e., every chunk this
- *   producer offered has been embedded + persisted in a successful flush.
+ *   the effect that calls `subscriber.acknowledge(ackId)` (composed with `publishIngestedEvent` upstream of the
+ *   embedder). Fires when `submitted == expected` — i.e., every chunk this producer offered has been embedded +
+ *   persisted in a successful flush. Wrapped in `safeAck` so a raised ack falls back to NACK without short-circuiting
+ *   sibling ackIds in the same flush batch.
  * @param nack
  *   the effect that signals Pub/Sub to redeliver. Fires on known failures (embed error, UPSERT error, trim error,
  *   markFetched error, stream error, fiber cancellation). On batch failure the ackId is removed from `acks` entirely so
@@ -51,8 +53,6 @@ final case class ChunkSubmission(
  * @param submitted
  *   chunks for this ackId that have been embedded + persisted in a successful flush. Incremented in `applyBatchSuccess`
  *   (never at offer time) — moving the increment to offer time would let ACK fire while writes were still in flight.
- * @param written
- *   chunks for this ackId that actually wrote to the DB (UPSERT affected_rows). Drives trim + markFetched.
  */
 final private[embedding] case class AckProgress[F[_]](
   ackId: String,
@@ -61,7 +61,6 @@ final private[embedding] case class AckProgress[F[_]](
   nack: F[Unit],
   expected: Option[Int],
   submitted: Int,
-  written: Int,
 ) {
 
   /** True iff the producer finalized AND every chunk it offered has been processed by some flush. */
@@ -76,8 +75,8 @@ final private[embedding] case class AckProgress[F[_]](
  * them in ONE Ref lets a single `state.modify` transactionally:
  *
  *   - add a chunk to the buffer + decide whether to flush in `offerChunk`
- *   - increment `submitted` and `written` counters for ackIds in a flushed batch + collect newly ack-able ackIds in
- *     `applyBatchResult` / `failBatch`
+ *   - increment `submitted` for ackIds in a flushed batch + collect newly ack-able ackIds in `applyBatchSuccess`
+ *   - remove every distinct ackId in a failed batch + purge their buffered submissions in `failBatch`
  *   - drain the residual buffer + set `expected` for an ackId in `finalizeSubmission`
  *
  * No background fiber, no Queue. Each producer's `offerChunk` is the only path that can flush (when the buffer hits

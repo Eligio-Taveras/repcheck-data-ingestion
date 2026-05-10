@@ -23,22 +23,24 @@ import repcheck.shared.models.congress.dos.bill.RawBillTextDO
 trait BillChunkEmbedder[F[_]] {
 
   /**
-   * Submit a bill's chunk stream for embedding + persistence. Fire-and-forget: returns once the chunks have been
-   * enqueued and the residual buffer flushed, NOT once they've persisted. The embedder owns the rest of the lifecycle:
+   * Submit a bill's chunk stream for embedding + persistence. `submit` runs synchronously on the calling fiber: it
+   * drives the chunk stream, force-flushes the residual at end-of-stream, and may invoke ACK / NACK before returning
+   * (or, for a sibling concurrent producer's flush that brings this ackId's `submitted == expected`, the ACK fires from
+   * THAT producer's fiber mid-flush). The embedder owns the lifecycle:
    *
    *   - chunk persistence (UPSERT into `raw_bill_text`)
-   *   - trim of any stale tail past this submission's chunk count
+   *   - trim of any stale tail past this submission's chunk count (and trim(0) on empty-stream so `fetched_at` flips)
    *   - `markFetched` on `bill_text_versions`
    *   - invoking `ack` (success) or `nack` (failure) on the Pub/Sub message
    *
    * @param ctx
    *   identifying info (dbBillId, versionId, naturalKey).
    * @param chunkStream
-   *   the chunks to persist for this submission. May be empty (ack fires immediately).
+   *   the chunks to persist for this submission. May be empty (still trims to 0 and runs markFetched before ACKing).
    * @param ackId
    *   the Pub/Sub ack id of the message that produced this submission.
    * @param ack
-   *   effect to invoke once every chunk this submission offered has been processed (success or recorded failure).
+   *   effect to invoke once every chunk this submission offered has been processed in a successful flush.
    * @param nack
    *   effect to invoke if any flush containing one of this submission's chunks fails (or the chunkStream itself
    *   raises). Pub/Sub will redeliver; bounded retries via subscription `max_delivery_attempts` + dead-letter topic.
@@ -81,11 +83,12 @@ trait BillChunkEmbedder[F[_]] {
  *
  * ==Per-ackId state — Option C (no version-date gate)==
  *
- *   - `AckProgress` per ackId: `(ack, nack, expected, submitted, written)`
- *   - `submitted` drives ACK: when `expected.contains(submitted)`, every chunk this producer offered has been processed
- *     by some flush (success or recorded failure) and `ack` fires.
- *   - `written` drives trim + markFetched: only when `written > 0` (the submission actually wrote rows) does the
- *     embedder run `trimChunksPast(versionId, chunkCount)` then `markFetched(versionId, NOW())`.
+ *   - `AckProgress` per ackId: `(ack, nack, expected, submitted)`. One counter is enough because under last-writer-wins
+ *     UPSERT every row in a successfully-flushed batch lands; if the flush errors instead, the ackId is removed from
+ *     state by `failBatch` so the completion check never sees it.
+ *   - When `expected.contains(submitted)` for an ackId, the embedder runs `trimChunksPast(versionId, submitted)` →
+ *     `markFetched(versionId, NOW())` → `safeAck` (which falls back to NACK on raise). Empty-stream submissions still
+ *     run trim(0) + markFetched so the version row reflects "processed, no text".
  *   - On flush failure: every ackId in the batch is removed from state, their buffered submissions are purged, and
  *     `nack` fires for each. Pub/Sub redelivers; the next attempt's UPSERT is idempotent (last-writer-wins on
  *     `(version_id, chunk_index)`).
@@ -152,7 +155,6 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
       nack = nack,
       expected = None,
       submitted = 0,
-      written = 0,
     )
     state.update(s => s.copy(acks = s.acks + (ackId -> initial)))
   }
@@ -189,7 +191,8 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
    * Set `expected` for an ackId AND atomically take the residual buffer for force-flushing. Two cases:
    *
    *   - Empty stream (`count = 0`): the ackId has `expected = Some(0)` and `submitted = 0` → it's immediately ack-able.
-   *     We invoke `ack` and remove it from state. Trim + markFetched are SKIPPED because `written = 0`.
+   *     Completion still runs `trimChunksPast(versionId, 0)` (LWW-consistent — wipes any prior chunks) and
+   *     `markFetched` so the version row reflects "processed, no text" rather than perpetually incomplete.
    *   - Non-empty stream: residual buffer (which may contain this ackId's chunks AND chunks from other bills) is
    *     flushed; whichever flush brings `submitted == expected` for this ackId triggers the ack + trim + markFetched.
    */
@@ -216,9 +219,9 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
       }
 
   /**
-   * Embed + persist a batch in a single foreground step, then atomically update per-ackId progress (incrementing
-   * `submitted` and `written` for each ackId, collecting any ackIds whose `submitted` now equals `expected`, removing
-   * them from state, and invoking trim + markFetched + ack for each).
+   * Embed + persist a batch in a single foreground step, then atomically credit each ackId's `submitted` counter,
+   * collect any ackIds whose `submitted` now equals `expected`, remove them from state, and invoke trim + markFetched +
+   * ack for each.
    *
    * Errors raised by either `embeddingService.generateEmbeddings` or `rawBillTextRepository.upsertMany` propagate
    * through `attempt`. On error: every distinct ackId in the failed batch is removed from state and NACKed. The error
@@ -272,18 +275,20 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
               .attempt
               .flatMap {
                 case Left(error) => failBatch(batch, error)
-                // affected rows ignored by attribution: on success the UPSERT is all-or-nothing (an idempotent
-                // INSERT-or-UPDATE per row), so per-ackId `written` matches per-ackId `submitted` for this batch.
-                // The dedup only collapses identical (versionId, chunkIndex) writes — every ackId in the original
-                // batch still gets credit for its chunks because they're represented in the persisted data.
+                // Affected-row count from upsertMany is ignored: on success UPSERT is all-or-nothing (every row in
+                // `deduped` lands), and attribution uses the FULL batch — every ackId in the original batch still
+                // gets credit for its offered chunks because the persisted data is identical (the dedup only
+                // collapses concurrent-redelivery duplicates writing the same content, not the per-ackId accounting).
                 case Right(_) => applyBatchSuccess(batch)
               }
         }
     }
 
   /**
-   * Atomically credit each ackId in the batch with its chunk count for both `submitted` and `written`, then remove any
-   * newly ack-able ackIds from state and run their trim + markFetched + ack outside the Ref transaction.
+   * Atomically credit each ackId in the batch with its offered-chunk count toward `submitted`, then remove any newly
+   * ack-able ackIds from state and run their trim + markFetched + ack outside the Ref transaction. Under LWW UPSERT
+   * (and the failBatch short-circuit on error) reaching this method means the entire batch's data is in the DB, so each
+   * ackId's offered chunks are conceptually "in".
    */
   private[embedding] def applyBatchSuccess(batch: List[ChunkSubmission]): F[Unit] = {
     val perAckCounts: Map[String, Int] = batch.groupMapReduce(_.ackId)(_ => 1)(_ + _)
@@ -293,10 +298,7 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
           case ((acc, completed), (ackId, count)) =>
             acc.acks.get(ackId) match {
               case Some(progress) =>
-                val updated = progress.copy(
-                  submitted = progress.submitted + count,
-                  written = progress.written + count,
-                )
+                val updated = progress.copy(submitted = progress.submitted + count)
                 if (updated.shouldAck) {
                   (acc.copy(acks = acc.acks - ackId), updated :: completed)
                 } else {
