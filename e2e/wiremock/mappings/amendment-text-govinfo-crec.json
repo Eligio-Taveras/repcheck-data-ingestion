@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/packages/CREC-[0-9-]+/granules/CREC-[0-9-]+-pt[0-9]+-Pg[A-Za-z0-9-]+/htm"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "text/html" },
+    "bodyFileName": "amendments/amendment-text-content.htm"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "amendments": [
+    {
+      "congress": 117,
+      "number": "100",
+      "type": "SAMDT",
+      "description": "E2E SAMDT 100 — root amendment in the chain",
+      "updateDate": "2024-06-01T12:00:00Z",
+      "url": "http://wiremock:8080/v3/amendment/117/samdt/100?format=json"
+    },
+    {
+      "congress": 117,
+      "number": "200",
+      "type": "SUAMDT",
+      "description": "E2E SUAMDT 200 — sub-amendment to SAMDT 100",
+      "updateDate": "2024-06-02T13:00:00Z",
+      "url": "http://wiremock:8080/v3/amendment/117/suamdt/200?format=json"
+    },
+    {
+      "congress": 117,
+      "number": "101",
+      "type": "SAMDT",
+      "description": "E2E SAMDT 101 — fan-out amendment to the same bill",
+      "updateDate": "2024-06-01T12:30:00Z",
+      "url": "http://wiremock:8080/v3/amendment/117/samdt/101?format=json"
+    }
+  ],
+  "pagination": {
+    "count": 3
+  }
+}

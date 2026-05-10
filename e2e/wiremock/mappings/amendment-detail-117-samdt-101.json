@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/v3/amendment/117/samdt/101",
+    "queryParameters": {
+      "api_key": { "equalTo": "e2e-test-key" }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "bodyFileName": "amendments/amendment-detail-117-samdt-101.json"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "amendment": {
+    "congress": 117,
+    "number": "200",
+    "type": "SUAMDT",
+    "amendedAmendment": {
+      "congress": 117,
+      "number": "100",
+      "type": "SAMDT",
+      "purpose": "To improve the bill",
+      "updateDate": "2024-06-01T12:00:00Z",
+      "url": "http://wiremock:8080/v3/amendment/117/samdt/100?format=json"
+    },
+    "chamber": "Senate",
+    "description": "E2E SUAMDT 200 — sub-amendment to SAMDT 100",
+    "purpose": "To narrow the scope",
+    "sponsors": [
+      {
+        "bioguideId": "M000133",
+        "firstName": "Edward",
+        "lastName": "Markey",
+        "fullName": "Sen. Markey, Edward [D-MA]",
+        "party": "D",
+        "state": "MA"
+      }
+    ],
+    "submittedDate": "2021-08-03",
+    "proposedDate": "2021-08-04",
+    "latestAction": {
+      "actionDate": "2024-06-02",
+      "text": "Amendment SU 200 agreed to in Senate by Voice Vote.",
+      "actionTime": "13:00:00"
+    },
+    "updateDate": "2024-06-02T13:00:00Z"
+  }
+}
