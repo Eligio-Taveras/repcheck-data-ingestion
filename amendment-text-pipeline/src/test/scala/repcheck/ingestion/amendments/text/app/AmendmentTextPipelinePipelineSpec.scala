@@ -85,6 +85,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
   private val emptySubscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
     def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.pure(List.empty)
     def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
+    def nack(ackIds: List[String]): IO[Unit]            = IO.unit
   }
 
   private val stubEmbedder: CrossAmendmentEmbedder[IO] = mock[CrossAmendmentEmbedder[IO]]
@@ -166,7 +167,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
     val event     = buildEvent("117-SAMDT-1")
 
     org.mockito.Mockito
-      .when(processor.processEvent(any[AmendmentTextAvailableEvent]))
+      .when(processor.processEvent(any[AmendmentTextAvailableEvent], any[String], any[IO[Unit]], any[IO[Unit]]))
       .thenReturn(IO.pure(ProcessingResult.Succeeded(event.naturalKey, eventEmitted = false)))
 
     val pulledRef = new java.util.concurrent.atomic.AtomicBoolean(false)
@@ -179,6 +180,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
         pendingRef.getAndSet(List.empty)
       }
       def acknowledge(ackIds: List[String]): IO[Unit] = IO.unit
+      def nack(ackIds: List[String]): IO[Unit]        = IO.unit
     }
 
     val result = AmendmentTextPipelinePipeline
@@ -245,6 +247,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
     val subscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
       def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.never
       def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
+      def nack(ackIds: List[String]): IO[Unit]            = IO.unit
     }
 
     val cfg = testConfig.copy(eventSubscriber = testConfig.eventSubscriber.copy(pullTimeout = 100.millis))

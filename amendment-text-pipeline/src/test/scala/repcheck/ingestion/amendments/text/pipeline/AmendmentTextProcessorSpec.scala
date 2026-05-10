@@ -2,7 +2,7 @@ package repcheck.ingestion.amendments.text.pipeline
 
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
@@ -12,7 +12,7 @@ import fs2.Stream
 import doobie._
 
 import org.mockito.ArgumentCaptor
-import org.mockito.ArgumentMatchers.{any, anyInt, anyLong, anyString}
+import org.mockito.ArgumentMatchers.{any, anyLong, anyString, eq => eqTo}
 import org.mockito.Mockito.{never, times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -20,7 +20,7 @@ import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.amendments.text.download.AmendmentTextDownloader
 import repcheck.ingestion.amendments.text.embedding.{AmendmentChunkEmbedder, AmendmentEmbedCtx}
 import repcheck.ingestion.amendments.text.errors.{AmendmentTextDownloadHttpError, AmendmentTextProcessingFailed}
-import repcheck.ingestion.amendments.text.persistence.{AmendmentTextChunkRepository, AmendmentTextVersionRepository}
+import repcheck.ingestion.amendments.text.persistence.AmendmentTextVersionRepository
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.embedding.EmbeddingConfig
 import repcheck.pipeline.models.events.AmendmentTextAvailableEvent
@@ -29,12 +29,17 @@ import repcheck.shared.models.congress.amendment.AmendmentType
 import repcheck.shared.models.congress.dos.amendment.AmendmentTextVersionDO
 
 /**
- * Unit specs for [[AmendmentTextProcessor]]. Mirrors `BillTextProcessorSpec` — drives the processor's narrow
- * responsibilities (upsert, skip-check via the upsert's `alreadyComplete` flag, orphan-chunk clear, hand stream to
- * embedder, mark fetched on success, surface embedder failures verbatim) with mocked dependencies.
+ * Unit specs for [[AmendmentTextProcessor]].
  *
- * The cross-amendment embedder owns the per-chunk work and is exercised in its own spec; here we substitute a mock that
- * returns canned `ProcessingResult` values.
+ * The processor's narrow responsibilities under the queue+ack-delegation refactor:
+ *   - resolve format / build version DO / call `upsert`
+ *   - on `alreadyComplete = true`: fire the supplied `ack` synchronously, return `Skipped`
+ *   - otherwise: hand the chunk stream off to `embedder.submit` (which owns trim + markFetched + the eventual ACK) and
+ *     return `Succeeded` as a stats signal
+ *   - on any exception: fire the supplied `nack`, return `Failed`
+ *
+ * The cross-amendment embedder is mocked here; its own behavior is exercised in `CrossAmendmentEmbedderSpec`. The
+ * processor no longer touches the chunk repository at all (chunk persistence + trim moved to the embedder).
  */
 class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -50,6 +55,7 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
   private val testAmendmentId     = 42L
   private val testNaturalKey      = "117-SAMDT-2137"
   private val testVersionId: Long = 7L
+  private val testAckId: String   = "ack-test-1"
 
   private val testEmbeddingConfig: EmbeddingConfig = EmbeddingConfig(
     baseUrl = "http://localhost:11434",
@@ -62,20 +68,26 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     embedQueueCapacityMultiplier = 10,
   )
 
+  final private class AckNackProbe {
+    val acks           = new AtomicInteger(0)
+    val nacks          = new AtomicInteger(0)
+    val ack: IO[Unit]  = IO { val _ = acks.incrementAndGet(); () }
+    val nack: IO[Unit] = IO { val _ = nacks.incrementAndGet(); () }
+  }
+
   private case class TestFixture(
     downloader: AmendmentTextDownloader[IO],
     versionRepository: AmendmentTextVersionRepository[ConnectionIO],
-    chunkRepository: AmendmentTextChunkRepository[ConnectionIO],
     embedder: AmendmentChunkEmbedder[IO],
     logger: PipelineLogger[IO],
     contentResponseRef: AtomicReference[IO[String]],
+    probe: AckNackProbe,
   ) {
 
     def processor: AmendmentTextProcessor[IO] =
       new AmendmentTextProcessor[IO](
         downloader = downloader,
         amendmentTextVersionRepository = versionRepository,
-        amendmentTextChunkRepository = chunkRepository,
         embedder = embedder,
         embeddingConfig = testEmbeddingConfig,
         xa = testXa,
@@ -94,21 +106,28 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
         .thenReturn(doobie.free.connection.pure((versionId, inserted, alreadyComplete)))
     }
 
-    def stubMarkFetchedOk(): Unit = {
-      val _ = when(versionRepository.markFetched(anyLong(), any[Instant], anyInt()))
-        .thenReturn(doobie.free.connection.unit)
+    def stubEmbedderOk(): Unit = {
+      val _ = when(
+        embedder.submit(
+          any[AmendmentEmbedCtx],
+          any[Stream[IO, String]],
+          anyString(),
+          any[IO[Unit]],
+          any[IO[Unit]],
+        )
+      ).thenReturn(IO.unit)
     }
 
-    def stubChunkRepoOk(): Unit = {
-      val _ = when(chunkRepository.deleteByVersionId(anyLong())).thenReturn(doobie.free.connection.unit)
-      val _ = when(chunkRepository.countByVersionId(anyLong())).thenReturn(doobie.free.connection.pure(3L))
-      val _ = when(chunkRepository.sumContentLengthByVersionId(anyLong()))
-        .thenReturn(doobie.free.connection.pure(36000L))
-    }
-
-    def stubEmbedder(result: ProcessingResult): Unit = {
-      val _ = when(embedder.processChunks(any[AmendmentEmbedCtx], any[Stream[IO, String]]))
-        .thenReturn(IO.pure(result))
+    def stubEmbedderRaises(error: Throwable): Unit = {
+      val _ = when(
+        embedder.submit(
+          any[AmendmentEmbedCtx],
+          any[Stream[IO, String]],
+          anyString(),
+          any[IO[Unit]],
+          any[IO[Unit]],
+        )
+      ).thenReturn(IO.raiseError[Unit](error))
     }
 
   }
@@ -123,10 +142,10 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     TestFixture(
       downloader = mock[AmendmentTextDownloader[IO]],
       versionRepository = mock[AmendmentTextVersionRepository[ConnectionIO]],
-      chunkRepository = mock[AmendmentTextChunkRepository[ConnectionIO]],
       embedder = mock[AmendmentChunkEmbedder[IO]],
       logger = noopLogger,
       contentResponseRef = new AtomicReference[IO[String]](IO.pure("")),
+      probe = new AckNackProbe,
     )
   }
 
@@ -144,99 +163,110 @@ class AmendmentTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
       correlationId = correlationId,
     )
 
-  "processEvent" should "short-circuit to Skipped when the upsert returns alreadyComplete = true" in {
+  private def runProcess(f: TestFixture, event: AmendmentTextAvailableEvent = buildEvent()): ProcessingResult =
+    f.processor.processEvent(event, testAckId, f.probe.ack, f.probe.nack).unsafeRunSync()
+
+  "processEvent" should "fire ack synchronously and return Skipped when upsert reports alreadyComplete = true" in {
     val f = newFixture
     f.stubUpsertReturning(testVersionId, inserted = false, alreadyComplete = true)
     f.stubSuccessfulDownload("body that should never be read")
 
-    val result = f.processor.processEvent(buildEvent()).unsafeRunSync()
+    val result = runProcess(f)
     val _      = result shouldBe ProcessingResult.Skipped(testNaturalKey, "already-ingested")
-    val _      = verify(f.chunkRepository, never()).deleteByVersionId(anyLong())
-    verify(f.embedder, never()).processChunks(any[AmendmentEmbedCtx], any[Stream[IO, String]])
+    val _      = f.probe.acks.get() shouldBe 1
+    val _      = f.probe.nacks.get() shouldBe 0
+    verify(f.embedder, never())
+      .submit(any[AmendmentEmbedCtx], any[Stream[IO, String]], anyString(), any[IO[Unit]], any[IO[Unit]])
   }
 
-  it should "process a fresh version end-to-end on success" in {
+  it should "delegate ACK to the embedder for a fresh version (processor returns Succeeded; ack fired by embedder later)" in {
     val f = newFixture
     f.stubUpsertReturning(testVersionId, inserted = true, alreadyComplete = false)
-    f.stubChunkRepoOk()
-    f.stubMarkFetchedOk()
-    f.stubEmbedder(ProcessingResult.Succeeded(testNaturalKey, eventEmitted = false))
+    f.stubEmbedderOk()
     f.stubSuccessfulDownload("amendment plain text")
 
-    val result = f.processor.processEvent(buildEvent()).unsafeRunSync()
+    val result = runProcess(f)
     val _      = result shouldBe ProcessingResult.Succeeded(testNaturalKey, eventEmitted = false)
-    val _      = verify(f.chunkRepository, times(1)).deleteByVersionId(testVersionId)
-    val _      = verify(f.versionRepository, times(1)).markFetched(any[Long], any[Instant], any[Int])
-    verify(f.embedder, times(1)).processChunks(any[AmendmentEmbedCtx], any[Stream[IO, String]])
+    // Processor itself does NOT ack — the embedder owns ACK after chunk persistence.
+    val _ = f.probe.acks.get() shouldBe 0
+    val _ = f.probe.nacks.get() shouldBe 0
+    val _ =
+      verify(f.embedder, times(1))
+        .submit(any[AmendmentEmbedCtx], any[Stream[IO, String]], eqTo(testAckId), any[IO[Unit]], any[IO[Unit]])
+    // Processor must NOT call markFetched — that's the embedder's job.
+    verify(f.versionRepository, never()).markFetched(anyLong(), any[Instant], any[Int])
   }
 
-  it should "process a re-submission update path (alreadyComplete = false even if not inserted)" in {
+  it should "process a re-submission (alreadyComplete = false even if not inserted)" in {
     val f = newFixture
-    // Re-submission: existing row, not just-inserted, but version_date was newer so the WHERE clause refreshed
-    // it (fetched_at reset to NULL). The repository surfaces alreadyComplete = false.
     f.stubUpsertReturning(testVersionId, inserted = false, alreadyComplete = false)
-    f.stubChunkRepoOk()
-    f.stubMarkFetchedOk()
-    f.stubEmbedder(ProcessingResult.Succeeded(testNaturalKey, eventEmitted = false))
+    f.stubEmbedderOk()
     f.stubSuccessfulDownload("re-submitted text")
 
-    val result = f.processor.processEvent(buildEvent()).unsafeRunSync()
+    val result = runProcess(f)
     val _      = result shouldBe ProcessingResult.Succeeded(testNaturalKey, eventEmitted = false)
-    // Orphan chunks must be cleared before re-streaming.
-    verify(f.chunkRepository, times(1)).deleteByVersionId(testVersionId)
+    // Embedder receives the chunk stream; chunk-layer idempotency (LWW UPSERT + trim) handles re-submission.
+    verify(f.embedder, times(1))
+      .submit(any[AmendmentEmbedCtx], any[Stream[IO, String]], anyString(), any[IO[Unit]], any[IO[Unit]])
   }
 
-  it should "fail Systemic when the formatType is not HTML or PDF (no upsert, no embed)" in {
+  it should "fail Systemic and NACK when the formatType is not HTML or PDF (no upsert, no embed)" in {
     val f      = newFixture
-    val result = f.processor.processEvent(buildEvent(formatType = "XML")).unsafeRunSync()
+    val result = runProcess(f, buildEvent(formatType = "XML"))
     val _ = result match {
       case ProcessingResult.Failed(_, message, errorClass) =>
         val _ = errorClass shouldBe "Systemic"
         message should include("XML")
       case other => fail(s"Expected Failed(Systemic), got $other")
     }
+    val _ = f.probe.nacks.get() shouldBe 1
+    val _ = f.probe.acks.get() shouldBe 0
     val _ = verify(f.versionRepository, never()).upsert(any[AmendmentTextVersionDO])
-    verify(f.embedder, never()).processChunks(any[AmendmentEmbedCtx], any[Stream[IO, String]])
+    verify(f.embedder, never())
+      .submit(any[AmendmentEmbedCtx], any[Stream[IO, String]], anyString(), any[IO[Unit]], any[IO[Unit]])
   }
 
-  it should "surface the embedder's classified Failed verbatim without re-classifying" in {
+  it should "NACK and report Failed when the version-row upsert raises" in {
     val f = newFixture
-    f.stubUpsertReturning(testVersionId, inserted = true, alreadyComplete = false)
-    f.stubChunkRepoOk()
-    f.stubEmbedder(ProcessingResult.Failed(testNaturalKey, "embedder boom", "Transient"))
+    val _ = when(f.versionRepository.upsert(any[AmendmentTextVersionDO]))
+      .thenReturn(doobie.free.connection.raiseError(new java.sql.SQLException("upsert exploded")))
     f.stubSuccessfulDownload("text")
 
-    val result = f.processor.processEvent(buildEvent()).unsafeRunSync()
-    val _      = result shouldBe ProcessingResult.Failed(testNaturalKey, "embedder boom", "Transient")
-    // Should NOT have called markFetched on a failed embedder result.
-    verify(f.versionRepository, never()).markFetched(anyLong(), any[Instant], anyInt())
-  }
-
-  it should "fail Systemic when the embedder unexpectedly returns Skipped (contract violation)" in {
-    val f = newFixture
-    f.stubUpsertReturning(testVersionId, inserted = true, alreadyComplete = false)
-    f.stubChunkRepoOk()
-    f.stubEmbedder(ProcessingResult.Skipped(testNaturalKey, "no chunks"))
-    f.stubSuccessfulDownload("text")
-
-    val result = f.processor.processEvent(buildEvent()).unsafeRunSync()
-    result match {
-      case ProcessingResult.Failed(_, message, errorClass) =>
-        val _ = errorClass shouldBe "Systemic"
-        message should include("Skipped")
-      case other => fail(s"Expected Failed(Systemic), got $other")
+    val result = runProcess(f)
+    val _ = result match {
+      case _: ProcessingResult.Failed => succeed
+      case other                      => fail(s"Expected Failed, got $other")
     }
+    val _ = f.probe.nacks.get() shouldBe 1
+    val _ = f.probe.acks.get() shouldBe 0
+    verify(f.embedder, never())
+      .submit(any[AmendmentEmbedCtx], any[Stream[IO, String]], anyString(), any[IO[Unit]], any[IO[Unit]])
+  }
+
+  it should "NACK and report Failed when embedder.submit raises (embedder already NACKed internally — processor's NACK is harmless duplicate or failsafe)" in {
+    val f = newFixture
+    f.stubUpsertReturning(testVersionId, inserted = true, alreadyComplete = false)
+    f.stubEmbedderRaises(new java.io.IOException("submit failed"))
+    f.stubSuccessfulDownload("text")
+
+    val result = runProcess(f)
+    val _ = result match {
+      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
+      case other                                     => fail(s"Expected Failed(Transient), got $other")
+    }
+    // Processor invokes its own NACK on the failure path. The embedder's internal NACK before re-raise is also live;
+    // the contract is "at-least-once NACK" — Pub/Sub treats a duplicate modifyAckDeadline(0) as idempotent.
+    val _ = f.probe.nacks.get() shouldBe 1
+    f.probe.acks.get() shouldBe 0
   }
 
   it should "pass the correlationId through to the downloader so logs are threaded" in {
     val f = newFixture
     f.stubUpsertReturning(testVersionId, inserted = true, alreadyComplete = false)
-    f.stubChunkRepoOk()
-    f.stubMarkFetchedOk()
-    f.stubEmbedder(ProcessingResult.Succeeded(testNaturalKey, eventEmitted = false))
+    f.stubEmbedderOk()
     f.stubSuccessfulDownload("text")
 
-    val _ = f.processor.processEvent(buildEvent()).unsafeRunSync()
+    val _ = runProcess(f)
 
     val captor = ArgumentCaptor.forClass(classOf[UUID])
     val _      = verify(f.downloader).streamBody(anyString(), anyString(), captor.capture())
