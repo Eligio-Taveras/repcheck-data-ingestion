@@ -227,6 +227,34 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     processor.toString should not be empty
   }
 
+  "noopRetryWrapper" should "actually wrap a no-op IO[Unit] retry callback that withRetry can run through" in {
+    // Direct exercise of the extracted retry-callback wrapper — `RetryWrapper`'s callback only fires between
+    // retries and our happy-path tests don't exercise that path, so scoverage flags the lambda body as
+    // unreachable. Run a transient-failing IO through `withRetry` so the wrapper's underlying callback IO
+    // actually executes inside the retry loop.
+    val wrapper  = BillTextPipelinePipeline.noopRetryWrapper[IO]
+    val attempts = new java.util.concurrent.atomic.AtomicInteger(0)
+    val transientThenOK: IO[Int] = IO.delay(attempts.incrementAndGet()).flatMap { n =>
+      if (n < 2) IO.raiseError(new java.io.IOException("transient flake"))
+      else IO.pure(n)
+    }
+    val classifier = new repcheck.pipeline.models.errors.ErrorClassifier {
+      override def classify(t: Throwable): repcheck.pipeline.models.errors.ErrorClass =
+        repcheck.pipeline.models.errors.ErrorClass.Transient
+    }
+    val result = wrapper
+      .withRetry[Int](
+        transientThenOK,
+        repcheck.pipeline.models.errors.RetryConfig(),
+        classifier,
+        (_, t) => t,
+        UUID.randomUUID(),
+      )
+      .unsafeRunSync()
+    val _ = result shouldBe 2
+    attempts.get() shouldBe 2
+  }
+
   "buildStream" should "produce results from subscriber events" in {
     val logger        = new StubPipelineLogger
     val testEventId   = UUID.randomUUID()
@@ -487,6 +515,63 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       .unsafeRunSync()
 
     nackedIds.get() shouldBe List("ack-99")
+  }
+
+  it should "log a warning and swallow when subscriber.nack itself raises" in {
+    // The processor builds the embedder's `nack` effect by composing `subscriber.nack(ackId)` with a
+    // `handleErrorWith` that logs a warning instead of re-raising. This protects the producer fiber from
+    // a transient Pub/Sub modifyAckDeadline failure crashing the whole pipeline.
+    val logger        = new StubPipelineLogger
+    val correlationId = UUID.randomUUID()
+
+    val raisingSubscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
+      def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.pure(List.empty)
+      def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
+      def nack(ackId: String): IO[Unit] = IO.raiseError(new java.io.IOException("modifyAckDeadline RPC down"))
+    }
+
+    val testEvent = BillTextAvailableEvent(
+      naturalKey = "118-HR-1",
+      congress = 118,
+      textUrl = "https://example.com/text",
+      textFormat = "Formatted Text",
+      versionCode = "IH",
+      previousVersionCode = None,
+    )
+    val pipelineEvent = PipelineEvent(
+      eventType = "bill.text.available",
+      payload = testEvent,
+      timestamp = Instant.now(),
+      eventId = UUID.randomUUID(),
+      correlationId = correlationId,
+      source = "test",
+    )
+
+    val processor = mock[BillTextProcessor[IO]]
+    org.mockito.Mockito
+      .when(
+        processor.processEvent(
+          org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
+          org.mockito.ArgumentMatchers.any[UUID],
+          org.mockito.ArgumentMatchers.anyString(),
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
+        )
+      )
+      .thenAnswer { invocation =>
+        // Force the nack path — the subscriber's nack will raise, but the wrapped effect must swallow.
+        val nack = invocation.getArgument[IO[Unit]](4)
+        nack *> IO.pure(ProcessingResult.Failed("118-HR-1", "embedder failed"))
+      }
+
+    val _ = BillTextPipelinePipeline
+      .processAndAck[IO](raisingSubscriber, processor, ReceivedEvent(pipelineEvent, "ack-fail"), logger)
+      .unsafeRunSync()
+
+    // The wrapped nack swallowed the IOException and logged a warning — the call returned cleanly.
+    val warnMessages = logger.messages.filter(_.startsWith("WARN:"))
+    val _            = warnMessages.size shouldBe 1
+    warnMessages.headOption.getOrElse("") should include("NACK call failed for 118-HR-1")
   }
 
   it should "extract correlationId from the PipelineEvent envelope" in {

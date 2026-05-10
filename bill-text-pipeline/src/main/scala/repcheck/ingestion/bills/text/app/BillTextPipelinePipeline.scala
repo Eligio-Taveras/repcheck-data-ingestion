@@ -114,6 +114,16 @@ private[app] object BillTextPipelinePipeline {
       }
     } yield exitCode
 
+  /**
+   * No-op retry-callback wrapper for `RetryWrapper`. Extracted as a named def so it's directly testable — otherwise the
+   * lambda body shows up as uncovered scoverage statements because `RetryWrapper`'s callback only fires between retries
+   * and our happy-path tests don't exercise that path. Functionally equivalent to inlining `new RetryWrapper[F]((_, _,
+   * _, _, _, _) => Async[F].unit)` at the call site; the surrounding `RetryWrapper` constructor pins the lambda's
+   * parameter types via type inference, so we don't have to re-declare them here.
+   */
+  private[app] def noopRetryWrapper[F[_]: Async]: RetryWrapper[F] =
+    new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
+
   private[app] def buildProcessor[F[_]: Async](
     httpClient: Client[F],
     xa: Transactor[F],
@@ -130,7 +140,7 @@ private[app] object BillTextPipelinePipeline {
       govInfoBaseUrl = config.pipeline.govInfoBaseUrl,
       logger = logger,
     )
-    val retryWrapper = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
+    val retryWrapper = noopRetryWrapper[F]
     val eventPublisher = new DefaultIngestionEventPublisher[F](
       publisher = pubSubPublisher,
       topicName = config.eventPublisher.topicName,

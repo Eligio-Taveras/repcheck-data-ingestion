@@ -697,4 +697,127 @@ class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
     rec.nacks should be >= 1
   }
 
+  // ===========================================================================
+  // Defensive `case None` paths — ackId already removed by a prior failure / cleanup.
+  // These exercise the embedder's idempotency guarantees: late callers that find the ackId
+  // missing from `state.acks` no-op cleanly without raising.
+  // ===========================================================================
+
+  it should "drop chunks in offerChunk when the ackId is not registered" in {
+    // Direct exercise of the offerChunk guard (line 176-177): if state.acks doesn't have the ackId
+    // (e.g., a prior failBatch removed it while another producer fiber was still streaming), the
+    // offered chunk is silently dropped — no buffer growth, no flush, no exception.
+    val embedder = new RecordingEmbeddingService
+    val rawRepo  = new RecordingRawRepo
+    val textRepo = new RecordingTextVersionRepo
+    runWithEmbedder(embedder, rawRepo, textRepo, batchSize = 50) { e =>
+      // No `register` was called for ack-ghost; calling offerChunk directly should be a no-op.
+      e.offerChunk(ctx(1L, "118-HR-1"), 0, "ghost-chunk", "ack-ghost")
+    }
+    val _ = embedder.batches shouldBe empty
+    rawRepo.allRows shouldBe empty
+  }
+
+  it should "no-op finalizeSubmission when the ackId was already removed (e.g., by a prior failBatch)" in {
+    // Exercises the `case None` branch (lines 211, 213): state.acks lacks the ackId so no flush is
+    // triggered and no completion fires.
+    val embedder = new RecordingEmbeddingService
+    val rawRepo  = new RecordingRawRepo
+    val textRepo = new RecordingTextVersionRepo
+    runWithEmbedder(embedder, rawRepo, textRepo, batchSize = 50) { e =>
+      e.finalizeSubmission("ack-never-registered", count = 5)
+    }
+    val _ = embedder.batches shouldBe empty
+    rawRepo.allRows shouldBe empty
+  }
+
+  it should "no-op cleanupOnSubmitError when the ackId is already gone (logger.warn path)" in {
+    // Exercises the `case None` branch in cleanupOnSubmitError (lines 460-467): the logger.warn
+    // path runs when a submit-time error fires for an ackId that's already been removed (e.g.,
+    // a prior failBatch beat us to it). We accept the warn-and-swallow without raising.
+    val embedder = new RecordingEmbeddingService
+    val rawRepo  = new RecordingRawRepo
+    val textRepo = new RecordingTextVersionRepo
+    runWithEmbedder(embedder, rawRepo, textRepo, batchSize = 50) { e =>
+      e.cleanupOnSubmitError("ack-already-gone", new java.io.IOException("upstream fail"))
+    }
+    // No exception raised, no chunks persisted.
+    val _ = embedder.batches shouldBe empty
+    rawRepo.allRows shouldBe empty
+  }
+
+  it should "no-op applyBatchSuccess for an ackId removed mid-flight (concurrent failBatch race)" in {
+    // Simulates the race where a prior failBatch removed ackId-A from state, but a concurrent
+    // applyBatchSuccess for that ackId still arrives — `case None` path (line 307) keeps the
+    // accumulator unchanged and continues with siblings.
+    val embedder = new RecordingEmbeddingService
+    val rawRepo  = new RecordingRawRepo
+    val textRepo = new RecordingTextVersionRepo
+    val ghostBatch = List(
+      ChunkSubmission(ctx(1L, "118-HR-1"), 0, "ghost-text", "ack-removed")
+    )
+    runWithEmbedder(embedder, rawRepo, textRepo, batchSize = 50)(e => e.applyBatchSuccess(ghostBatch))
+    // `applyBatchSuccess` doesn't itself touch the embed service or repo (it only updates state
+    // and fires completion); with no ackId in state it's a clean no-op.
+    val _ = embedder.batches shouldBe empty
+    rawRepo.allRows shouldBe empty
+  }
+
+  it should "purge buffered chunks for failing ackIds when failBatch runs with non-empty buffer" in {
+    // Exercises the buffer-filter lambda inside failBatch (line 421): two ackIds, the first
+    // submission buffers chunks (no flush), the second forces a flush that fails, failBatch
+    // removes both ackIds AND filters their submissions out of the shared buffer.
+    val firstError   = new java.io.IOException("embed broker down")
+    val attemptCount = new AtomicInteger(0)
+    val flakyEmbedder = new EmbeddingService[IO] {
+      override def generateEmbedding(text: String): IO[Option[Array[Float]]] =
+        generateEmbeddings(List(text)).map(_.headOption.flatten)
+      override def generateEmbeddings(texts: List[String]): IO[List[Option[Array[Float]]]] =
+        IO.delay(attemptCount.incrementAndGet()).flatMap { n =>
+          if (n == 1) IO.raiseError(firstError)
+          else IO.pure(texts.map(_ => Some(Array(0.0f, 0.0f, 0.0f, 0.0f))))
+        }
+    }
+    val rawRepo  = new RecordingRawRepo
+    val textRepo = new RecordingTextVersionRepo
+    val recA     = ackRecord()
+    val recB     = ackRecord()
+
+    val _ = runWithEmbedder(flakyEmbedder, rawRepo, textRepo, batchSize = 4) { e =>
+      // Submit 2 chunks for ack-A (buffered, no flush — batchSize=4) then 2 chunks for ack-B
+      // which crosses the threshold and triggers a flush of [A0, A1, B0, B1]. The flush's
+      // first-attempt embed fails — failBatch removes both ackIds and purges any buffered
+      // submissions still tagged with their ackIds.
+      val sA = e.submit(ctx(1L, "118-HR-1"), Stream.emits(List("a0", "a1")), "ack-A", recA.ackEffect, recA.nackEffect)
+      val sB = e.submit(ctx(2L, "118-HR-2"), Stream.emits(List("b0", "b1")), "ack-B", recB.ackEffect, recB.nackEffect)
+      (sA, sB).parTupled
+    }
+
+    // Both ackIds NACKed (failBatch removed them); no chunks landed for either.
+    val _ = recA.nacks should be >= 1
+    val _ = recB.nacks should be >= 1
+    rawRepo.allRows shouldBe empty
+  }
+
+  it should "no-op failBatch when none of the batch's ackIds are in state (inner case None at line 418)" in {
+    // Exercises the inner `case None` in failBatch's foldLeft (line 418): all ackIds in the
+    // failed batch are already gone from state — the fold accumulator stays unchanged and the
+    // resulting `removed` list is empty so no nack effects fire.
+    val embedder = new RecordingEmbeddingService
+    val rawRepo  = new RecordingRawRepo
+    val textRepo = new RecordingTextVersionRepo
+    val ghostBatch = List(
+      ChunkSubmission(ctx(1L, "118-HR-1"), 0, "g0", "ghost-A"),
+      ChunkSubmission(ctx(1L, "118-HR-1"), 1, "g1", "ghost-B"),
+    )
+    runWithEmbedder(embedder, rawRepo, textRepo, batchSize = 50) { e =>
+      // Neither ghost-A nor ghost-B was ever registered; failBatch should fold over them
+      // hitting the `case None` branch each time and return without any state change or nack.
+      e.failBatch(ghostBatch, new java.sql.SQLException("simulated"))
+    }
+    // No exception, no chunks, no batches embedded.
+    val _ = embedder.batches shouldBe empty
+    rawRepo.allRows shouldBe empty
+  }
+
 }
