@@ -63,11 +63,25 @@ class AmendmentsCrossPipelineSpec extends AnyFlatSpec with Matchers with BeforeA
     // The baseline stack (bills + members + votes) populates `bills` and `members` so the §S3 fan-out assertion
     // (one bill anchors two amendments) has a stable row to FK against, and S6 regression has the data it needs.
     fixture.start()
+    // Seed the workflow_runs parent row so AmendmentsPipeline's WorkflowStateUpdater.recordStepStarted insert
+    // satisfies the workflow_run_steps → workflow_runs FK. AmendmentsPipeline is the first pipeline in this stack
+    // that actually writes workflow_run_steps; bills/members/votes pipelines either hardcode runId=0L (and skip the
+    // updater) or use Optional updaters. The compose `command:` pins runId=1, and id=1 is safe here because no other
+    // test in this suite writes to workflow_runs.
+    seedWorkflowRun(id = 1L)
     fixture.startAmendments()
     // amendment-text-pipeline is a long-running subscriber. Block until either the SAMDT 100 text-version row
     // shows `fetched_at` non-NULL, or the timeout expires. 90s is generous — Ollama is stubbed (no real
     // inference), and chunking + DB write should be sub-second.
     waitForFetchedAt(timeoutMs = 90_000L, pollMs = 1_500L)
+  }
+
+  private def seedWorkflowRun(id: Long): Unit = {
+    val idFr = doobie.Fragment.const(id.toString)
+    val _ =
+      sql"""INSERT INTO workflow_runs (id, workflow_name, status, triggered_by, started_at)
+            VALUES ($idFr, 'amendments-e2e', 'running'::workflow_status_type, 'e2e-test', NOW())
+            ON CONFLICT (id) DO NOTHING""".update.run.transact(xa).unsafeRunSync()
   }
 
   override def afterAll(): Unit = {
