@@ -432,9 +432,11 @@ services:
       context: .
       dockerfile: amendments-pipeline/Dockerfile
     # Launcher contract: args(0) = config (unused — PureConfig reads env),
-    # args(1) = runId (PipelineBootstrap.extractRunId pulls from index 1),
-    # args(2) = stepRunId. PipelineBootstrap raises RunIdMissing if args(1) is absent.
-    command: ["cfg-unused", "e2e-amendments-run", "1"]
+    # args(1) = runId (PipelineBootstrap.extractRunId parses args(1).toLong; non-numeric
+    # raises RunIdMissing wrapping NumberFormatException), args(2) = stepRunId.
+    # Use a numeric placeholder for e2e — there is no workflow_runs row in this slice,
+    # so any Long is acceptable.
+    command: ["cfg-unused", "1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
