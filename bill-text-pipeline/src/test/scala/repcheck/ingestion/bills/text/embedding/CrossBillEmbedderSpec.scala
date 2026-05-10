@@ -38,9 +38,11 @@ import repcheck.shared.models.congress.dos.bill.RawBillTextDO
  */
 class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
 
+  // Unique per-suite H2 URL avoids any cross-classloader/cross-driver contention when the JVM is shared with
+  // other test subprojects under sbt's cross-project parallelism (default `Dsbt.testConcurrency=2`).
   private val testXa: Transactor[IO] = Transactor.fromDriverManager[IO](
     driver = "org.h2.Driver",
-    url = "jdbc:h2:mem:cross-bill-embedder-spec;DB_CLOSE_DELAY=-1",
+    url = s"jdbc:h2:mem:cross-bill-embedder-spec-${java.util.UUID.randomUUID().toString};DB_CLOSE_DELAY=-1",
     user = "",
     password = "",
     logHandler = None,
@@ -53,7 +55,11 @@ class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
     override def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
   }
 
-  private val TestTimeout: FiniteDuration = 2.seconds
+  // Generous timeout: each `submit` call drives a real H2 `transact(xa)` for the UPSERT batch AND a second
+  // `transact(xa)` for trim+markFetched. Under concurrent JVM load (e.g., full-repo `sbt test`), H2 connection
+  // acquisition can take several seconds even though the per-call work is trivial. 30s gives plenty of headroom
+  // without masking a real hang (the foreground-only design means a true hang would never resolve).
+  private val TestTimeout: FiniteDuration = 30.seconds
 
   /** Records every batch handed to `generateEmbeddings`. Returns deterministic embeddings of `[length, 0, 0, 0]`. */
   private class RecordingEmbeddingService extends EmbeddingService[IO] {

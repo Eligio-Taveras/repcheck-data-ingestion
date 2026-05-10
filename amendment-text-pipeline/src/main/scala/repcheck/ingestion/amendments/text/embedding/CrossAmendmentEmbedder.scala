@@ -209,6 +209,15 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
    * Errors raised by either `embeddingService.generateEmbeddings` or `upsertMany` propagate through `attempt`. On
    * error: every distinct ackId in the failed batch has `nack` invoked and is removed from state. The error itself is
    * NOT re-raised — the calling fiber (a producer) shouldn't fail just because some other ackId's flush errored.
+   *
+   * ==Conflict-key dedup before UPSERT==
+   *
+   * Two concurrent Pub/Sub messages for the same `versionId` (different ackIds) emit chunks at the same `chunkIdx`
+   * positions. If both make it into the same batch, `INSERT ... ON CONFLICT (version_id, chunk_index) DO UPDATE` would
+   * raise `cannot affect row a second time` and NACK every ackId in the batch. Before calling `upsertMany`, dedup the
+   * row list by `(versionId, chunkIndex)` keeping the last occurrence (last-writer-wins, deterministic). Per-ackId
+   * attribution (in [[applyBatchResult]]) still uses the FULL batch — both ackIds get credit for the chunks they
+   * offered because the persisted data is identical (same source bytes → same chunks for a deterministic chunker).
    */
   private[embedding] def flushIfNonEmpty(batch: List[AmendmentChunkSubmission]): F[Unit] =
     if (batch.isEmpty) {
@@ -231,12 +240,25 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
                   embedding = emb,
                 )
             }
+            // Last-writer-wins dedup keyed by (versionId, chunkIndex). Map fold preserves insertion order so the
+            // last submission for each key in `batch` wins. Avoids both `IterableOps#last` (forbidden by WartRemover)
+            // and the PostgreSQL "cannot affect row a second time" error on duplicate conflict keys.
+            val deduped = rows
+              .foldLeft(Map.empty[(Long, Int), AmendmentChunkRow]) { (acc, r) =>
+                acc + ((r.versionId, r.chunkIndex) -> r)
+              }
+              .values
+              .toList
             TransactionRunner
-              .run(xa)(amendmentTextChunkRepository.upsertMany(rows))
+              .run(xa)(amendmentTextChunkRepository.upsertMany(deduped))
               .attempt
               .flatMap {
-                case Left(error)        => failBatch(batch, error)
-                case Right(writtenRows) => applyBatchResult(batch, writtenRows)
+                case Left(error) => failBatch(batch, error)
+                // applyBatchResult uses FULL batch for per-ackId attribution. We pass `batch.size` rather than the
+                // deduped repo return value because every offered chunk's ackId should be credited — the dedup
+                // collapses identical writes for unrelated ackIds covering the same (versionId, chunkIndex), but
+                // both ackIds' submissions are conceptually "written" since the data they wrote is in the DB.
+                case Right(_) => applyBatchResult(batch, batch.size)
               }
         }
     }

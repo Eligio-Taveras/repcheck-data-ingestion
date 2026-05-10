@@ -95,11 +95,25 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
     override def upsertMany(rows: List[AmendmentChunkRow]): ConnectionIO[Int] =
       upsertFailure match {
         case Some(err) => doobie.free.connection.raiseError(err)
-        case None =>
-          doobie.free.connection.delay {
-            val _ = rowsRef.updateAndGet(prev => prev :+ rows)
-            val _ = sumContentLengthRef.updateAndGet(prev => prev + rows.map(_.content.length.toLong).sum)
-            rows.size
+        case None      =>
+          // Simulate PostgreSQL's behavior: `INSERT ... ON CONFLICT DO UPDATE` raises
+          // "ERROR: ON CONFLICT DO UPDATE command cannot affect row a second time" when the same conflict key
+          // appears more than once in a single statement. The embedder is responsible for de-duplicating by
+          // (versionId, chunkIndex) before calling upsertMany; this test repo enforces that contract so the
+          // unit specs catch any regression that lets duplicates slip through.
+          val conflictKeys = rows.map(r => (r.versionId, r.chunkIndex))
+          if (conflictKeys.distinct.size != conflictKeys.size) {
+            doobie.free.connection.raiseError(
+              new java.sql.SQLException(
+                "ON CONFLICT DO UPDATE command cannot affect row a second time (simulated PG dup-key)"
+              )
+            )
+          } else {
+            doobie.free.connection.delay {
+              val _ = rowsRef.updateAndGet(prev => prev :+ rows)
+              val _ = sumContentLengthRef.updateAndGet(prev => prev + rows.map(_.content.length.toLong).sum)
+              rows.size
+            }
           }
       }
 
