@@ -39,17 +39,18 @@ final case class ChunkSubmission(
  * @param ctx
  *   the bill's identifying info (versionId for trim+markFetched, naturalKey for logs).
  * @param ack
- *   the effect that calls `subscriber.acknowledge(ackId)`. Fires when `submitted == expected` (i.e., every chunk this
- *   producer offered has been processed by some flush, success or failure).
+ *   the effect that calls `subscriber.acknowledge(ackId)`. Fires when `submitted == expected` — i.e., every chunk this
+ *   producer offered has been embedded + persisted in a successful flush.
  * @param nack
- *   the effect that signals Pub/Sub to redeliver. Fires on known failures (UPSERT error, trim error, markFetched
- *   error).
+ *   the effect that signals Pub/Sub to redeliver. Fires on known failures (embed error, UPSERT error, trim error,
+ *   markFetched error, stream error, fiber cancellation). On batch failure the ackId is removed from `acks` entirely so
+ *   this completion check never fires; the NACK path takes over.
  * @param expected
  *   total chunk count the producer offered. `None` while the chunk stream is still being drained; `Some(n)` after
  *   `finalizeSubmission`. ACK fires when `submitted` catches up to `expected`.
  * @param submitted
- *   chunks the producer offered for this ackId that have been processed (succeeded OR failed) by some flush. Drives
- *   ACK.
+ *   chunks for this ackId that have been embedded + persisted in a successful flush. Incremented in `applyBatchSuccess`
+ *   (never at offer time) — moving the increment to offer time would let ACK fire while writes were still in flight.
  * @param written
  *   chunks for this ackId that actually wrote to the DB (UPSERT affected_rows). Drives trim + markFetched.
  */

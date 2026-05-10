@@ -2,7 +2,7 @@ package repcheck.ingestion.bills.text.embedding
 
 import java.time.Instant
 
-import cats.effect.{Async, Ref, Resource}
+import cats.effect.{Async, Outcome, Ref, Resource}
 import cats.syntax.all._
 
 import fs2.Stream
@@ -64,20 +64,31 @@ trait BillChunkEmbedder[F[_]] {
  *
  * There is NO background fiber. Every embedding + DB write happens on the producing fiber that triggered the flush
  * (either by filling the buffer to `batchSize` in [[offerChunk]], or by force-flushing the residual buffer in
- * [[finalizeSubmission]]). Errors propagate through that fiber's normal IO channel; producers that hit a failure on
- * THEIR own flush observe the error in `submit`'s return effect and the embedder's per-ackId state machine has already
- * invoked `nack` for the affected messages.
+ * [[finalizeSubmission]]).
+ *
+ * Failure propagation is one-way (NACK → Pub/Sub-redelivery), NOT through `submit`'s return effect:
+ *
+ *   - Flush errors (embed or UPSERT raised): absorbed by `flushIfNonEmpty`'s `attempt`. `failBatch` removes every ackId
+ *     in the failed batch from state, purges any of their buffered submissions, and invokes `nack` for each. The
+ *     producer that happened to be the flusher returns successfully — its own ackId is just one of N that got NACKed,
+ *     and surfacing the error to the calling fiber would crash an unrelated bill's submit.
+ *   - Stream errors (chunkStream itself raised): handled by `submit`'s `guaranteeCase` finalizer routing through
+ *     `cleanupOnSubmitError` (purge buffer + NACK + remove ackId). The error then re-raises so the producer's effect
+ *     channel still surfaces it for caller-side observability.
+ *   - Producer cancellation (fiber cancelled — graceful shutdown, supervisor cancel): same `guaranteeCase` finalizer
+ *     fires for `Outcome.Canceled`. Without it, the ackId would sit in `acks` indefinitely and chunks could orphan in
+ *     the buffer.
  *
  * ==Per-ackId state — Option C (no version-date gate)==
  *
  *   - `AckProgress` per ackId: `(ack, nack, expected, submitted, written)`
- *   - `submitted` drives ACK: when `expected.contains(submitted)`, the message has been fully processed (success or
- *     recorded failure) and `ack` fires.
+ *   - `submitted` drives ACK: when `expected.contains(submitted)`, every chunk this producer offered has been processed
+ *     by some flush (success or recorded failure) and `ack` fires.
  *   - `written` drives trim + markFetched: only when `written > 0` (the submission actually wrote rows) does the
  *     embedder run `trimChunksPast(versionId, chunkCount)` then `markFetched(versionId, NOW())`.
- *   - On flush failure (embed or UPSERT raised): every ackId in the batch is removed from state and `nack` fires for
- *     each. Pub/Sub redelivers; the next attempt's UPSERT is idempotent (last-writer-wins on `(version_id,
- *     chunk_index)`).
+ *   - On flush failure: every ackId in the batch is removed from state, their buffered submissions are purged, and
+ *     `nack` fires for each. Pub/Sub redelivers; the next attempt's UPSERT is idempotent (last-writer-wins on
+ *     `(version_id, chunk_index)`).
  *
  * ==Why no version-date gate==
  *
@@ -105,22 +116,27 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
     ack: F[Unit],
     nack: F[Unit],
   ): F[Unit] = {
-    val drainAndFinalize: F[Unit] =
-      for {
-        chunkCount <- chunkStream.zipWithIndex
-          .evalMap { case (text, idx) => offerChunk(ctx, idx.toInt, text, ackId) }
-          .compile
-          .count
-        _ <- finalizeSubmission(ackId, chunkCount.toInt)
-      } yield ()
-
-    register(ctx, ackId, ack, nack) *>
-      drainAndFinalize.handleErrorWith { error =>
-        // The chunk stream itself raised (e.g., the upstream HTTP/extractor failed). Whatever's been offered for this
-        // ackId so far is in the buffer or already flushed; remove the ackId, NACK once, and let any later flushes
-        // that touch its leftover chunks treat them as no-ops (state.acks.get(ackId) will be empty).
-        cleanupOnSubmitError(ackId, error)
+    val producer: F[Unit] =
+      register(ctx, ackId, ack, nack) *> {
+        for {
+          chunkCount <- chunkStream.zipWithIndex
+            .evalMap { case (text, idx) => offerChunk(ctx, idx.toInt, text, ackId) }
+            .compile
+            .count
+          _ <- finalizeSubmission(ackId, chunkCount.toInt)
+        } yield ()
       }
+
+    // `guaranteeCase` covers all three exit paths so the ackId never leaks in the state map:
+    //   - Errored: chunk stream raised (e.g., upstream extractor blew up) — purge buffer + NACK + re-raise.
+    //   - Canceled: fiber cancelled (graceful shutdown / supervisor cancel) — purge buffer + NACK so Pub/Sub
+    //     redelivers; otherwise the entry would sit in `acks` indefinitely and chunks would orphan in the buffer.
+    //   - Succeeded: completion fires via `applyBatchSuccess`/`finalizeSubmission` paths; nothing to do here.
+    Async[F].guaranteeCase(producer) {
+      case Outcome.Succeeded(_) => Async[F].unit
+      case Outcome.Errored(e)   => cleanupOnSubmitError(ackId, e)
+      case Outcome.Canceled()   => cleanupOnSubmitError(ackId, BillSubmissionCancelled(ackId))
+    }
   }
 
   private[embedding] def register(
@@ -142,19 +158,28 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
   }
 
   /**
-   * Atomically add a chunk to the shared buffer. If this offer brings the buffer to `batchSize`, the producer takes
-   * responsibility for flushing — embeds the batch, UPSERTs rows, updates per-ackId progress, runs trim + markFetched +
-   * ack for any ackIds whose chunks all got processed.
+   * Atomically add a chunk to the shared buffer iff its `ackId` is still registered. If the ackId was already removed
+   * by a prior `failBatch`/`cleanupOnSubmitError` (e.g., an earlier batch's flush errored or this producer's stream is
+   * mid-cleanup), the chunk is dropped — there's no longer anyone to attribute its write to or fire ACK for. The
+   * producer's own loop will exit via `submit`'s `guaranteeCase` finalizer; no special signaling needed here.
+   *
+   * If the offer brings the buffer to `batchSize`, the producer takes responsibility for flushing — embeds the batch,
+   * UPSERTs rows, updates per-ackId progress, runs trim + markFetched + ack for any ackIds whose chunks all got
+   * processed.
    */
   private[embedding] def offerChunk(ctx: BillEmbedCtx, chunkIdx: Int, text: String, ackId: String): F[Unit] = {
     val submission = ChunkSubmission(ctx, chunkIdx, text, ackId)
     state
       .modify { s =>
-        val newBuffer = s.buffer :+ submission
-        if (newBuffer.size >= batchSize) {
-          (s.copy(buffer = Vector.empty), newBuffer.toList)
+        if (!s.acks.contains(ackId)) {
+          (s, List.empty[ChunkSubmission])
         } else {
-          (s.copy(buffer = newBuffer), List.empty)
+          val newBuffer = s.buffer :+ submission
+          if (newBuffer.size >= batchSize) {
+            (s.copy(buffer = Vector.empty), newBuffer.toList)
+          } else {
+            (s.copy(buffer = newBuffer), List.empty[ChunkSubmission])
+          }
         }
       }
       .flatMap(flushIfNonEmpty)
@@ -287,11 +312,14 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
       runTrimAndMarkFetched(progress, logCtx).attempt.flatMap {
         case Right(()) => safeAck(progress, logCtx)
         case Left(error) =>
-          logger.error(
-            logCtx,
-            s"Trim/markFetched failed for ${progress.ctx.naturalKey} (versionId=${progress.ctx.versionId.toString}); NACKing: ${describeError(error)}",
-            Some(error),
-          ) *> progress.nack
+          logger
+            .error(
+              logCtx,
+              s"Trim/markFetched failed for ${progress.ctx.naturalKey} (versionId=${progress.ctx.versionId.toString}); NACKing: ${describeError(error)}",
+              Some(error),
+            )
+            .attempt
+            .void *> progress.nack.attempt.void
       }
     } else {
       safeAck(progress, logCtx)
@@ -307,11 +335,14 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
     progress.ack.attempt.flatMap {
       case Right(()) => Async[F].unit
       case Left(error) =>
-        logger.error(
-          logCtx,
-          s"ack callback raised for ${progress.ctx.naturalKey}; NACKing instead: ${describeError(error)}",
-          Some(error),
-        ) *> progress.nack
+        logger
+          .error(
+            logCtx,
+            s"ack callback raised for ${progress.ctx.naturalKey}; NACKing instead: ${describeError(error)}",
+            Some(error),
+          )
+          .attempt
+          .void *> progress.nack.attempt.void
     }
 
   private[embedding] def runTrimAndMarkFetched(progress: AckProgress[F], logCtx: LogContext): F[Unit] =
@@ -326,11 +357,14 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
 
   /**
    * On batch-level error (embedding service raised, or DB raised): atomically remove every distinct ackId in the batch
-   * from state and invoke `nack` on each. Logs the cause at ERROR. Errors from logging / nack itself are not re-raised
-   * — the caller is one of many producers and we don't want to crash the producer that happened to be the flusher.
+   * from state, purge any of their submissions still buffered (a producer may have offered more chunks for one of these
+   * ackIds while another fiber was flushing — those chunks are orphaned the moment we NACK the message), and invoke
+   * `nack` for each. Logs the cause at ERROR. Errors from logging / nack itself are wrapped in `.attempt.void` so a
+   * downstream subscriber failure can't crash the producer that happened to be the flusher.
    */
   private[embedding] def failBatch(batch: List[ChunkSubmission], error: Throwable): F[Unit] = {
     val ackIdsInBatch = batch.map(_.ackId).distinct
+    val ackIdSet      = ackIdsInBatch.toSet
     val logCtx = LogContext(
       runId = "<batch>",
       stepName = StepName,
@@ -338,28 +372,35 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
       entityId = Some(s"${ackIdsInBatch.size.toString}-acks"),
     )
     val errorMessage = describeError(error)
-    logger.error(
-      logCtx,
-      s"Embed/UPSERT batch failed for ${ackIdsInBatch.size.toString} ackId(s); NACKing each: $errorMessage",
-      Some(error),
-    ) *>
+    logger
+      .error(
+        logCtx,
+        s"Embed/UPSERT batch failed for ${ackIdsInBatch.size.toString} ackId(s); NACKing each: $errorMessage",
+        Some(error),
+      )
+      .attempt
+      .void *>
       state
         .modify { s =>
-          ackIdsInBatch.foldLeft((s, List.empty[AckProgress[F]])) {
-            case ((acc, removed), ackId) =>
-              acc.acks.get(ackId) match {
-                case Some(progress) => (acc.copy(acks = acc.acks - ackId), progress :: removed)
-                case None           => (acc, removed)
+          val (newAcks, removed) = ackIdsInBatch.foldLeft((s.acks, List.empty[AckProgress[F]])) {
+            case ((acks, removed), ackId) =>
+              acks.get(ackId) match {
+                case Some(progress) => (acks - ackId, progress :: removed)
+                case None           => (acks, removed)
               }
           }
+          val newBuffer = s.buffer.filterNot(sub => ackIdSet.contains(sub.ackId))
+          (s.copy(acks = newAcks, buffer = newBuffer), removed)
         }
-        .flatMap(_.traverse_(_.nack))
+        .flatMap(_.traverse_(_.nack.attempt.void))
   }
 
   /**
-   * Submit-time error path: the producer's chunk stream raised. Whatever was offered for this ackId is either still in
-   * the buffer (and a later flush will see `state.acks.get(ackId) = None` and treat it as a no-op) or already flushed.
-   * Remove the ackId from state, NACK once, log.
+   * Submit-time error path used by [[submit]]'s `guaranteeCase` finalizer (chunk-stream error or fiber cancellation).
+   * Atomically removes the ackId from state AND purges any of its submissions still sitting in the shared buffer
+   * (chunks emitted before the error/cancel that hadn't triggered a flush yet — without this purge they'd ride along in
+   * some other producer's later flush and waste embedding/DB work for an already-NACKed message). Logger / nack errors
+   * are swallowed so a downstream subscriber failure can't stack on top of the original cause.
    */
   private[embedding] def cleanupOnSubmitError(ackId: String, error: Throwable): F[Unit] = {
     val logCtx = LogContext(
@@ -371,22 +412,30 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
     state
       .modify { s =>
         s.acks.get(ackId) match {
-          case Some(progress) => (s.copy(acks = s.acks - ackId), Some(progress))
-          case None           => (s, None)
+          case Some(progress) =>
+            val newBuffer = s.buffer.filterNot(_.ackId == ackId)
+            (s.copy(acks = s.acks - ackId, buffer = newBuffer), Some(progress))
+          case None => (s, None)
         }
       }
       .flatMap {
         case Some(progress) =>
-          logger.error(
-            logCtx,
-            s"submit() chunk stream failed for ${progress.ctx.naturalKey}; NACKing: ${describeError(error)}",
-            Some(error),
-          ) *> progress.nack
+          logger
+            .error(
+              logCtx,
+              s"submit() chunk stream failed for ${progress.ctx.naturalKey}; NACKing: ${describeError(error)}",
+              Some(error),
+            )
+            .attempt
+            .void *> progress.nack.attempt.void
         case None =>
-          logger.warn(
-            logCtx,
-            s"submit() chunk stream failed but ackId $ackId already removed (NACK already fired): ${describeError(error)}",
-          )
+          logger
+            .warn(
+              logCtx,
+              s"submit() chunk stream failed but ackId $ackId already removed (NACK already fired): ${describeError(error)}",
+            )
+            .attempt
+            .void
       }
   }
 

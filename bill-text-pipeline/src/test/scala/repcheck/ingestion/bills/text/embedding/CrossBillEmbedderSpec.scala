@@ -5,8 +5,8 @@ import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
 import scala.concurrent.duration._
 
-import cats.effect.IO
 import cats.effect.unsafe.implicits.global
+import cats.effect.{Deferred, IO}
 import cats.syntax.all._
 
 import fs2.Stream
@@ -567,6 +567,97 @@ class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
 
   // ===========================================================================
   // Error classification (still useful — embedder still has describeError fallback)
+  // ===========================================================================
+
+  // ===========================================================================
+  // Orphan-buffer cleanup — failed ackIds must not poison later flushes
+  // ===========================================================================
+
+  it should "purge orphan buffered chunks for a failed ackId so they don't leak into a later flush" in {
+    // Producer A emits 2 chunks (under batchSize=10, no flush yet) and then raises. `cleanupOnSubmitError` must remove
+    // both buffered chunks before producer B's submission flushes — otherwise B's batch would carry A's orphans
+    // (NACKed but still pending in the shared buffer) and persist them.
+    val embedder        = new RecordingEmbeddingService
+    val rawRepo         = new RecordingRawRepo
+    val textVersionRepo = new RecordingTextVersionRepo
+    val recA            = ackRecord()
+    val recB            = ackRecord()
+
+    val partialThenFail: Stream[IO, String] =
+      Stream("orphan-0", "orphan-1") ++ Stream.raiseError[IO](new java.io.IOException("partway"))
+
+    val _ = CrossBillEmbedder
+      .resource[IO](
+        embeddingService = embedder,
+        rawBillTextRepository = rawRepo,
+        textVersionRepository = textVersionRepo,
+        xa = testXa,
+        logger = testLogger,
+        batchSize = 10,
+      )
+      .use { e =>
+        for {
+          // First submission: 2 chunks then raises before any flush. Stream error → cleanupOnSubmitError → NACK + buffer purge.
+          _ <- e.submit(ctx(1L, "118-HR-1"), partialThenFail, "ack-A", recA.ackEffect, recA.nackEffect).attempt
+          // Second submission: 1 chunk, completes normally. Its forced residual flush MUST NOT include A's orphans.
+          _ <- e.submit(ctx(2L, "118-HR-2"), Stream.emit("clean-chunk"), "ack-B", recB.ackEffect, recB.nackEffect)
+        } yield ()
+      }
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    val _ = recA.acks shouldBe 0
+    val _ = recA.nacks should be >= 1
+    val _ = recB.acks shouldBe 1
+    val _ = recB.nacks shouldBe 0
+    // Only one batch ever reached the embed service: B's single chunk. A's orphans were purged before any flush.
+    val _ = embedder.batches.flatten shouldBe List("clean-chunk")
+    rawRepo.allRows.map(_.content) shouldBe List("clean-chunk")
+  }
+
+  it should "NACK and clean up state when the producing fiber is cancelled mid-stream" in {
+    // Without `guaranteeCase` the ackId would leak indefinitely on cancellation: `handleErrorWith` doesn't fire
+    // for cancelled fibers. The new finalizer must invoke `cleanupOnSubmitError` so the ackId is removed and NACK fires.
+    val embedder        = new RecordingEmbeddingService
+    val rawRepo         = new RecordingRawRepo
+    val textVersionRepo = new RecordingTextVersionRepo
+    val rec             = ackRecord()
+
+    val program: IO[Unit] = Deferred[IO, Unit].flatMap { chunkOffered =>
+      val hangingStream: Stream[IO, String] =
+        Stream.emit("chunk-0").covary[IO] ++
+          Stream.eval(chunkOffered.complete(()).void).drain ++
+          Stream.eval(IO.never[String])
+
+      CrossBillEmbedder
+        .resource[IO](
+          embeddingService = embedder,
+          rawBillTextRepository = rawRepo,
+          textVersionRepository = textVersionRepo,
+          xa = testXa,
+          logger = testLogger,
+          batchSize = 10,
+        )
+        .use { e =>
+          for {
+            fiber <- e.submit(ctx(1L, "118-HR-1"), hangingStream, "ack-cancel", rec.ackEffect, rec.nackEffect).start
+            _     <- chunkOffered.get // chunk-0 was offered; producer is now hanging on IO.never
+            _     <- fiber.cancel
+            _     <- fiber.join.void  // wait for cancellation finalizer to complete
+          } yield ()
+        }
+    }
+
+    val _ = program.timeout(TestTimeout).unsafeRunSync()
+    val _ = rec.acks shouldBe 0
+    val _ = rec.nacks should be >= 1
+    // Nothing flushed — chunk-0 sat in the buffer, then was purged by cleanupOnSubmitError on cancel.
+    val _ = rawRepo.allRows shouldBe empty
+    textVersionRepo.markedVersions shouldBe empty
+  }
+
+  // ===========================================================================
+  // describeError fallback
   // ===========================================================================
 
   it should "fall back to the simple class name when an exception's message is null" in {
