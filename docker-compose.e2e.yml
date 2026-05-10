@@ -493,12 +493,12 @@ services:
       DB_PASSWORD: repcheck
       CONGRESS_API_BASE_URL: http://wiremock:8080/v3
       CONGRESS_GOV_API_KEY: e2e-test-key
-      # `stale-after = 0s` so even amendments that were just inserted by
-      # amendments-pipeline qualify as candidates immediately (otherwise the
-      # default 4h would skip every row whose `last_text_check_at` is NULL
-      # only after the first check — but the NULL case is handled separately
-      # so this is belt-and-suspenders for a deterministic single-run e2e).
-      AMENDMENT_TEXT_CHECK_STALE_AFTER: "0s"
+      # `stale-after = 1ms` — must be > 0 per AmendmentTextCheckerConfig's
+      # `require(staleAfter > Duration.Zero, ...)`. The SQL filter is
+      # `last_text_check_at IS NULL OR older than staleAfter`, so freshly-
+      # inserted amendments (NULL) qualify regardless. The default 4h is
+      # only relevant after the first successful check; e2e is single-run.
+      AMENDMENT_TEXT_CHECK_STALE_AFTER: "1ms"
       AMENDMENT_TEXT_CHECK_PARALLELISM: "1"
       # Pub/Sub — publishes AmendmentTextAvailableEvent on the
       # `amendment-text-available` topic created by pubsub-init.sh. The
