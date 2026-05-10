@@ -112,6 +112,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
   private val emptySubscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
     def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.pure(List.empty)
     def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
+    def nack(ackId: String): IO[Unit]                   = IO.unit
   }
 
   private val stubEmbedder: CrossBillEmbedder[IO] = mock[CrossBillEmbedder[IO]]
@@ -259,6 +260,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         else List.empty
       }
       def acknowledge(ackIds: List[String]): IO[Unit] = IO.unit
+      def nack(ackId: String): IO[Unit]               = IO.unit
     }
 
     val processor = mock[BillTextProcessor[IO]]
@@ -267,6 +269,9 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         processor.processEvent(
           org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
           org.mockito.ArgumentMatchers.any[UUID],
+          org.mockito.ArgumentMatchers.anyString(),
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
         )
       )
       .thenReturn(IO.pure(ProcessingResult.Succeeded("118-HR-1")))
@@ -314,6 +319,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         }
       }
       def acknowledge(ackIds: List[String]): IO[Unit] = IO.unit
+      def nack(ackId: String): IO[Unit]               = IO.unit
     }
 
     val processor = mock[BillTextProcessor[IO]]
@@ -322,6 +328,9 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         processor.processEvent(
           org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
           org.mockito.ArgumentMatchers.any[UUID],
+          org.mockito.ArgumentMatchers.anyString(),
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
         )
       )
       .thenReturn(IO.pure(ProcessingResult.Succeeded("any")))
@@ -354,6 +363,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     val hangingSubscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
       def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.never
       def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
+      def nack(ackId: String): IO[Unit]                   = IO.unit
     }
 
     val timeoutConfig = testConfig.copy(
@@ -369,7 +379,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     warnedMessages.exists(_.contains("Pub/Sub pull timed out")) shouldBe true
   }
 
-  "processAndAck" should "acknowledge successfully processed events" in {
+  "processAndAck" should "pass an ack effect that calls subscriber.acknowledge for the message's ackId" in {
     val logger        = new StubPipelineLogger
     val ackedIds      = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
     val correlationId = UUID.randomUUID()
@@ -379,6 +389,7 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       def acknowledge(ackIds: List[String]): IO[Unit] = IO {
         val _ = ackedIds.updateAndGet(ids => ids ++ ackIds)
       }
+      def nack(ackId: String): IO[Unit] = IO.unit
     }
 
     val testEvent = BillTextAvailableEvent(
@@ -399,15 +410,22 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       source = "test",
     )
 
+    // Simulate the embedder firing the ack effect by having the processor mock invoke its `ack` parameter directly.
     val processor = mock[BillTextProcessor[IO]]
     org.mockito.Mockito
       .when(
         processor.processEvent(
           org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
           org.mockito.ArgumentMatchers.any[UUID],
+          org.mockito.ArgumentMatchers.anyString(),
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
         )
       )
-      .thenReturn(IO.pure(ProcessingResult.Succeeded("118-HR-1")))
+      .thenAnswer { invocation =>
+        val ack = invocation.getArgument[IO[Unit]](3)
+        ack *> IO.pure(ProcessingResult.Succeeded("118-HR-1"))
+      }
 
     val result = BillTextPipelinePipeline
       .processAndAck[IO](subscriber, processor, ReceivedEvent(pipelineEvent, "ack-42"), logger)
@@ -417,15 +435,16 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
     ackedIds.get() shouldBe List("ack-42")
   }
 
-  it should "not acknowledge failed processing results" in {
+  it should "pass a nack effect that calls subscriber.nack for the message's ackId" in {
     val logger        = new StubPipelineLogger
-    val ackedIds      = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
+    val nackedIds     = new java.util.concurrent.atomic.AtomicReference[List[String]](List.empty)
     val correlationId = UUID.randomUUID()
 
     val subscriber: PubSubEventSubscriber[IO] = new PubSubEventSubscriber[IO] {
       def pull(maxMessages: Int): IO[List[ReceivedEvent]] = IO.pure(List.empty)
-      def acknowledge(ackIds: List[String]): IO[Unit] = IO {
-        val _ = ackedIds.updateAndGet(ids => ids ++ ackIds)
+      def acknowledge(ackIds: List[String]): IO[Unit]     = IO.unit
+      def nack(ackId: String): IO[Unit] = IO {
+        val _ = nackedIds.updateAndGet(ids => ids :+ ackId)
       }
     }
 
@@ -453,16 +472,21 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         processor.processEvent(
           org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
           org.mockito.ArgumentMatchers.any[UUID],
+          org.mockito.ArgumentMatchers.anyString(),
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
         )
       )
-      .thenReturn(IO.pure(ProcessingResult.Failed("118-HR-1", "download error")))
+      .thenAnswer { invocation =>
+        val nack = invocation.getArgument[IO[Unit]](4)
+        nack *> IO.pure(ProcessingResult.Failed("118-HR-1", "embedder failed"))
+      }
 
-    val result = BillTextPipelinePipeline
+    val _ = BillTextPipelinePipeline
       .processAndAck[IO](subscriber, processor, ReceivedEvent(pipelineEvent, "ack-99"), logger)
       .unsafeRunSync()
 
-    val _ = result.isFailed shouldBe true
-    ackedIds.get() shouldBe empty
+    nackedIds.get() shouldBe List("ack-99")
   }
 
   it should "extract correlationId from the PipelineEvent envelope" in {
@@ -495,6 +519,9 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         processor.processEvent(
           org.mockito.ArgumentMatchers.any[BillTextAvailableEvent],
           org.mockito.ArgumentMatchers.any[UUID],
+          org.mockito.ArgumentMatchers.anyString(),
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
+          org.mockito.ArgumentMatchers.any[IO[Unit]],
         )
       )
       .thenAnswer { invocation =>

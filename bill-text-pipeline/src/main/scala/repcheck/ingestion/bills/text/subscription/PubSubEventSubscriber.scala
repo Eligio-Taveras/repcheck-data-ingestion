@@ -17,6 +17,12 @@ trait PubSubEventSubscriber[F[_]] {
   /** Acknowledge successfully processed messages so they are not redelivered. */
   def acknowledge(ackIds: List[String]): F[Unit]
 
+  /**
+   * Signal Pub/Sub to redeliver the message identified by `ackId` immediately, by setting its ack deadline to 0
+   * (`ModifyAckDeadline`). Bounded retries via the subscription's `max_delivery_attempts` + dead-letter topic.
+   */
+  def nack(ackId: String): F[Unit]
+
 }
 
 /** A deserialized event paired with the Pub/Sub ack ID needed to acknowledge it after processing. */

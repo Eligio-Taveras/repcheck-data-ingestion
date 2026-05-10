@@ -1,17 +1,18 @@
 package repcheck.ingestion.bills.text.embedding
 
-import cats.effect.{Async, Deferred, Ref, Resource}
+import java.time.Instant
+
+import cats.effect.{Async, Ref, Resource}
 import cats.syntax.all._
 
 import fs2.Stream
 
 import doobie._
 
-import repcheck.ingestion.bills.common.persistence.TransactionRunner
+import repcheck.ingestion.bills.common.persistence.{BillTextVersionRepository, TransactionRunner}
 import repcheck.ingestion.bills.text.persistence.RawBillTextRepository
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.ingestion.text.embedding.{EmbeddingContextLengthExceeded, EmbeddingGenerationFailed, EmbeddingService}
-import repcheck.pipeline.models.metadata.ProcessingResult
+import repcheck.ingestion.text.embedding.EmbeddingService
 import repcheck.shared.models.congress.dos.bill.RawBillTextDO
 
 /**
@@ -22,11 +23,33 @@ import repcheck.shared.models.congress.dos.bill.RawBillTextDO
 trait BillChunkEmbedder[F[_]] {
 
   /**
-   * Submit a bill's chunk stream for embedding + persistence. Returns when ALL chunks are processed (success) or any
-   * flush containing one of this bill's chunks fails (Failed). See [[CrossBillEmbedder.processChunks]] for the contract
-   * details.
+   * Submit a bill's chunk stream for embedding + persistence. Fire-and-forget: returns once the chunks have been
+   * enqueued and the residual buffer flushed, NOT once they've persisted. The embedder owns the rest of the lifecycle:
+   *
+   *   - chunk persistence (UPSERT into `raw_bill_text`)
+   *   - trim of any stale tail past this submission's chunk count
+   *   - `markFetched` on `bill_text_versions`
+   *   - invoking `ack` (success) or `nack` (failure) on the Pub/Sub message
+   *
+   * @param ctx
+   *   identifying info (dbBillId, versionId, naturalKey).
+   * @param chunkStream
+   *   the chunks to persist for this submission. May be empty (ack fires immediately).
+   * @param ackId
+   *   the Pub/Sub ack id of the message that produced this submission.
+   * @param ack
+   *   effect to invoke once every chunk this submission offered has been processed (success or recorded failure).
+   * @param nack
+   *   effect to invoke if any flush containing one of this submission's chunks fails (or the chunkStream itself
+   *   raises). Pub/Sub will redeliver; bounded retries via subscription `max_delivery_attempts` + dead-letter topic.
    */
-  def processChunks(ctx: BillEmbedCtx, chunkStream: Stream[F, String]): F[ProcessingResult]
+  def submit(
+    ctx: BillEmbedCtx,
+    chunkStream: Stream[F, String],
+    ackId: String,
+    ack: F[Unit],
+    nack: F[Unit],
+  ): F[Unit]
 
 }
 
@@ -34,52 +57,39 @@ trait BillChunkEmbedder[F[_]] {
  * Process-wide cross-bill embedding accumulator. Multiple [[repcheck.ingestion.bills.text.pipeline.BillTextProcessor]]
  * invocations (one per bill, running concurrently in the outer pipeline's `parEvalMap`) submit chunks here. Chunks
  * accumulate in a shared buffer until any producer's offer fills it to `batchSize`, at which point THAT PRODUCER
- * synchronously embeds + persists the entire buffer (mixed across bills) and resolves the affected bills' Deferreds.
+ * synchronously embeds + persists the entire buffer (mixed across bills) and ACKs / NACKs the affected Pub/Sub
+ * messages.
  *
  * ==Foreground-only design==
  *
  * There is NO background fiber. Every embedding + DB write happens on the producing fiber that triggered the flush
  * (either by filling the buffer to `batchSize` in [[offerChunk]], or by force-flushing the residual buffer in
- * [[finalizeSubmission]]). Errors propagate through that fiber's normal IO channel and surface in the bill's
- * `processChunks` result — no `.background` Outcome to swallow them, no Deferred orphaning if a worker fiber dies.
+ * [[finalizeSubmission]]). Errors propagate through that fiber's normal IO channel; producers that hit a failure on
+ * THEIR own flush observe the error in `submit`'s return effect and the embedder's per-ackId state machine has already
+ * invoked `nack` for the affected messages.
  *
- * The earlier background-fiber design hung in production: the worker fiber suspended in some async call without
- * raising, which meant the registered Deferreds never resolved, and `parEvalMap` slots stayed locked indefinitely.
- * Moving to a fully-foreground state machine eliminates that class of bug entirely.
+ * ==Per-ackId state — Option C (no version-date gate)==
  *
- * ==Per-bill completion contract==
+ *   - `AckProgress` per ackId: `(ack, nack, expected, submitted, written)`
+ *   - `submitted` drives ACK: when `expected.contains(submitted)`, the message has been fully processed (success or
+ *     recorded failure) and `ack` fires.
+ *   - `written` drives trim + markFetched: only when `written > 0` (the submission actually wrote rows) does the
+ *     embedder run `trimChunksPast(versionId, chunkCount)` then `markFetched(versionId, NOW())`.
+ *   - On flush failure (embed or UPSERT raised): every ackId in the batch is removed from state and `nack` fires for
+ *     each. Pub/Sub redelivers; the next attempt's UPSERT is idempotent (last-writer-wins on `(version_id,
+ *     chunk_index)`).
  *
- * `processChunks` returns an `F[ProcessingResult]` that resolves when ALL of THIS bill's chunks have been INSERTed
- * (success) OR when any flush containing one of this bill's chunks fails (Failed). The caller (BillTextProcessor)
- * awaits this result before marking the version fetched / publishing the ingested event / ACKing the Pub/Sub message.
+ * ==Why no version-date gate==
  *
- * ==Why cross-bill batching matters==
- *
- * Empirical observation in production: 82% of bills produce a single 12k-char chunk (resolutions, single-paragraph
- * orders), so the prior per-bill embedder was sending Ollama batches of 1 chunk. The GPU finished each call in
- * milliseconds and sat idle waiting for the next single-chunk batch — measured at 25% utilization with a 75% headroom.
- * Mixing chunks across bills inside one Ollama call lets the GPU process up to `batchSize` chunks per kernel launch
- * instead of 1, which closes the utilization gap.
- *
- * ==State transitions==
- *
- * Each in-flight bill is tracked in `state.bills: Map[Long, BillEmbedProgress[F]]` with:
- *   - `expected: Option[Int]` — set to `None` while the producer streams chunks; set to `Some(n)` by
- *     `finalizeSubmission` after the chunk stream terminates with `n` chunks observed.
- *   - `persisted: Int` — incremented atomically inside the buffer-flush transaction whenever a chunk for this bill is
- *     INSERTed.
- *   - When `expected.contains(persisted)`, the bill is complete. Its Deferred is resolved with `Succeeded` and it is
- *     removed from `state.bills`.
- *
- * On flush failure, every distinct bill in the failed batch is removed from state and its Deferred resolved with
- * `Failed`. Subsequent chunks for those bills are still in `state.buffer` (or arrive later) and would normally
- * increment `persisted`; the `applyBatchResult` step handles "bill no longer in state" as a no-op so leftover
- * post-failure flushes don't crash. Stale rows in `raw_bill_text` are cleaned up by the next pipeline tick's
- * `clearOrphanChunks` for the bill's `versionId`.
+ * `BillTextAvailableEvent` does not carry a `versionDate` field, and `bill_text_versions.version_date` is always
+ * written as `None` today. The amendments side runs a version-date-gated UPSERT to filter older redeliveries at the SQL
+ * layer; bills cannot, so it falls back to last-writer-wins. This is safe in practice because Congress.gov text for a
+ * given `(billId, versionCode)` is monotonic — re-emissions with the same version code rewrite identical data.
  */
 class CrossBillEmbedder[F[_]: Async] private[embedding] (
   embeddingService: EmbeddingService[F],
   rawBillTextRepository: RawBillTextRepository[ConnectionIO],
+  textVersionRepository: BillTextVersionRepository[ConnectionIO],
   xa: Transactor[F],
   logger: PipelineLogger[F],
   state: Ref[F, EmbedderState[F]],
@@ -88,54 +98,56 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
 
   private val StepName = "cross-bill-embedder"
 
-  /**
-   * Process a bill's chunks through the cross-bill embedding pipeline.
-   *
-   *   1. `register` reserves a Deferred for the bill in shared state. 2. The chunk stream is drained through
-   *      `offerChunk`, which atomically buffers each chunk; if a particular offer fills the buffer to `batchSize`, that
-   *      offer also performs the flush (embed + insertMany + per-bill progress updates + completion of any bills whose
-   *      chunks were entirely processed). 3. `finalizeSubmission` is called after the chunk stream terminates, with the
-   *      observed chunk count. It sets `expected` and force-flushes the residual buffer (if any) — this is what
-   *      guarantees the LAST bill's chunks get processed even if no further producer arrives to fill the buffer. 4.
-   *      `awaitResult` blocks until the bill's Deferred resolves.
-   *
-   * The Resource lifecycle ensures that if the caller's effect (e.g. the chunk stream) fails mid-submission, the bill
-   * is removed from shared state and its Deferred resolves to a Failed result; the caller's effect channel still gets
-   * the original failure.
-   */
-  override def processChunks(ctx: BillEmbedCtx, chunkStream: Stream[F, String]): F[ProcessingResult] =
-    Resource
-      .make(register(ctx))(_ => cleanupIfStillRegistered(ctx))
-      .use { awaitResult =>
-        for {
-          chunkCount <- chunkStream.zipWithIndex
-            .evalMap { case (text, idx) => offerChunk(ctx, idx.toInt, text) }
-            .compile
-            .count
-          _      <- finalizeSubmission(ctx, chunkCount.toInt)
-          result <- awaitResult
-        } yield result
-      }
+  override def submit(
+    ctx: BillEmbedCtx,
+    chunkStream: Stream[F, String],
+    ackId: String,
+    ack: F[Unit],
+    nack: F[Unit],
+  ): F[Unit] = {
+    val drainAndFinalize: F[Unit] =
+      for {
+        chunkCount <- chunkStream.zipWithIndex
+          .evalMap { case (text, idx) => offerChunk(ctx, idx.toInt, text, ackId) }
+          .compile
+          .count
+        _ <- finalizeSubmission(ackId, chunkCount.toInt)
+      } yield ()
 
-  private[embedding] def register(ctx: BillEmbedCtx): F[F[ProcessingResult]] =
-    Deferred[F, ProcessingResult].flatMap { deferred =>
-      val initial = BillEmbedProgress[F](
-        ctx = ctx,
-        expected = None,
-        persisted = 0,
-        deferred = deferred,
-      )
-      state.update(s => s.copy(bills = s.bills + (ctx.dbBillId -> initial))).as(deferred.get)
-    }
+    register(ctx, ackId, ack, nack) *>
+      drainAndFinalize.handleErrorWith { error =>
+        // The chunk stream itself raised (e.g., the upstream HTTP/extractor failed). Whatever's been offered for this
+        // ackId so far is in the buffer or already flushed; remove the ackId, NACK once, and let any later flushes
+        // that touch its leftover chunks treat them as no-ops (state.acks.get(ackId) will be empty).
+        cleanupOnSubmitError(ackId, error)
+      }
+  }
+
+  private[embedding] def register(
+    ctx: BillEmbedCtx,
+    ackId: String,
+    ack: F[Unit],
+    nack: F[Unit],
+  ): F[Unit] = {
+    val initial = AckProgress[F](
+      ackId = ackId,
+      ctx = ctx,
+      ack = ack,
+      nack = nack,
+      expected = None,
+      submitted = 0,
+      written = 0,
+    )
+    state.update(s => s.copy(acks = s.acks + (ackId -> initial)))
+  }
 
   /**
    * Atomically add a chunk to the shared buffer. If this offer brings the buffer to `batchSize`, the producer takes
-   * responsibility for flushing — embeds the batch, persists rows, updates per-bill progress, completes any newly
-   * completed bills' Deferreds. Other producers continue offering during the flush; they may trigger their own
-   * subsequent flushes on later offers.
+   * responsibility for flushing — embeds the batch, UPSERTs rows, updates per-ackId progress, runs trim + markFetched +
+   * ack for any ackIds whose chunks all got processed.
    */
-  private[embedding] def offerChunk(ctx: BillEmbedCtx, chunkIdx: Int, text: String): F[Unit] = {
-    val submission = ChunkSubmission(ctx, chunkIdx, text)
+  private[embedding] def offerChunk(ctx: BillEmbedCtx, chunkIdx: Int, text: String, ackId: String): F[Unit] = {
+    val submission = ChunkSubmission(ctx, chunkIdx, text, ackId)
     state
       .modify { s =>
         val newBuffer = s.buffer :+ submission
@@ -149,79 +161,44 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
   }
 
   /**
-   * Set `expected` for a bill (so it can complete once `persisted` catches up) AND atomically take the residual buffer
-   * for force-flushing. Two cases:
+   * Set `expected` for an ackId AND atomically take the residual buffer for force-flushing. Two cases:
    *
-   *   - If the bill's chunks are already all processed (persisted == count), the bill's Deferred is resolved
-   *     immediately with Succeeded and any residual buffer is ALSO flushed (other bills' chunks may need it).
-   *   - If the bill is not yet complete, the residual buffer is flushed (which may complete this bill or others), and
-   *     the bill awaits its Deferred until either this flush or a future producer's flush completes it.
-   *
-   * Empty-stream case (count = 0): the bill has expected = Some(0) and persisted = 0 → `shouldComplete` is true and the
-   * bill's Deferred resolves to Succeeded immediately.
+   *   - Empty stream (`count = 0`): the ackId has `expected = Some(0)` and `submitted = 0` → it's immediately ack-able.
+   *     We invoke `ack` and remove it from state. Trim + markFetched are SKIPPED because `written = 0`.
+   *   - Non-empty stream: residual buffer (which may contain this ackId's chunks AND chunks from other bills) is
+   *     flushed; whichever flush brings `submitted == expected` for this ackId triggers the ack + trim + markFetched.
    */
-  private[embedding] def finalizeSubmission(ctx: BillEmbedCtx, count: Int): F[Unit] =
+  private[embedding] def finalizeSubmission(ackId: String, count: Int): F[Unit] =
     state
       .modify { s =>
-        s.bills.get(ctx.dbBillId) match {
+        s.acks.get(ackId) match {
           case Some(progress) =>
             val updated = progress.copy(expected = Some(count))
             val flush   = s.buffer.toList
-            val newBills =
-              if (updated.shouldComplete) s.bills - ctx.dbBillId else s.bills.updated(ctx.dbBillId, updated)
-            val maybeDone = if (updated.shouldComplete) Some(updated) else None
-            (s.copy(buffer = Vector.empty, bills = newBills), (maybeDone, flush))
+            val maybeImmediate =
+              if (updated.shouldAck) Some(updated) else None
+            val newAcks =
+              if (updated.shouldAck) s.acks - ackId else s.acks.updated(ackId, updated)
+            (s.copy(buffer = Vector.empty, acks = newAcks), (maybeImmediate, flush))
           case None =>
-            // Bill was already removed (e.g. failed or aborted) — nothing to finalize.
+            // ackId already removed (e.g., a prior flush failed it). Nothing to finalize.
             (s, (None, List.empty[ChunkSubmission]))
         }
       }
       .flatMap {
-        case (maybeCompleted, residual) =>
-          maybeCompleted.traverse_ { progress =>
-            progress.deferred
-              .complete(ProcessingResult.Succeeded(progress.ctx.naturalKey, eventEmitted = false))
-              .void
-          } *> flushIfNonEmpty(residual)
+        case (maybeImmediate, residual) =>
+          completeAcks(maybeImmediate.toList) *> flushIfNonEmpty(residual)
       }
 
   /**
-   * Resource-release callback. If the bill is still in state (i.e. neither a flush completed it nor a flush failed it),
-   * removes it and resolves its Deferred to Failed. Used by [[processChunks]]'s Resource to guarantee no dangling state
-   * when the caller's chunk stream fails before [[finalizeSubmission]].
-   */
-  private[embedding] def cleanupIfStillRegistered(ctx: BillEmbedCtx): F[Unit] =
-    state
-      .modify { s =>
-        s.bills.get(ctx.dbBillId) match {
-          case Some(progress) =>
-            (s.copy(bills = s.bills - ctx.dbBillId), Some(progress))
-          case None => (s, None)
-        }
-      }
-      .flatMap {
-        case Some(progress) =>
-          progress.deferred
-            .complete(
-              ProcessingResult.Failed(
-                progress.ctx.naturalKey,
-                "Bill processing aborted before submission finalized",
-                "Systemic",
-              )
-            )
-            .void
-        case None => Async[F].unit
-      }
-
-  /**
-   * Embed + persist a batch in a single foreground step, then atomically update per-bill progress (incrementing
-   * `persisted` for each chunk's bill, completing any newly completed bills, removing them from state).
+   * Embed + persist a batch in a single foreground step, then atomically update per-ackId progress (incrementing
+   * `submitted` and `written` for each ackId, collecting any ackIds whose `submitted` now equals `expected`, removing
+   * them from state, and invoking trim + markFetched + ack for each).
    *
-   * Errors raised by either `embeddingService.generateEmbeddings` or `rawBillTextRepository.insertMany` propagate
-   * through `attempt`. On error: every distinct bill in the failed batch has its Deferred resolved with Failed and is
-   * removed from state. The error itself is NOT re-raised — the calling fiber (a producer) shouldn't fail just because
-   * some other bill's flush errored. The affected bills' processChunks calls observe the Failed result via their
-   * Deferreds.
+   * Errors raised by either `embeddingService.generateEmbeddings` or `rawBillTextRepository.upsertMany` propagate
+   * through `attempt`. On error: every distinct ackId in the failed batch is removed from state and NACKed. The error
+   * itself is NOT re-raised — the calling fiber (a producer) shouldn't fail just because some other ackId's flush
+   * errored. The affected ackIds' submissions observe the failure via the NACK→Pub/Sub-redelivery path.
    */
   private[embedding] def flushIfNonEmpty(batch: List[ChunkSubmission]): F[Unit] =
     if (batch.isEmpty) {
@@ -247,115 +224,183 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
                 )
             }
             TransactionRunner
-              .run(xa)(rawBillTextRepository.insertMany(rows))
+              .run(xa)(rawBillTextRepository.upsertMany(rows))
               .attempt
               .flatMap {
                 case Left(error) => failBatch(batch, error)
-                case Right(_)    => applyBatchResult(batch)
+                // affected rows ignored by attribution: on success the UPSERT is all-or-nothing (an idempotent
+                // INSERT-or-UPDATE per row), so per-ackId `written` matches per-ackId `submitted` for this batch.
+                case Right(_) => applyBatchSuccess(batch)
               }
         }
     }
 
   /**
-   * Atomically increment `persisted` for each bill represented in the batch and remove fully-completed bills from
-   * state. Returns the list of completed bill progresses so we can resolve their Deferreds (outside the Ref transaction
-   * since `Deferred.complete` should not run under a CAS retry loop).
+   * Atomically credit each ackId in the batch with its chunk count for both `submitted` and `written`, then remove any
+   * newly ack-able ackIds from state and run their trim + markFetched + ack outside the Ref transaction.
    */
-  private[embedding] def applyBatchResult(batch: List[ChunkSubmission]): F[Unit] = {
-    val perBillCounts: Map[Long, Int] = batch.groupMapReduce(_.ctx.dbBillId)(_ => 1)(_ + _)
+  private[embedding] def applyBatchSuccess(batch: List[ChunkSubmission]): F[Unit] = {
+    val perAckCounts: Map[String, Int] = batch.groupMapReduce(_.ackId)(_ => 1)(_ + _)
     state
       .modify { s =>
-        perBillCounts.foldLeft((s, List.empty[BillEmbedProgress[F]])) {
-          case ((acc, completed), (billId, count)) =>
-            acc.bills.get(billId) match {
+        perAckCounts.foldLeft((s, List.empty[AckProgress[F]])) {
+          case ((acc, completed), (ackId, count)) =>
+            acc.acks.get(ackId) match {
               case Some(progress) =>
-                val updated = progress.copy(persisted = progress.persisted + count)
-                if (updated.shouldComplete) {
-                  (acc.copy(bills = acc.bills - billId), updated :: completed)
+                val updated = progress.copy(
+                  submitted = progress.submitted + count,
+                  written = progress.written + count,
+                )
+                if (updated.shouldAck) {
+                  (acc.copy(acks = acc.acks - ackId), updated :: completed)
                 } else {
-                  (acc.copy(bills = acc.bills.updated(billId, updated)), completed)
+                  (acc.copy(acks = acc.acks.updated(ackId, updated)), completed)
                 }
               case None =>
-                // Bill was removed (e.g. by a prior failBatch). The chunks still got embedded + INSERTed; the
-                // orphan rows are cleaned up by the next pipeline tick's `clearOrphanChunks` for that versionId.
+                // ackId was already removed (e.g., by a prior failBatch). The chunks did write to the DB; their
+                // rows are reachable via the version_id and the next redelivery's UPSERT will overwrite them.
                 (acc, completed)
             }
         }
       }
-      .flatMap { completed =>
-        completed.traverse_ { progress =>
-          progress.deferred
-            .complete(ProcessingResult.Succeeded(progress.ctx.naturalKey, eventEmitted = false))
-            .void
-        }
-      }
+      .flatMap(completeAcks)
   }
 
   /**
-   * On batch-level error (embedding service raised, or DB raised): atomically remove every distinct bill in the batch
-   * from state and resolve their Deferreds with Failed. Logs the cause at ERROR. Errors from logging /
-   * Deferred.complete itself are not re-raised — the caller is one of many producers and we don't want to crash the
-   * producer that happened to be the flusher.
+   * For each completed ackId: if it wrote rows, trim any stale tail past its chunk count and markFetched on the version
+   * row; then invoke `ack` regardless. Errors in trim or markFetched switch the outcome to NACK for that ackId —
+   * Pub/Sub will redeliver, the UPSERT is idempotent, and the next attempt's trim + markFetched run again.
+   *
+   * Errors are isolated per-ackId so one bill's markFetched failure doesn't poison the others in the same batch.
+   */
+  private[embedding] def completeAcks(completed: List[AckProgress[F]]): F[Unit] =
+    completed.traverse_(completeAck)
+
+  private[embedding] def completeAck(progress: AckProgress[F]): F[Unit] = {
+    val logCtx = LogContext(
+      runId = progress.ackId,
+      stepName = StepName,
+      correlationId = None,
+      entityId = Some(progress.ctx.naturalKey),
+    )
+    if (progress.written > 0) {
+      runTrimAndMarkFetched(progress, logCtx).attempt.flatMap {
+        case Right(()) => safeAck(progress, logCtx)
+        case Left(error) =>
+          logger.error(
+            logCtx,
+            s"Trim/markFetched failed for ${progress.ctx.naturalKey} (versionId=${progress.ctx.versionId.toString}); NACKing: ${describeError(error)}",
+            Some(error),
+          ) *> progress.nack
+      }
+    } else {
+      safeAck(progress, logCtx)
+    }
+  }
+
+  /**
+   * Run the caller-supplied `ack` effect, isolating failures. If `ack` raises (e.g., the processor wrapped
+   * `publishIngestedEvent *> subscriber.acknowledge(ackId)` and publish failed), we log + invoke `nack` so Pub/Sub
+   * redelivers; the next attempt will re-run trim + markFetched + the user's `ack` (idempotent at every step).
+   */
+  private[embedding] def safeAck(progress: AckProgress[F], logCtx: LogContext): F[Unit] =
+    progress.ack.attempt.flatMap {
+      case Right(()) => Async[F].unit
+      case Left(error) =>
+        logger.error(
+          logCtx,
+          s"ack callback raised for ${progress.ctx.naturalKey}; NACKing instead: ${describeError(error)}",
+          Some(error),
+        ) *> progress.nack
+    }
+
+  private[embedding] def runTrimAndMarkFetched(progress: AckProgress[F], logCtx: LogContext): F[Unit] =
+    Async[F].delay(Instant.now()).flatMap { now =>
+      val cio = rawBillTextRepository.trimChunksPast(progress.ctx.versionId, progress.submitted) *>
+        textVersionRepository.markFetched(progress.ctx.versionId, now)
+      logger.debug(
+        logCtx,
+        s"Completing ${progress.ctx.naturalKey} versionId=${progress.ctx.versionId.toString}: trim past ${progress.submitted.toString} + markFetched",
+      ) *> TransactionRunner.run(xa)(cio).void
+    }
+
+  /**
+   * On batch-level error (embedding service raised, or DB raised): atomically remove every distinct ackId in the batch
+   * from state and invoke `nack` on each. Logs the cause at ERROR. Errors from logging / nack itself are not re-raised
+   * — the caller is one of many producers and we don't want to crash the producer that happened to be the flusher.
    */
   private[embedding] def failBatch(batch: List[ChunkSubmission], error: Throwable): F[Unit] = {
-    val billsInBatch = batch.map(_.ctx).distinctBy(_.dbBillId)
+    val ackIdsInBatch = batch.map(_.ackId).distinct
     val logCtx = LogContext(
       runId = "<batch>",
       stepName = StepName,
       correlationId = None,
-      entityId = Some(s"${billsInBatch.size}-bills"),
+      entityId = Some(s"${ackIdsInBatch.size.toString}-acks"),
     )
-    val errorMessage = Option(error.getMessage).getOrElse(error.getClass.getSimpleName)
+    val errorMessage = describeError(error)
     logger.error(
       logCtx,
-      s"Embed/INSERT batch failed for ${billsInBatch.size} bill(s); failing each: $errorMessage",
+      s"Embed/UPSERT batch failed for ${ackIdsInBatch.size.toString} ackId(s); NACKing each: $errorMessage",
       Some(error),
     ) *>
       state
         .modify { s =>
-          billsInBatch.foldLeft((s, List.empty[BillEmbedProgress[F]])) {
-            case ((acc, removed), ctx) =>
-              acc.bills.get(ctx.dbBillId) match {
-                case Some(progress) => (acc.copy(bills = acc.bills - ctx.dbBillId), progress :: removed)
+          ackIdsInBatch.foldLeft((s, List.empty[AckProgress[F]])) {
+            case ((acc, removed), ackId) =>
+              acc.acks.get(ackId) match {
+                case Some(progress) => (acc.copy(acks = acc.acks - ackId), progress :: removed)
                 case None           => (acc, removed)
               }
           }
         }
-        .flatMap { removed =>
-          removed.traverse_ { progress =>
-            progress.deferred
-              .complete(
-                ProcessingResult.Failed(progress.ctx.naturalKey, errorMessage, classifyBatchError(error))
-              )
-              .void
-          }
-        }
+        .flatMap(_.traverse_(_.nack))
   }
 
   /**
-   * Classify a batch-level error. Mirrors [[repcheck.ingestion.bills.text.pipeline.BillTextProcessor.classifyError]]
-   * but scoped to the failure modes the embedder can raise — embedding-service errors and DB errors.
+   * Submit-time error path: the producer's chunk stream raised. Whatever was offered for this ackId is either still in
+   * the buffer (and a later flush will see `state.acks.get(ackId) = None` and treat it as a no-op) or already flushed.
+   * Remove the ackId from state, NACK once, log.
    */
-  private[embedding] def classifyBatchError(error: Throwable): String =
-    error match {
-      case _: EmbeddingContextLengthExceeded  => "Systemic"
-      case _: EmbeddingGenerationFailed       => "Transient"
-      case _: java.net.SocketTimeoutException => "Transient"
-      case _: java.net.ConnectException       => "Transient"
-      case _: java.io.IOException             => "Transient"
-      case _: java.sql.SQLTransientException  => "Transient"
-      case _                                  => "Systemic"
-    }
+  private[embedding] def cleanupOnSubmitError(ackId: String, error: Throwable): F[Unit] = {
+    val logCtx = LogContext(
+      runId = ackId,
+      stepName = StepName,
+      correlationId = None,
+      entityId = None,
+    )
+    state
+      .modify { s =>
+        s.acks.get(ackId) match {
+          case Some(progress) => (s.copy(acks = s.acks - ackId), Some(progress))
+          case None           => (s, None)
+        }
+      }
+      .flatMap {
+        case Some(progress) =>
+          logger.error(
+            logCtx,
+            s"submit() chunk stream failed for ${progress.ctx.naturalKey}; NACKing: ${describeError(error)}",
+            Some(error),
+          ) *> progress.nack
+        case None =>
+          logger.warn(
+            logCtx,
+            s"submit() chunk stream failed but ackId $ackId already removed (NACK already fired): ${describeError(error)}",
+          )
+      }
+  }
+
+  private[embedding] def describeError(error: Throwable): String =
+    Option(error.getMessage).getOrElse(error.getClass.getSimpleName)
 
 }
 
 object CrossBillEmbedder {
 
   /**
-   * Allocate a [[CrossBillEmbedder]]. Unlike the previous background-fiber design, this Resource holds no fibers — the
-   * only persistent state is a `Ref` for the shared buffer + per-bill progress map. Resource release is effectively a
-   * no-op; any in-flight bills' processChunks calls own their own Deferreds and will resolve them (or surface a Failed
-   * via `cleanupIfStillRegistered` if their stream fails).
+   * Allocate a [[CrossBillEmbedder]]. Resource holds no fibers — the only persistent state is a `Ref` for the shared
+   * buffer + per-ackId progress map. Resource release is a no-op; in-flight ackIds will surface via NACK if their
+   * submit fails, or already ACKed before release if they succeeded.
    *
    * @param batchSize
    *   the buffer threshold that triggers a producer-driven flush. Match this to `OLLAMA_EMBED_BATCH_SIZE` so flushes
@@ -364,12 +409,21 @@ object CrossBillEmbedder {
   def resource[F[_]: Async](
     embeddingService: EmbeddingService[F],
     rawBillTextRepository: RawBillTextRepository[ConnectionIO],
+    textVersionRepository: BillTextVersionRepository[ConnectionIO],
     xa: Transactor[F],
     logger: PipelineLogger[F],
     batchSize: Int,
   ): Resource[F, CrossBillEmbedder[F]] =
     Resource.eval(Ref.of[F, EmbedderState[F]](EmbedderState.empty[F])).map { state =>
-      new CrossBillEmbedder[F](embeddingService, rawBillTextRepository, xa, logger, state, batchSize)
+      new CrossBillEmbedder[F](
+        embeddingService,
+        rawBillTextRepository,
+        textVersionRepository,
+        xa,
+        logger,
+        state,
+        batchSize,
+      )
     }
 
 }

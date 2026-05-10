@@ -9,7 +9,14 @@ import cats.effect.unsafe.implicits.global
 import com.google.api.gax.rpc.UnaryCallable
 import com.google.cloud.pubsub.v1.stub.SubscriberStub
 import com.google.protobuf.ByteString
-import com.google.pubsub.v1.{AcknowledgeRequest, PubsubMessage, PullRequest, PullResponse, ReceivedMessage}
+import com.google.pubsub.v1.{
+  AcknowledgeRequest,
+  ModifyAckDeadlineRequest,
+  PubsubMessage,
+  PullRequest,
+  PullResponse,
+  ReceivedMessage,
+}
 
 import org.mockito.ArgumentMatchers.any
 import org.mockito.Mockito.{never, verify, when}
@@ -297,6 +304,27 @@ class GooglePubSubEventSubscriberSpec extends AnyFlatSpec with Matchers with Moc
     noException should be thrownBy {
       subscriber.acknowledge(List("single-ack")).unsafeRunSync()
     }
+  }
+
+  // --- nack() tests ---
+
+  "nack" should "call modifyAckDeadlineCallable with deadline = 0 for the supplied ack id" in {
+    val logger       = new StubPipelineLogger
+    val stubMock     = mock[SubscriberStub]
+    val nackCallable = mock[UnaryCallable[ModifyAckDeadlineRequest, com.google.protobuf.Empty]]
+
+    when(stubMock.modifyAckDeadlineCallable()).thenReturn(nackCallable)
+    when(nackCallable.call(any[ModifyAckDeadlineRequest]())).thenReturn(com.google.protobuf.Empty.getDefaultInstance)
+
+    val subscriber = makeStubSubscriber(logger, stubMock)
+    subscriber.nack("ack-99").unsafeRunSync()
+
+    val captor = org.mockito.ArgumentCaptor.forClass(classOf[ModifyAckDeadlineRequest])
+    verify(nackCallable).call(captor.capture())
+    val captured = captor.getValue
+    val _        = captured.getAckIdsList.size shouldBe 1
+    val _        = captured.getAckIds(0) shouldBe "ack-99"
+    captured.getAckDeadlineSeconds shouldBe 0
   }
 
   // --- PubSubSubscriberResource tests ---

@@ -3,56 +3,34 @@ package repcheck.ingestion.bills.text.persistence
 import repcheck.shared.models.congress.dos.bill.RawBillTextDO
 
 /**
- * Persistence boundary for `raw_bill_text` (db-migrations 026). One row per chunk of a bill version's text. Rows are
- * idempotently re-written: `replaceAll(versionId, chunks)` deletes any prior chunks for that version and inserts the
- * new list inside a single transaction so re-processing doesn't leave a half-written intermediate state visible.
+ * Persistence boundary for `raw_bill_text` (db-migrations 026). One row per chunk of a bill version's text.
  *
- * The associated [[RawBillTextDO]] from shared-models 0.1.34+ models a row directly. `chunkIndex` is zero-based and
- * preserves document order — `ORDER BY chunk_index` reconstructs the original input verbatim.
+ * Post-Option-C-refactor: writes are idempotent UPSERTs keyed on `(version_id, chunk_index)`. The previous `replaceAll`
+ * / `deleteByVersionId` / `insertOne` / `insertMany` methods are gone — the new
+ * [[repcheck.ingestion.bills.text.embedding.CrossBillEmbedder]] writes via [[upsertMany]] (last-writer-wins on the
+ * conflict key) and prunes any leftover stale tail via [[trimChunksPast]] after each successful batch.
+ *
+ * Bills uses a plain UPSERT (no version-date gate) because `BillTextAvailableEvent` does not carry a `versionDate`
+ * field and `bill_text_versions.version_date` is currently always written as `None`. See the corresponding
+ * amendments-side repository for the gated variant.
  */
 trait RawBillTextRepository[F[_]] {
 
   /**
-   * Idempotent re-write of all chunks for a given bill text version. Implementations should:
-   *   1. `DELETE FROM raw_bill_text WHERE version_id = $versionId`; 2. batch-insert the supplied chunks; both inside
-   *      the same transaction so observers never see a partial chunk list. Empty `chunks` is allowed — it's a "delete
-   *      all chunks for this version" call (used for fixture cleanup + tests).
-   */
-  def replaceAll(versionId: Long, chunks: List[RawBillTextDO]): F[Unit]
-
-  /**
-   * Delete all chunks for the supplied bill text version. Used by the streaming-INSERT flow to clear partial chunks
-   * left by a previous failed run before re-streaming from scratch. Idempotent: a missing row count is fine.
-   */
-  def deleteByVersionId(versionId: Long): F[Unit]
-
-  /**
-   * INSERT exactly one chunk row. Composes with the streaming-INSERT flow in
-   * [[repcheck.ingestion.bills.text.pipeline.BillTextProcessor]] which iterates the chunk list, embeds each, and
-   * inserts one row per chunk in its own auto-committing transaction so peak heap stays bounded by one chunk's size +
-   * its vector(1024) (~16 KB) instead of holding all chunks + all embeddings in heap before a bulk insert.
+   * Idempotent batch UPSERT keyed on `(version_id, chunk_index)`. INSERTs new rows; on conflict, overwrites `content` +
+   * `embedding` with the new values (last-writer-wins). Returns the number of rows affected (each row counts as 1
+   * whether it INSERTed or UPDATEd) so the embedder can populate its per-ackId `written` counter.
    *
-   * Caller must have already cleared any orphan chunks for this `version_id` (see [[deleteByVersionId]]) — the unique
-   * constraint `(version_id, chunk_index) WHERE version_id IS NOT NULL` would otherwise reject a duplicate
-   * `chunk_index` left over from a prior partial run.
+   * Empty `rows` short-circuits to `0` without touching the DB.
    */
-  def insertOne(chunk: RawBillTextDO): F[Unit]
+  def upsertMany(rows: List[RawBillTextDO]): F[Int]
 
   /**
-   * INSERT a batch of chunk rows in a single transaction. Unlike [[replaceAll]] this does NOT delete-then-insert;
-   * unlike [[insertOne]] it batches multiple rows into one round-trip. Designed for the cross-bill embedding pipeline
-   * where a single batch of 50 chunks may span multiple `version_id`s — `replaceAll` can't be used because its DELETE
-   * would clobber chunks of OTHER versions, and `insertOne` is too chatty (50 round-trips per batch).
-   *
-   * Behavior:
-   *   - Empty `rows` list short-circuits to no-op.
-   *   - Same `(version_id, chunk_index)` uniqueness constraint applies; caller is responsible for `clearOrphanChunks`
-   *     having run before chunks are submitted.
-   *   - Rows can have heterogeneous `bill_id` / `version_id` — they're INSERTed in whatever order the underlying
-   *     `Update.updateMany` produces. PostgreSQL doesn't care, and the `ORDER BY chunk_index` query path reconstructs
-   *     document order on read.
+   * Delete any chunks whose `chunk_index >= chunkCount` for the given `versionId`. Run after a successful UPSERT batch
+   * to prune leftover chunks from a prior run that produced more chunks than the current submission. Idempotent — a
+   * no-op when no stale tail exists. Returns the number of rows deleted.
    */
-  def insertMany(rows: List[RawBillTextDO]): F[Unit]
+  def trimChunksPast(versionId: Long, chunkCount: Int): F[Int]
 
   /**
    * Fetch every chunk attached to the supplied bill version, ordered by `chunk_index` so callers can `mkString` to
@@ -60,9 +38,7 @@ trait RawBillTextRepository[F[_]] {
    */
   def findByVersionId(versionId: Long): F[List[RawBillTextDO]]
 
-  /**
-   * Total chunk count attached to a bill version. Lighter than `findByVersionId` for status / summary use.
-   */
+  /** Total chunk count attached to a bill version. Lighter than `findByVersionId` for status / summary use. */
   def countByVersionId(versionId: Long): F[Long]
 
 }
