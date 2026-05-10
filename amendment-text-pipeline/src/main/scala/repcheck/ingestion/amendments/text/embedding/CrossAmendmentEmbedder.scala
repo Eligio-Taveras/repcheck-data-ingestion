@@ -22,26 +22,34 @@ import repcheck.ingestion.text.embedding.EmbeddingService
  * Boundary between the per-amendment processor and the embedding strategy. The trait exists so unit tests of the
  * processor don't need to construct the full state machine. Mirror of the bill-side `BillChunkEmbedder`.
  *
- * ==Submit-and-return contract==
+ * ==Synchronous, foreground-only contract==
  *
- * Unlike the previous `processChunks: F[ProcessingResult]` shape, [[submit]] is fire-and-forget. The producer (the
- * processor) hands the embedder the chunk stream + the Pub/Sub ack/nack effects and returns immediately. The embedder
- * owns the rest: chunk buffering, embed + UPSERT, trim past the new submission's tail, mark the version fetched, and
- * finally invoke `ack`. On any known failure the embedder invokes `nack` so Pub/Sub redelivers (bounded by the
- * subscription's `max_delivery_attempts` + dead-letter topic).
+ * [[submit]] is a synchronous effect that drives one Pub/Sub message's chunk stream end-to-end on the producing fiber
+ * (the per-event `parEvalMap` slot in the outer pipeline). It registers the ackId, runs the chunk stream while
+ * accumulating chunks in a process-wide cross-ackId buffer, force-flushes the residual at end-of-stream, and runs the
+ * completion path (trim + markFetched + ack/nack) for any ackIds whose `submitted == expected` is reached during this
+ * call's flushes. ACK / NACK callbacks may fire WITHIN this `submit` call OR within a concurrent producer's `submit`
+ * call when that producer's flush brings this ackId's submission to completion — the cooperation is what amortizes
+ * embedding/UPSERT batches across messages.
+ *
+ * On any known failure the embedder invokes `nack` so Pub/Sub redelivers (bounded by the subscription's
+ * `max_delivery_attempts` + dead-letter topic). The `submit` effect re-raises producer-stream errors so the calling
+ * `parEvalMap` slot still observes the failure for correlation/logging.
  */
 trait AmendmentChunkEmbedder[F[_]] {
 
   /**
-   * Submit an amendment's chunk stream for embedding + persistence. Returns when chunks are enqueued and the residual
-   * flush is driven; the actual ACK fires asynchronously when the last of this `ackId`'s chunks lands. Mirror of
-   * `CrossBillEmbedder.submit`.
+   * Submit an amendment's chunk stream for embedding + persistence. Returns when this submission's chunks have been
+   * processed by some flush (success or recorded NACK) — synchronously inline, not via a background fiber. ACK or NACK
+   * for this ackId may fire during THIS call's flushes or during a sibling producer's flush, depending on which
+   * producer's offer brings the buffer to `batchSize`. Mirror of `CrossBillEmbedder.submit`.
    *
    * @param ctx
    *   amendment surrogate ids + natural key for log / error attribution.
    * @param chunkStream
    *   the per-amendment chunk producer (extractor → chunker output). Each emitted `String` becomes one chunk
-   *   submission. An empty stream is valid and triggers an immediate ACK with `written = 0`.
+   *   submission. An empty stream is valid and still completes the version row (trim + markFetched with `text_length =
+   *   0`) before ACKing.
    * @param ackId
    *   the Pub/Sub ack identifier for the originating `amendment.text.available` message. ACK / NACK both reference it.
    * @param ack
@@ -75,17 +83,16 @@ trait AmendmentChunkEmbedder[F[_]] {
  *
  * ==Per-ackId completion==
  *
- * Two counters track each ackId's progress:
+ * One counter tracks each ackId's progress: `submitted`, the count of chunks for this ackId that have been embedded +
+ * persisted in a successful batch (incremented in `applyBatchResult`, never at offer time). When `submitted ==
+ * expected.get`, the ackId is removed from state atomically and the completion path runs: `trimChunksPast(versionId,
+ * submitted)` (also handles empty-stream by trimming to 0), then `markFetched(versionId, NOW(), totalChars)`, then
+ * `safeAck` (falls back to NACK on raise so a sibling ackId's downstream failure can't strand unrelated ackIds in the
+ * same flush batch).
  *
- *   - `submitted` — chunks for this ackId that have been embedded + persisted in a successful batch (incremented in
- *     `applyBatchResult`, never at offer time). ACK fires when `submitted == expected.get`.
- *   - `written` — of those, the affected-row count from `upsertMany`. Drives trim + markFetched: only run when `written
- *     > 0` so a no-op or failed-then-cleared submission doesn't falsely mark the version fetched.
- *
- * Under last-writer-wins UPSERT, on the happy path every offered chunk lands so `written == submitted` and both
- * triggers fire. On embed/UPSERT failure, `failBatch` removes the affected ackIds AND purges their buffered chunks from
- * the shared buffer, then NACKs each. On stream error or fiber cancellation, `submit`'s `guaranteeCase` finalizer
- * routes through `failAck` for the same cleanup + NACK.
+ * On embed/UPSERT failure, `failBatch` removes the affected ackIds AND purges their buffered chunks from the shared
+ * buffer, then NACKs each. On stream error or fiber cancellation, `submit`'s `guaranteeCase` finalizer routes through
+ * `failAck` for the same cleanup + NACK.
  *
  * ==Why cross-amendment batching matters==
  *
@@ -145,7 +152,6 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
       nack = nack,
       expected = None,
       submitted = 0,
-      written = 0,
     )
     state.update(s => s.copy(acks = s.acks + (ackId -> initial)))
   }
@@ -185,8 +191,10 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
    * runs, re-check whether this ackId completed (its chunks may already have been persisted by an earlier batch-size
    * flush before finalize was called).
    *
-   * Empty-stream (`count == 0`): `expected = Some(0)`, `submitted = 0` → `shouldComplete` true → ACK fires immediately
-   * without trim/markFetched (`written == 0`).
+   * Empty-stream (`count == 0`): `expected = Some(0)`, `submitted = 0` → `shouldComplete` true → completion still runs
+   * `trimChunksPast(versionId, 0)` (LWW-consistent — wipes any prior chunks, the latest submission decided "no text")
+   * and `markFetched(versionId, NOW(), 0)` so the version row reflects "processed, no text" rather than perpetually
+   * incomplete.
    */
   private[embedding] def finalizeSubmission(ackId: String, count: Int): F[Unit] =
     state
@@ -254,42 +262,30 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
               .attempt
               .flatMap {
                 case Left(error) => failBatch(batch, error)
-                // applyBatchResult uses FULL batch for per-ackId attribution. We pass `batch.size` rather than the
-                // deduped repo return value because every offered chunk's ackId should be credited — the dedup
-                // collapses identical writes for unrelated ackIds covering the same (versionId, chunkIndex), but
-                // both ackIds' submissions are conceptually "written" since the data they wrote is in the DB.
-                case Right(_) => applyBatchResult(batch, batch.size)
+                // Attribution uses the FULL batch (not `deduped`): both ackIds in a concurrent-redelivery scenario
+                // get credit for their offered chunks because the persisted data is identical (same source bytes →
+                // same chunks for a deterministic chunker). The dedup only collapses the SQL statement, not the
+                // per-ackId accounting.
+                case Right(_) => applyBatchResult(batch)
               }
         }
     }
 
   /**
-   * Atomically increment `submitted` and `written` for each ackId in the batch, then fire `completeAckIfReady` for
-   * each. Under last-writer-wins UPSERT every offered row lands (INSERT or UPDATE) so on the happy path `writtenRows ==
-   * batch.size` and each ackId's `written` increments by its full submitted count. A partial-write outcome
-   * (`writtenRows < batch.size`) shouldn't happen — `upsertMany` either succeeds for the whole batch or raises (caught
-   * upstream in [[flushIfNonEmpty]]'s `Left(error)` branch). If it ever does, we conservatively attribute zero
-   * `written` to all ackIds so the trim/markFetched gate stays closed; ACK still fires because `submitted` is
-   * independent.
+   * Atomically credit each ackId in the batch with its chunk count toward `submitted`, then fire `completeAckIfReady`
+   * for each. Under last-writer-wins UPSERT (and the `failBatch` short-circuit on error) every flushed batch is
+   * all-or-nothing for attribution: if we reach this method the entire batch's data is in the DB, so each ackId's
+   * `submitted` advances by its offered-chunk count for this batch.
    */
-  private[embedding] def applyBatchResult(batch: List[AmendmentChunkSubmission], writtenRows: Int): F[Unit] = {
+  private[embedding] def applyBatchResult(batch: List[AmendmentChunkSubmission]): F[Unit] = {
     val perAckCounts: Map[String, Int] = batch.groupMapReduce(_.ackId)(_ => 1)(_ + _)
-    val fullyWritten: Boolean          = writtenRows >= batch.size
-
     state
       .modify { s =>
         val updatedAcks = perAckCounts.foldLeft(s.acks) {
           case (acks, (ackId, submittedDelta)) =>
             acks.get(ackId) match {
               case Some(progress) =>
-                val writtenDelta = if (fullyWritten) submittedDelta else 0
-                acks.updated(
-                  ackId,
-                  progress.copy(
-                    submitted = progress.submitted + submittedDelta,
-                    written = progress.written + writtenDelta,
-                  ),
-                )
+                acks.updated(ackId, progress.copy(submitted = progress.submitted + submittedDelta))
               case None => acks
             }
         }
@@ -299,9 +295,9 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
   }
 
   /**
-   * If this ackId has finalized AND `submitted == expected`, run completion: trim past the new tail + markFetched
-   * (always, regardless of `written` — empty submissions still record the fact that we processed the version with
-   * `text_length = 0`), then invoke `ack`. Idempotent: a second call after completion is a no-op.
+   * If this ackId has finalized AND `submitted == expected`, run completion: trim past the new tail, then markFetched
+   * on the version row, then invoke `ack`. Idempotent: a second call after completion is a no-op (the ackId is removed
+   * from `acks` atomically with the trigger).
    *
    * Empty-stream completion behavior: `submitted = 0` → `trimChunksPast(versionId, 0)` wipes any prior chunks for that
    * versionId (LWW-consistent: the latest submission decided "no text"), and `markFetched(versionId, NOW(), 0)` records

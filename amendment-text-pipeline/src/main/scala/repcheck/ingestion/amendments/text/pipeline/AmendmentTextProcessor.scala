@@ -38,8 +38,11 @@ import repcheck.shared.models.congress.dos.amendment.AmendmentTextVersionDO
  *      `Skipped("already-ingested")` and ACK the message immediately.
  *   1. **Hand off to the embedder via [[AmendmentChunkEmbedder.submit]]** with the chunk stream + Pub/Sub ack/nack
  *      effects. The embedder owns chunk persistence, post-batch trim of the stale tail, `markFetched`, and the eventual
- *      ACK / NACK. The processor returns immediately as `ProcessingResult.Succeeded` once the submission is enqueued —
- *      the actual ACK fires asynchronously when the embedder drains this submission's chunks.
+ *      ACK / NACK. `submit` runs synchronously on this fiber: it drives the chunk stream, force-flushes the residual at
+ *      end-of-stream, and may invoke ACK / NACK before returning (or, for a sibling concurrent producer's flush that
+ *      happens to bring this ackId's `submitted == expected`, the ACK fires from THAT producer's fiber mid-flush).
+ *      Returns `ProcessingResult.Succeeded` once `submit` completes — the result is a stats signal for the pipeline
+ *      executor; the message-level ACK has typically already fired by then.
  *
  * ==Idempotency at the chunk layer==
  *
@@ -67,9 +70,11 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
   /**
    * Process one event. Returns:
    *   - `Skipped` when the version row is already complete (ack delegated immediately to caller).
-   *   - `Succeeded` once the chunk stream has been handed off to the embedder. The actual Pub/Sub ACK / NACK fires
-   *     later when the embedder drains this ackId's chunks; the result here is purely a stats signal for the
-   *     pipeline-executor's counters.
+   *   - `Succeeded` once the chunk stream has been processed by the embedder. `embedder.submit` runs synchronously on
+   *     this fiber, including any flushes triggered by `batchSize` or by the residual force-flush at end-of-stream; the
+   *     per-ackId ACK / NACK has typically fired by the time `submit` returns. (It can also fire from a sibling
+   *     concurrent producer's `submit` if THAT producer is the one whose flush brings this ackId's `submitted ==
+   *     expected`.) The `Succeeded` result here is a stats signal for the pipeline-executor's counters.
    *   - `Failed` when the version-row UPSERT raises (caller invokes `nack` directly), or when `submit` itself raises
    *     (the embedder already invoked `nack` internally before re-raising).
    */

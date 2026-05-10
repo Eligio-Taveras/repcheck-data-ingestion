@@ -13,8 +13,8 @@ final case class AmendmentEmbedCtx(
 
 /**
  * A single chunk submission flowing through the cross-amendment embedder's queue. `ackId` is carried so that the
- * flush-and-write path can attribute written rows back to the originating Pub/Sub message (multiple `ackId`s may
- * coexist in one batch when amendments interleave in the shared buffer).
+ * flush-and-write path can credit the originating Pub/Sub message's `submitted` counter (multiple `ackId`s may coexist
+ * in one batch when amendments interleave in the shared buffer).
  */
 final case class AmendmentChunkSubmission(
   ctx: AmendmentEmbedCtx,
@@ -26,25 +26,27 @@ final case class AmendmentChunkSubmission(
 /**
  * In-flight per-`ackId` state for one Pub/Sub message being processed by the cross-amendment embedder.
  *
- * Two counters separate the ACK trigger from the side-effect trigger:
+ * The ACK / NACK trigger is the relationship between `submitted` and `expected`:
  *
  *   - `submitted` — count of chunks for this ackId that have been embedded + persisted in a successful flush.
- *     Incremented in `applyBatchResult` AFTER the embed + UPSERT succeeds, never at offer time. Drives ACK: when
- *     `submitted == expected`, every offered chunk has landed in the DB and the Pub/Sub ack fires.
- *   - `written` — of those, how many actually wrote rows (affected-row attribution from `upsertMany`). Drives trim +
- *     markFetched: only run them when `written > 0` so a no-op submission (e.g. one whose batch errored before reaching
- *     DB) doesn't falsely advance the version row.
+ *     Incremented in `applyBatchResult` AFTER the embed + UPSERT succeeds, never at offer time. When `submitted ==
+ *     expected`, every offered chunk has landed in the DB and the per-ackId completion fires: `trimChunksPast` +
+ *     `markFetched` + `ack`.
  *
  * Failure handling: on a flush failure (embed error or UPSERT error) the ackId is removed from `acks` via `failBatch`
- * and any of its buffered chunks are purged from the shared buffer, so the completion check never fires. The producer's
- * `submit` separately handles stream errors via `failAck`, and cancellation via `guaranteeCase`. In all failure paths
- * NACK fires once and Pub/Sub redelivers (bounded by the subscription's `max_delivery_attempts` + dead-letter topic).
+ * and any of its buffered chunks are purged from the shared buffer, so the completion check never fires for it. The
+ * producer's `submit` separately handles stream errors via `failAck`, and cancellation via `guaranteeCase`. In all
+ * failure paths NACK fires once and Pub/Sub redelivers (bounded by the subscription's `max_delivery_attempts` +
+ * dead-letter topic).
  *
- * On the happy path under last-writer-wins UPSERT, every offered chunk lands (INSERT or UPDATE) so `written ==
- * submitted` and both triggers fire.
+ * Empty-stream submissions (`expected = Some(0)`) still complete the version row: `trimChunksPast(versionId, 0)` wipes
+ * any prior chunks (LWW-consistent — the latest submission decided "no text") and `markFetched(versionId, NOW(), 0)`
+ * flips `fetched_at` so the row reflects "processed, no text".
  *
  * @param ack
- *   Pub/Sub acknowledge effect — invoked once when `submitted == expected`.
+ *   Pub/Sub acknowledge effect — invoked once when `submitted == expected` and trim + markFetched succeed. Wrapped in
+ *   `safeAck` so a raised ack (e.g. a publishEvent failure on the bills side; harmless on amendments which doesn't
+ *   publish) falls back to NACK without short-circuiting sibling ackIds in the same flush batch.
  * @param nack
  *   Pub/Sub explicit-redeliver effect — invoked on known failures (UPSERT error, embed error, trim error, markFetched
  *   error, producer stream error, producer cancellation).
@@ -52,8 +54,7 @@ final case class AmendmentChunkSubmission(
  *   None until the producer's `submit` finalizes; `Some(n)` after — `n` is the chunk count the stream produced.
  * @param submitted
  *   count of chunks for this ackId successfully embedded + persisted (incremented after a successful UPSERT batch).
- * @param written
- *   of those, the affected-row count from `upsertMany`. Drives trim + markFetched gating.
+ *   Drives the completion check `expected == Some(submitted)`.
  */
 final private[embedding] case class AmendmentAckProgress[F[_]](
   ackId: String,
@@ -62,7 +63,6 @@ final private[embedding] case class AmendmentAckProgress[F[_]](
   nack: F[Unit],
   expected: Option[Int],
   submitted: Int,
-  written: Int,
 ) {
 
   /** True iff the producer finalized AND every offered chunk has reached terminal state (written or filtered). */
@@ -75,8 +75,8 @@ final private[embedding] case class AmendmentAckProgress[F[_]](
  * shared chunk buffer and per-ackId progress map together in one Ref means a single `state.modify` can transactionally:
  *
  *   - add a chunk + decide whether to flush (in `offerChunk`)
- *   - increment per-ackId counters (`submitted` always; `written` on UPSERT success) and remove fully-completed ackIds
- *     (in `applyBatchResult`)
+ *   - increment `submitted` and remove fully-completed ackIds (in `applyBatchResult`)
+ *   - remove every distinct ackId in a failed batch + purge their buffered submissions (in `failBatch`)
  *   - drain the residual buffer + set `expected` (in `finalizeSubmission`)
  *
  * No background fiber, no `Queue`. Each producer's `offerChunk` is the only path that can flush, triggered when the
