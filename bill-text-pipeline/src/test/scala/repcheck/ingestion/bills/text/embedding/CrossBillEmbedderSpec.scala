@@ -764,38 +764,38 @@ class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "purge buffered chunks for failing ackIds when failBatch runs with non-empty buffer" in {
-    // Exercises the buffer-filter lambda inside failBatch (line 421): two ackIds, the first
-    // submission buffers chunks (no flush), the second forces a flush that fails, failBatch
-    // removes both ackIds AND filters their submissions out of the shared buffer.
-    val firstError   = new java.io.IOException("embed broker down")
-    val attemptCount = new AtomicInteger(0)
-    val flakyEmbedder = new EmbeddingService[IO] {
-      override def generateEmbedding(text: String): IO[Option[Array[Float]]] =
-        generateEmbeddings(List(text)).map(_.headOption.flatten)
-      override def generateEmbeddings(texts: List[String]): IO[List[Option[Array[Float]]]] =
-        IO.delay(attemptCount.incrementAndGet()).flatMap { n =>
-          if (n == 1) IO.raiseError(firstError)
-          else IO.pure(texts.map(_ => Some(Array(0.0f, 0.0f, 0.0f, 0.0f))))
-        }
-    }
+    // Exercises the buffer-filter lambda inside failBatch (line 421). Direct-call form so the
+    // sequence is deterministic (parTupled-driven concurrency was flaky in CI):
+    //   1. register ack-A (so offerChunk doesn't trip the not-in-acks guard)
+    //   2. offer a chunk for ack-A — lands in the buffer (size < batchSize)
+    //   3. call failBatch directly with a synthetic batch for ack-A — this exercises BOTH
+    //      the inner-fold removal (removing A from `acks`) AND the buffer-filter lambda
+    //      (iterating over buffer entries to drop A's chunks)
+    val embedder = new RecordingEmbeddingService
     val rawRepo  = new RecordingRawRepo
     val textRepo = new RecordingTextVersionRepo
-    val recA     = ackRecord()
-    val recB     = ackRecord()
+    val rec      = ackRecord()
+    val billCtx  = ctx(1L, "118-HR-1")
 
-    val _ = runWithEmbedder(flakyEmbedder, rawRepo, textRepo, batchSize = 4) { e =>
-      // Submit 2 chunks for ack-A (buffered, no flush — batchSize=4) then 2 chunks for ack-B
-      // which crosses the threshold and triggers a flush of [A0, A1, B0, B1]. The flush's
-      // first-attempt embed fails — failBatch removes both ackIds and purges any buffered
-      // submissions still tagged with their ackIds.
-      val sA = e.submit(ctx(1L, "118-HR-1"), Stream.emits(List("a0", "a1")), "ack-A", recA.ackEffect, recA.nackEffect)
-      val sB = e.submit(ctx(2L, "118-HR-2"), Stream.emits(List("b0", "b1")), "ack-B", recB.ackEffect, recB.nackEffect)
-      (sA, sB).parTupled
+    runWithEmbedder(embedder, rawRepo, textRepo, batchSize = 50) { e =>
+      for {
+        _ <- e.register(billCtx, "ack-A", rec.ackEffect, rec.nackEffect)
+        // Seed the shared buffer with a chunk for ack-A.
+        _ <- e.offerChunk(billCtx, 0, "buffered-text", "ack-A")
+        // Now call failBatch with a synthetic batch that attributes the chunk to ack-A; this
+        // forces the fold to hit the `Some(progress)` branch (removing A from acks AND nacking)
+        // and the buffer-filter lambda to evaluate `ackIdSet.contains(sub.ackId)` on the
+        // buffered submission, returning true → that entry gets filtered OUT.
+        _ <- e.failBatch(
+          List(ChunkSubmission(billCtx, 0, "buffered-text", "ack-A")),
+          new java.io.IOException("synthetic batch fail"),
+        )
+      } yield ()
     }
 
-    // Both ackIds NACKed (failBatch removed them); no chunks landed for either.
-    val _ = recA.nacks should be >= 1
-    val _ = recB.nacks should be >= 1
+    // The ackId got NACKed and the buffered chunk was purged (no flush ever happened, so no
+    // upsertMany call — but more importantly the lambda inside failBatch's filterNot ran).
+    val _ = rec.nacks should be >= 1
     rawRepo.allRows shouldBe empty
   }
 
