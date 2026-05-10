@@ -107,19 +107,34 @@ class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
     private val storeRef =
       new AtomicReference[Map[(Long, Int), RawBillTextDO]](Map.empty)
 
-    override def upsertMany(rows: List[RawBillTextDO]): ConnectionIO[Int] =
-      doobie.free.connection.delay {
-        val _ = batchesRef.updateAndGet(prev => prev :+ rows)
-        val _ = storeRef.updateAndGet { current =>
-          rows.foldLeft(current) { (acc, row) =>
-            row.versionId match {
-              case Some(vId) => acc + ((vId, row.chunkIndex) -> row)
-              case None      => acc
+    override def upsertMany(rows: List[RawBillTextDO]): ConnectionIO[Int] = {
+      // Simulate PostgreSQL's behavior: `INSERT ... ON CONFLICT DO UPDATE` raises
+      // "ERROR: ON CONFLICT DO UPDATE command cannot affect row a second time" when the same conflict key
+      // appears more than once in a single statement. The embedder is responsible for de-duplicating by
+      // (versionId, chunkIndex) before calling upsertMany; this test repo enforces that contract so the
+      // unit specs catch any regression that lets duplicates slip through.
+      val conflictKeys = rows.flatMap(r => r.versionId.map(v => (v, r.chunkIndex)))
+      if (conflictKeys.distinct.size != conflictKeys.size) {
+        doobie.free.connection.raiseError(
+          new java.sql.SQLException(
+            "ON CONFLICT DO UPDATE command cannot affect row a second time (simulated PG dup-key)"
+          )
+        )
+      } else {
+        doobie.free.connection.delay {
+          val _ = batchesRef.updateAndGet(prev => prev :+ rows)
+          val _ = storeRef.updateAndGet { current =>
+            rows.foldLeft(current) { (acc, row) =>
+              row.versionId match {
+                case Some(vId) => acc + ((vId, row.chunkIndex) -> row)
+                case None      => acc
+              }
             }
           }
+          rows.size
         }
-        rows.size
       }
+    }
 
     override def trimChunksPast(versionId: Long, chunkCount: Int): ConnectionIO[Int] =
       doobie.free.connection.delay {
@@ -256,21 +271,27 @@ class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
   // Empty stream — ACK fires immediately, no UPSERT/trim/markFetched
   // ===========================================================================
 
-  "submit" should "ACK immediately on an empty chunk stream (no UPSERT, no trim, no markFetched)" in {
+  "submit" should "ACK + run markFetched on an empty chunk stream so the version row reflects 'processed, no text'" in {
+    // Empty extraction is a legitimate outcome (e.g., a corrupted source returning zero bytes). Without markFetched
+    // here, `bill_text_versions.fetched_at` would stay NULL forever even though the Pub/Sub message ACKed, leaving
+    // the row perpetually "incomplete" in the DB. trim past 0 wipes any prior chunks for that versionId
+    // (LWW-consistent: latest submission decided "no text").
     val embedder        = new RecordingEmbeddingService
     val rawRepo         = new RecordingRawRepo
     val textVersionRepo = new RecordingTextVersionRepo
     val rec             = ackRecord()
+    val billCtx         = ctx(1L, "118-HR-1")
 
     runWithEmbedder(embedder, rawRepo, textVersionRepo, batchSize = 50) { e =>
-      e.submit(ctx(1L, "118-HR-1"), Stream.empty, "ack-1", rec.ackEffect, rec.nackEffect)
+      e.submit(billCtx, Stream.empty, "ack-1", rec.ackEffect, rec.nackEffect)
     }
 
     val _ = rec.acks shouldBe 1
     val _ = rec.nacks shouldBe 0
     val _ = embedder.batches shouldBe empty
     val _ = rawRepo.allRows shouldBe empty
-    textVersionRepo.markedVersions shouldBe empty
+    // markFetched fires exactly once with this versionId — `fetched_at` flips to NOT NULL.
+    textVersionRepo.markedVersions shouldBe Vector(billCtx.versionId)
   }
 
   // ===========================================================================

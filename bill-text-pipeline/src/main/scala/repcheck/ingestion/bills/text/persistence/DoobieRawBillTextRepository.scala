@@ -37,11 +37,14 @@ class DoobieRawBillTextRepository extends RawBillTextRepository[ConnectionIO] {
 
   // Update[] needs a literal SQL string (not a Fragment) so the table name stays inlined here.
   // ON CONFLICT keys on (version_id, chunk_index) — the unique constraint defined in db-migrations 026.
-  // EXCLUDED holds the row that would have been INSERTed; we copy its content + embedding over the existing row.
+  // EXCLUDED holds the row that would have been INSERTed; we copy ALL non-key columns including bill_id so a
+  // corrected/replayed write can repair an earlier bad bill_id and keep the redundant key columns consistent.
+  // Per the LWW semantics on (version_id, chunk_index), the latest writer wins for every non-key column.
   private val upsertSql: String =
     s"""INSERT INTO $tableName (bill_id, version_id, chunk_index, content, embedding)
        |VALUES (?, ?, ?, ?, ?::vector)
        |ON CONFLICT (version_id, chunk_index) DO UPDATE SET
+       |  bill_id = EXCLUDED.bill_id,
        |  content = EXCLUDED.content,
        |  embedding = EXCLUDED.embedding""".stripMargin
 

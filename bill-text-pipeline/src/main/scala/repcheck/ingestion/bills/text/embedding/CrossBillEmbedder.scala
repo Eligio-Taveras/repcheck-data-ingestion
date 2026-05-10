@@ -224,6 +224,15 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
    * through `attempt`. On error: every distinct ackId in the failed batch is removed from state and NACKed. The error
    * itself is NOT re-raised — the calling fiber (a producer) shouldn't fail just because some other ackId's flush
    * errored. The affected ackIds' submissions observe the failure via the NACK→Pub/Sub-redelivery path.
+   *
+   * ==Conflict-key dedup before UPSERT==
+   *
+   * Two concurrent Pub/Sub messages for the same `versionId` (different ackIds) emit chunks at the same `chunkIdx`
+   * positions. If both make it into the same batch, `INSERT ... ON CONFLICT (version_id, chunk_index) DO UPDATE` would
+   * raise `cannot affect row a second time` and NACK every ackId in the batch. Before calling `upsertMany`, dedup the
+   * row list by `(versionId, chunkIndex)` keeping the last occurrence (last-writer-wins, deterministic given the
+   * batch's input order). Per-ackId attribution still uses the FULL batch — both ackIds get credit for the chunks they
+   * offered because the persisted data is identical (same source bytes → same chunks for a deterministic chunker).
    */
   private[embedding] def flushIfNonEmpty(batch: List[ChunkSubmission]): F[Unit] =
     if (batch.isEmpty) {
@@ -248,13 +257,25 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
                   createdAt = None,
                 )
             }
+            // Last-writer-wins dedup via a fold that overwrites entries keyed by (versionId, chunkIndex). The fold's
+            // insertion-order traversal of `rows` preserves "last submission for that key in `batch` wins". Using a
+            // map.toList rather than groupBy + last avoids both `IterableOps#head`/`last` (forbidden by WartRemover)
+            // and the slight overhead of allocating intermediate lists per group.
+            val deduped = rows
+              .foldLeft(Map.empty[(Option[Long], Int), RawBillTextDO]) { (acc, r) =>
+                acc + ((r.versionId, r.chunkIndex) -> r)
+              }
+              .values
+              .toList
             TransactionRunner
-              .run(xa)(rawBillTextRepository.upsertMany(rows))
+              .run(xa)(rawBillTextRepository.upsertMany(deduped))
               .attempt
               .flatMap {
                 case Left(error) => failBatch(batch, error)
                 // affected rows ignored by attribution: on success the UPSERT is all-or-nothing (an idempotent
                 // INSERT-or-UPDATE per row), so per-ackId `written` matches per-ackId `submitted` for this batch.
+                // The dedup only collapses identical (versionId, chunkIndex) writes — every ackId in the original
+                // batch still gets credit for its chunks because they're represented in the persisted data.
                 case Right(_) => applyBatchSuccess(batch)
               }
         }
@@ -292,11 +313,14 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
   }
 
   /**
-   * For each completed ackId: if it wrote rows, trim any stale tail past its chunk count and markFetched on the version
-   * row; then invoke `ack` regardless. Errors in trim or markFetched switch the outcome to NACK for that ackId —
-   * Pub/Sub will redeliver, the UPSERT is idempotent, and the next attempt's trim + markFetched run again.
+   * For each completed ackId: trim any stale tail past its chunk count and markFetched on the version row; then invoke
+   * `ack` regardless. Always runs trim + markFetched — including when `submitted = 0` (empty extraction) — so that
+   * `bill_text_versions.fetched_at` reflects "we processed this version" even when the extracted text was empty.
+   * Without this, an empty extraction would ACK the Pub/Sub message but leave `fetched_at` NULL forever.
    *
-   * Errors are isolated per-ackId so one bill's markFetched failure doesn't poison the others in the same batch.
+   * Errors in trim or markFetched switch the outcome to NACK for that ackId — Pub/Sub will redeliver, the UPSERT is
+   * idempotent, and the next attempt's trim + markFetched run again. Errors are isolated per-ackId via `safeAck` so one
+   * bill's downstream failure doesn't short-circuit completion for siblings in the same batch.
    */
   private[embedding] def completeAcks(completed: List[AckProgress[F]]): F[Unit] =
     completed.traverse_(completeAck)
@@ -308,21 +332,17 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
       correlationId = None,
       entityId = Some(progress.ctx.naturalKey),
     )
-    if (progress.written > 0) {
-      runTrimAndMarkFetched(progress, logCtx).attempt.flatMap {
-        case Right(()) => safeAck(progress, logCtx)
-        case Left(error) =>
-          logger
-            .error(
-              logCtx,
-              s"Trim/markFetched failed for ${progress.ctx.naturalKey} (versionId=${progress.ctx.versionId.toString}); NACKing: ${describeError(error)}",
-              Some(error),
-            )
-            .attempt
-            .void *> progress.nack.attempt.void
-      }
-    } else {
-      safeAck(progress, logCtx)
+    runTrimAndMarkFetched(progress, logCtx).attempt.flatMap {
+      case Right(()) => safeAck(progress, logCtx)
+      case Left(error) =>
+        logger
+          .error(
+            logCtx,
+            s"Trim/markFetched failed for ${progress.ctx.naturalKey} (versionId=${progress.ctx.versionId.toString}); NACKing: ${describeError(error)}",
+            Some(error),
+          )
+          .attempt
+          .void *> progress.nack.attempt.void
     }
   }
 

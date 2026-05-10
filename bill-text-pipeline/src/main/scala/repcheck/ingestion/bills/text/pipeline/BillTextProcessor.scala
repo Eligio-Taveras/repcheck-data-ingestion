@@ -111,11 +111,17 @@ class BillTextProcessor[F[_]: Async] private[text] (
       alreadyProcessed <- isAlreadyProcessed(dbBillId, event.versionCode)
       result <-
         if (alreadyProcessed) {
+          // Re-publish on the skip path. Without this, a previous run that succeeded internally (DB updated +
+          // markFetched ran) but failed on `publishEvent` would leave the BillTextIngestedEvent permanently dropped:
+          // the NACK would trigger redelivery, and the redelivery would skip-and-ACK without re-publishing. Pub/Sub's
+          // at-least-once contract requires downstream consumers to be idempotent for the BillTextIngestedEvent, so
+          // re-publishing on every skip is safe — duplicate downstream processing is the expected at-least-once shape.
           logger
             .info(
               logCtx,
-              s"Skipping ${event.naturalKey} version=${event.versionCode} — bill_text_versions row already complete (fetched_at IS NOT NULL)",
+              s"Skipping ${event.naturalKey} version=${event.versionCode} — bill_text_versions row already complete (fetched_at IS NOT NULL); re-publishing BillTextIngestedEvent then ACKing",
             ) *>
+            publishEvent(event, correlationId).void *>
             ack.as(ProcessingResult.Skipped(event.naturalKey, "already-processed"))
         } else {
           processFreshBillText(event, dbBillId, correlationId, ackId, ack, nack, logCtx)

@@ -388,7 +388,11 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   // isAlreadyProcessed skip path — ACK directly + return Skipped
   // ===========================================================================
 
-  "isAlreadyProcessed skip-check" should "ACK directly and return Skipped(\"already-processed\") when version row is fetched" in {
+  "isAlreadyProcessed skip-check" should "re-publish BillTextIngestedEvent then ACK and return Skipped(\"already-processed\")" in {
+    // Skip path re-publishes to defend against the dropped-event scenario: a previous run that succeeded
+    // internally (markFetched ran) but failed on publishEvent would NACK; the redelivery's skip path now
+    // re-publishes so downstream consumers eventually see the event. At-least-once delivery means downstream
+    // must already be idempotent, so re-publishing on every skip is a safe trade.
     val f     = createFixture()
     val event = makeEvent(naturalKey = "118-HR-1", versionCode = "ih")
     stubBillLookup(f)
@@ -398,12 +402,15 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     when(existingVersion.fetchedAt).thenReturn(Some(Instant.now()))
     when(f.textVersionRepository.findByBillId(testDbBillId))
       .thenReturn(doobie.free.connection.pure(List(existingVersion)))
+    val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
+      .thenReturn(IO.pure("msg-id-skip"))
 
     val result = f.processor.processEvent(event, correlationId, "ack-1", f.ackEffect, f.nackEffect).unsafeRunSync()
 
     val _ = result.isSkipped shouldBe true
     val _ = f.ackCalls.get() shouldBe 1
     val _ = f.nackCalls.get() shouldBe 0
+    val _ = verify(f.eventPublisher, times(1)).billTextIngested(any[BillTextIngestedEvent], any[UUID])
     result match {
       case ProcessingResult.Skipped(entityId, reason) =>
         val _ = entityId shouldBe "118-HR-1"
@@ -412,7 +419,7 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     }
   }
 
-  it should "skip the expensive download/embed work when already processed" in {
+  it should "skip the expensive download/embed work when already processed (still re-publishes the ingested event)" in {
     val f     = createFixture()
     val event = makeEvent(naturalKey = "118-HR-1", versionCode = "ih")
     stubBillLookup(f)
@@ -422,6 +429,8 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     when(existingVersion.fetchedAt).thenReturn(Some(Instant.now()))
     when(f.textVersionRepository.findByBillId(testDbBillId))
       .thenReturn(doobie.free.connection.pure(List(existingVersion)))
+    val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
+      .thenReturn(IO.pure("msg-id-skip"))
 
     val _ = f.processor.processEvent(event, correlationId, "ack-1", f.ackEffect, f.nackEffect).unsafeRunSync()
 
@@ -429,7 +438,28 @@ class BillTextProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar 
     val _ = verify(f.embedder, never())
       .submit(any[BillEmbedCtx], any[Stream[IO, String]], anyString(), any[IO[Unit]], any[IO[Unit]])
     val _ = verify(f.textVersionRepository, never()).storeAndUpdateBill(any[BillTextVersionDO])
-    verify(f.eventPublisher, never()).billTextIngested(any[BillTextIngestedEvent], any[UUID])
+    // Re-publishes the BillTextIngestedEvent (not "never") so a previous run's dropped publish gets retried.
+    verify(f.eventPublisher, times(1)).billTextIngested(any[BillTextIngestedEvent], any[UUID])
+  }
+
+  it should "NACK + return Failed when publishEvent raises on the skip path (so the redelivery retries publish)" in {
+    val f     = createFixture()
+    val event = makeEvent(naturalKey = "118-HR-1", versionCode = "ih")
+    stubBillLookup(f)
+
+    val existingVersion = mock[BillTextVersionDO]
+    when(existingVersion.versionCode).thenReturn("ih")
+    when(existingVersion.fetchedAt).thenReturn(Some(Instant.now()))
+    when(f.textVersionRepository.findByBillId(testDbBillId))
+      .thenReturn(doobie.free.connection.pure(List(existingVersion)))
+    val _ = when(f.eventPublisher.billTextIngested(any[BillTextIngestedEvent], any[UUID]))
+      .thenReturn(IO.raiseError(new java.io.IOException("publish broker down")))
+
+    val result = f.processor.processEvent(event, correlationId, "ack-1", f.ackEffect, f.nackEffect).unsafeRunSync()
+
+    val _ = result.isFailed shouldBe true
+    val _ = f.ackCalls.get() shouldBe 0
+    f.nackCalls.get() shouldBe 1
   }
 
   it should "still call the fresh-text path when bill_text_versions has rows for OTHER versionCodes" in {
