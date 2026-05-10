@@ -175,10 +175,16 @@ class AmendmentsCrossPipelineSpec extends AnyFlatSpec with Matchers with BeforeA
   // Scenario S4 — text ingestion via checker → pipeline → fetched_at.
   // ---------------------------------------------------------------------------
 
-  it should "have last_text_check_at set on every amendment after the checker run (S4)" taggedAs DockerRequired in {
+  it should "have last_text_check_at set on every checker-eligible amendment (S4)" taggedAs DockerRequired in {
+    // The checker's `findCandidatesForTextCheck` query filters with `amendment_type <> 'suamdt'` because
+    // Congress.gov stores SUAMDT text on the parent amendment — sub-amendments are intentionally skipped to
+    // avoid burning request budget on guaranteed-empty responses. So SUAMDT 200 keeps NULL last_text_check_at;
+    // only the SAMDTs are expected to have it stamped.
     val unchecked = sqlLong(
       sql"""SELECT COUNT(*) FROM amendments
-            WHERE congress = 117 AND last_text_check_at IS NULL"""
+            WHERE congress = 117
+              AND amendment_type <> 'suamdt'::amendment_type_enum
+              AND last_text_check_at IS NULL"""
     )
     unchecked shouldBe 0L
   }
@@ -187,7 +193,7 @@ class AmendmentsCrossPipelineSpec extends AnyFlatSpec with Matchers with BeforeA
     // SAMDT 100 is the only fixture amendment with a non-empty textVersions[] from WireMock. The §7.5 checker
     // publishes one event; §7.6 consumes it, downloads via the rewriter, chunks + embeds, writes fetched_at.
     val fetched = sqlOptString(
-      sql"""SELECT v.version_type_code FROM amendment_text_versions v
+      sql"""SELECT v.version_type FROM amendment_text_versions v
             JOIN amendments a ON a.id = v.amendment_id
             WHERE a.natural_key = '117-SAMDT-100'
               AND v.fetched_at IS NOT NULL"""
