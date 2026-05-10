@@ -5,8 +5,8 @@ import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
 import scala.concurrent.duration._
 
-import cats.effect.IO
 import cats.effect.unsafe.implicits.global
+import cats.effect.{Deferred, IO}
 
 import fs2.Stream
 
@@ -424,6 +424,76 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
     val _ = raised.left.toOption.map(_.getMessage) shouldBe Some("upstream extractor blew up")
     val _ = counters.acks.get() shouldBe 0
     val _ = counters.nacks.get() shouldBe 1
+    val _ = chunkRepo.rows shouldBe empty
+    versionRepo.markFetchedSeen shouldBe empty
+  }
+
+  it should "purge orphan buffered chunks for a failed ackId so they don't leak into a later flush" in {
+    // Producer A emits 2 chunks (under batchSize=10, no flush yet) and then raises. `failAck` must remove
+    // both buffered chunks before producer B's submission flushes — otherwise B's batch would carry A's
+    // orphans (NACKed but still pending in the shared buffer) and persist them.
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val countersA   = new AckCounters
+    val countersB   = new AckCounters
+
+    val partialThenFail: Stream[IO, String] =
+      Stream("orphan-0", "orphan-1") ++ Stream.raiseError[IO](new java.io.IOException("partway"))
+
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 10)
+      .use { embedder =>
+        for {
+          // First submission: 2 chunks then raises before any flush. A's stream error → failAck → NACK + buffer purge.
+          _ <- embedder.submit(testCtx, partialThenFail, "ack-A", countersA.ack, countersA.nack).attempt
+          // Second submission: 1 chunk, completes normally. Its forced residual flush MUST NOT include A's orphans.
+          _ <- embedder.submit(testCtx2, Stream.emit("clean-chunk"), "ack-B", countersB.ack, countersB.nack)
+        } yield ()
+      }
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    val _ = countersA.acks.get() shouldBe 0
+    val _ = countersA.nacks.get() shouldBe 1
+    val _ = countersB.acks.get() shouldBe 1
+    val _ = countersB.nacks.get() shouldBe 0
+    // Only one batch ever reached the embed service: B's single chunk. A's orphans were purged before any flush.
+    val _ = embedSvc.batches.flatten shouldBe List("clean-chunk")
+    val _ = chunkRepo.rows.flatten.map(_.content) shouldBe List("clean-chunk")
+    chunkRepo.rows.flatten.map(_.amendmentId) shouldBe List(99L)
+  }
+
+  it should "NACK and clean up state when the producing fiber is cancelled mid-stream" in {
+    // Without `guaranteeCase` the ackId would leak indefinitely on cancellation: `handleErrorWith` doesn't fire
+    // for cancelled fibers. The new finalizer must invoke `failAck` so the ackId is removed and NACK fires.
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
+
+    val program: IO[Unit] = Deferred[IO, Unit].flatMap { chunkOffered =>
+      val hangingStream: Stream[IO, String] =
+        Stream.emit("chunk-0").covary[IO] ++
+          Stream.eval(chunkOffered.complete(()).void).drain ++
+          Stream.eval(IO.never[String])
+
+      CrossAmendmentEmbedder
+        .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 10)
+        .use { embedder =>
+          for {
+            fiber <- embedder.submit(testCtx, hangingStream, "ack-cancel", counters.ack, counters.nack).start
+            _     <- chunkOffered.get // chunk-0 was offered; producer is now hanging on IO.never
+            _     <- fiber.cancel
+            _     <- fiber.join.void  // wait for cancellation finalizer to complete
+          } yield ()
+        }
+    }
+
+    val _ = program.timeout(TestTimeout).unsafeRunSync()
+    val _ = counters.acks.get() shouldBe 0
+    val _ = counters.nacks.get() shouldBe 1
+    // Nothing flushed — chunk-0 sat in the buffer, then was purged by failAck on cancel.
     val _ = chunkRepo.rows shouldBe empty
     versionRepo.markFetchedSeen shouldBe empty
   }

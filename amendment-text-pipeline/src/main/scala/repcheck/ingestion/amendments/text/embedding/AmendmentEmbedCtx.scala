@@ -28,29 +28,32 @@ final case class AmendmentChunkSubmission(
  *
  * Two counters separate the ACK trigger from the side-effect trigger:
  *
- *   - `submitted` — total chunks the producer offered for this ackId. Drives ACK: when `submitted == expected`, fire
- *     the Pub/Sub ack regardless of whether trim/markFetched ran.
- *   - `written` — count of chunks for this ackId that were actually persisted by [[upsertMany]] (affected-rows
- *     attribution). Drives trim + markFetched: only run them when `written > 0` so a no-op submission (e.g. a future
- *     filtered submission, or one whose batch errored before reaching DB) doesn't falsely advance the version row.
+ *   - `submitted` — count of chunks for this ackId that have been embedded + persisted in a successful flush.
+ *     Incremented in `applyBatchResult` AFTER the embed + UPSERT succeeds, never at offer time. Drives ACK: when
+ *     `submitted == expected`, every offered chunk has landed in the DB and the Pub/Sub ack fires.
+ *   - `written` — of those, how many actually wrote rows (affected-row attribution from `upsertMany`). Drives trim +
+ *     markFetched: only run them when `written > 0` so a no-op submission (e.g. one whose batch errored before reaching
+ *     DB) doesn't falsely advance the version row.
+ *
+ * Failure handling: on a flush failure (embed error or UPSERT error) the ackId is removed from `acks` via `failBatch`
+ * and any of its buffered chunks are purged from the shared buffer, so the completion check never fires. The producer's
+ * `submit` separately handles stream errors via `failAck`, and cancellation via `guaranteeCase`. In all failure paths
+ * NACK fires once and Pub/Sub redelivers (bounded by the subscription's `max_delivery_attempts` + dead-letter topic).
  *
  * On the happy path under last-writer-wins UPSERT, every offered chunk lands (INSERT or UPDATE) so `written ==
- * submitted` and both triggers fire. On a flush failure, `written` for the affected ackIds stays 0 and the embedder
- * NACKs the message; redelivery will retry idempotently.
+ * submitted` and both triggers fire.
  *
- * @param versionId
- *   used by `trimChunksPast` and `markFetched` on completion.
  * @param ack
  *   Pub/Sub acknowledge effect — invoked once when `submitted == expected`.
  * @param nack
  *   Pub/Sub explicit-redeliver effect — invoked on known failures (UPSERT error, embed error, trim error, markFetched
- *   error). Bounded by the subscription's `max_delivery_attempts` + dead-letter topic.
+ *   error, producer stream error, producer cancellation).
  * @param expected
  *   None until the producer's `submit` finalizes; `Some(n)` after — `n` is the chunk count the stream produced.
  * @param submitted
- *   total chunks offered for this ackId. ACK fires when `expected == Some(submitted)`.
+ *   count of chunks for this ackId successfully embedded + persisted (incremented after a successful UPSERT batch).
  * @param written
- *   count of chunks for this ackId that wrote (INSERT or UPDATE). Drives trim + markFetched gating.
+ *   of those, the affected-row count from `upsertMany`. Drives trim + markFetched gating.
  */
 final private[embedding] case class AmendmentAckProgress[F[_]](
   ackId: String,
