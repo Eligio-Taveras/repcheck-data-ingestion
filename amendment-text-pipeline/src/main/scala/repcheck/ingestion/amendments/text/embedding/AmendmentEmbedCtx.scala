@@ -1,13 +1,9 @@
 package repcheck.ingestion.amendments.text.embedding
 
-import cats.effect.Deferred
-
-import repcheck.pipeline.models.metadata.ProcessingResult
-
 /**
  * Per-amendment context flowing alongside each chunk through the cross-amendment embedder. Mirror of the bill-side
- * [[repcheck.ingestion.bills.text.embedding.BillEmbedCtx]] but keyed on amendment surrogate id + version row id. Kept
- * small and immutable — every chunk in the embedder's queue carries one.
+ * `BillEmbedCtx` but keyed on amendment surrogate id + version row id. Kept small and immutable — every chunk in the
+ * embedder's queue carries one.
  */
 final case class AmendmentEmbedCtx(
   amendmentId: Long,
@@ -15,46 +11,69 @@ final case class AmendmentEmbedCtx(
   naturalKey: String,
 )
 
-/** A single chunk submission flowing through the cross-amendment embedder's queue. */
+/**
+ * A single chunk submission flowing through the cross-amendment embedder's queue. `ackId` is carried so that the
+ * flush-and-write path can attribute written rows back to the originating Pub/Sub message (multiple `ackId`s may
+ * coexist in one batch when amendments interleave in the shared buffer).
+ */
 final case class AmendmentChunkSubmission(
   ctx: AmendmentEmbedCtx,
   chunkIdx: Int,
   text: String,
+  ackId: String,
 )
 
 /**
- * In-flight state for one amendment being processed by the cross-amendment embedder.
+ * In-flight per-`ackId` state for one Pub/Sub message being processed by the cross-amendment embedder.
  *
- * @param ctx
- *   identifying info for the amendment (DB ids + natural key for the eventual ProcessingResult).
+ * Two counters separate the ACK trigger from the side-effect trigger:
+ *
+ *   - `submitted` — total chunks the producer offered for this ackId. Drives ACK: when `submitted == expected`, fire
+ *     the Pub/Sub ack regardless of whether trim/markFetched ran.
+ *   - `written` — count of chunks for this ackId that were actually persisted by [[upsertMany]] (affected-rows
+ *     attribution). Drives trim + markFetched: only run them when `written > 0` so a no-op submission (e.g. a future
+ *     filtered submission, or one whose batch errored before reaching DB) doesn't falsely advance the version row.
+ *
+ * On the happy path under last-writer-wins UPSERT, every offered chunk lands (INSERT or UPDATE) so `written ==
+ * submitted` and both triggers fire. On a flush failure, `written` for the affected ackIds stays 0 and the embedder
+ * NACKs the message; redelivery will retry idempotently.
+ *
+ * @param versionId
+ *   used by `trimChunksPast` and `markFetched` on completion.
+ * @param ack
+ *   Pub/Sub acknowledge effect — invoked once when `submitted == expected`.
+ * @param nack
+ *   Pub/Sub explicit-redeliver effect — invoked on known failures (UPSERT error, embed error, trim error, markFetched
+ *   error). Bounded by the subscription's `max_delivery_attempts` + dead-letter topic.
  * @param expected
- *   total chunk count the amendment will produce. `None` while the producer is still streaming chunks; becomes
- *   `Some(n)` when the producer's chunk stream terminates and the embedder is told the count.
- * @param persisted
- *   number of chunks for this amendment that have been INSERTed so far. Incremented inside an atomic state-transaction
- *   alongside the buffer flush that processed the amendment's chunks.
- * @param deferred
- *   the completion handle the amendment's `processChunks` is awaiting. Resolved by whichever producer's flush brings
- *   `persisted == expected`, OR by `finalizeSubmission` when both reach 0 (empty stream).
+ *   None until the producer's `submit` finalizes; `Some(n)` after — `n` is the chunk count the stream produced.
+ * @param submitted
+ *   total chunks offered for this ackId. ACK fires when `expected == Some(submitted)`.
+ * @param written
+ *   count of chunks for this ackId that wrote (INSERT or UPDATE). Drives trim + markFetched gating.
  */
-final private[embedding] case class AmendmentEmbedProgress[F[_]](
+final private[embedding] case class AmendmentAckProgress[F[_]](
+  ackId: String,
   ctx: AmendmentEmbedCtx,
+  ack: F[Unit],
+  nack: F[Unit],
   expected: Option[Int],
-  persisted: Int,
-  deferred: Deferred[F, ProcessingResult],
+  submitted: Int,
+  written: Int,
 ) {
 
-  /** True iff the producer finalized AND all of the amendment's chunks have been persisted. */
-  def shouldComplete: Boolean = expected.contains(persisted)
+  /** True iff the producer finalized AND every offered chunk has reached terminal state (written or filtered). */
+  def shouldComplete: Boolean = expected.contains(submitted)
 
 }
 
 /**
  * Atomic state for the foreground-only cross-amendment embedder. Mirror of the bill-side `EmbedderState` — keeping the
- * buffer and per-version progress map together in one Ref means a single `state.modify` can transactionally:
+ * shared chunk buffer and per-ackId progress map together in one Ref means a single `state.modify` can transactionally:
  *
  *   - add a chunk + decide whether to flush (in `offerChunk`)
- *   - increment `persisted` counters and remove fully-completed versions (in `applyBatchResult`)
+ *   - increment per-ackId counters (`submitted` always; `written` on UPSERT success) and remove fully-completed ackIds
+ *     (in `applyBatchResult`)
  *   - drain the residual buffer + set `expected` (in `finalizeSubmission`)
  *
  * No background fiber, no `Queue`. Each producer's `offerChunk` is the only path that can flush, triggered when the
@@ -62,15 +81,14 @@ final private[embedding] case class AmendmentEmbedProgress[F[_]](
  * residual buffer to guarantee a small amendment's chunks are processed even if no other producer fills the buffer
  * afterward.
  *
- * The progress map is keyed by `versionId` rather than `amendmentId`. A single amendment can produce multiple
- * concurrent in-flight events — distinct `(version_type, format_type)` tuples (e.g., SUB vs MOD, or HTML vs PDF) all
- * map to distinct `amendment_text_versions.id` values, but to the same `amendmentId`. Keying on `versionId` keeps each
- * concurrent submission's Deferred isolated; without this, the second event's `register` would clobber the first's
- * progress entry and leave one of the producers waiting indefinitely.
+ * The progress map is keyed by `ackId` rather than `versionId`. Two producers may legitimately race on the same
+ * `versionId` (Pub/Sub at-least-once redelivery, or a fresh event landing while a previous one is still mid-flight).
+ * Last-writer-wins UPSERT makes both writes safe at the DB layer; tracking per-ackId here lets each delivery's ACK fire
+ * independently when its own chunks are accounted for.
  */
 final private[embedding] case class AmendmentEmbedderState[F[_]](
   buffer: Vector[AmendmentChunkSubmission],
-  amendments: Map[Long, AmendmentEmbedProgress[F]],
+  acks: Map[String, AmendmentAckProgress[F]],
 )
 
 private[embedding] object AmendmentEmbedderState {

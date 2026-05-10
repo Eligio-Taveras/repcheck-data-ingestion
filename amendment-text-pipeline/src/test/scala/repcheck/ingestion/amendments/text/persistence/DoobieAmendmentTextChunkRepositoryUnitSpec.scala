@@ -2,7 +2,6 @@ package repcheck.ingestion.amendments.text.persistence
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.shared.models.congress.dos.amendment.AmendmentTextChunkDO
 
 /**
  * Unit-level shape spec for the amendment_text_chunks Doobie repository. Asserts each method produces a `ConnectionIO`
@@ -12,42 +11,45 @@ class DoobieAmendmentTextChunkRepositoryUnitSpec extends AnyFlatSpec with Matche
 
   private val repo = new DoobieAmendmentTextChunkRepository
 
-  private def sampleChunk(idx: Int, withEmbedding: Boolean = false): AmendmentTextChunkDO =
-    AmendmentTextChunkDO(
-      id = 0L,
+  private def sampleRow(idx: Int, withEmbedding: Boolean = false): AmendmentChunkRow =
+    AmendmentChunkRow(
       amendmentId = 42L,
-      versionId = Some(7L),
+      versionId = 7L,
       chunkIndex = idx,
       content = s"chunk content $idx",
       embedding = if (withEmbedding) Some(Array.fill(1024)(0.5f)) else None,
-      createdAt = None,
     )
 
-  "insertMany" should "produce a ConnectionIO when given a non-empty list of chunks" in {
-    val cio = repo.insertMany(List(sampleChunk(0), sampleChunk(1)))
+  "upsertMany" should "produce a ConnectionIO when given a non-empty list of chunks" in {
+    val cio = repo.upsertMany(List(sampleRow(0), sampleRow(1)))
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
-  it should "short-circuit to no-op for an empty list" in {
-    val cio = repo.insertMany(List.empty)
+  it should "short-circuit to a constant 0 ConnectionIO for an empty list" in {
+    val cio = repo.upsertMany(List.empty)
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
   it should "accept chunks carrying full 1024-dim embedding arrays" in {
-    val cio = repo.insertMany(List(sampleChunk(0, withEmbedding = true)))
+    val cio = repo.upsertMany(List(sampleRow(0, withEmbedding = true)))
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
   it should "accept chunks with mixed embedding presence" in {
-    val mixed = List(sampleChunk(0, withEmbedding = true), sampleChunk(1, withEmbedding = false))
-    val cio   = repo.insertMany(mixed)
+    val mixed = List(sampleRow(0, withEmbedding = true), sampleRow(1, withEmbedding = false))
+    val cio   = repo.upsertMany(mixed)
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
-  it should "accept chunks whose versionId is None" in {
-    val orphan = sampleChunk(0).copy(versionId = None)
-    val cio    = repo.insertMany(List(orphan))
+  "trimChunksPast" should "produce a ConnectionIO returning the deleted-row count" in {
+    val cio = repo.trimChunksPast(7L, 100)
     cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
+  it should "produce a distinct ConnectionIO for each call (no aliased state)" in {
+    val a = repo.trimChunksPast(1L, 5)
+    val b = repo.trimChunksPast(2L, 5)
+    (a eq b) shouldBe false
   }
 
   "findByVersionId" should "produce a ConnectionIO for the query" in {
@@ -63,17 +65,6 @@ class DoobieAmendmentTextChunkRepositoryUnitSpec extends AnyFlatSpec with Matche
   "sumContentLengthByVersionId" should "produce a ConnectionIO returning Long" in {
     val cio = repo.sumContentLengthByVersionId(7L)
     cio shouldBe a[doobie.ConnectionIO[?]]
-  }
-
-  "deleteByVersionId" should "produce a ConnectionIO for the DELETE" in {
-    val cio = repo.deleteByVersionId(7L)
-    cio shouldBe a[doobie.ConnectionIO[?]]
-  }
-
-  it should "produce a distinct ConnectionIO for each call (no aliased state)" in {
-    val a = repo.deleteByVersionId(1L)
-    val b = repo.deleteByVersionId(2L)
-    (a eq b) shouldBe false
   }
 
 }

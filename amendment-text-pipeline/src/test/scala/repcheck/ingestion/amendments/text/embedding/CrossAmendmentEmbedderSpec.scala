@@ -1,6 +1,7 @@
 package repcheck.ingestion.amendments.text.embedding
 
-import java.util.concurrent.atomic.AtomicReference
+import java.time.Instant
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
 import scala.concurrent.duration._
 
@@ -13,15 +14,30 @@ import doobie._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.ingestion.amendments.text.persistence.AmendmentTextChunkRepository
+import repcheck.ingestion.amendments.text.persistence.{
+  AmendmentChunkRow,
+  AmendmentTextChunkRepository,
+  AmendmentTextVersionRepository,
+}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.embedding.{EmbeddingContextLengthExceeded, EmbeddingGenerationFailed, EmbeddingService}
-import repcheck.pipeline.models.metadata.ProcessingResult
-import repcheck.shared.models.congress.dos.amendment.AmendmentTextChunkDO
+import repcheck.shared.models.congress.dos.amendment.{AmendmentTextChunkDO, AmendmentTextVersionDO}
 
 /**
- * Unit specs for the foreground-only [[CrossAmendmentEmbedder]]. Mirror of the bill-side spec; covers single- amendment
- * happy path, cross-amendment batching, empty-stream, and failure modes.
+ * Unit specs for the foreground-only [[CrossAmendmentEmbedder]].
+ *
+ * ==Last-writer-wins UPSERT — no version-date gate==
+ *
+ * Amendments use plain `INSERT ... ON CONFLICT (version_id, chunk_index) DO UPDATE` rather than the version-date-gated
+ * CTE on the bills side. The natural identity for a chunk is `(version_id, chunk_index)`; same identity → same
+ * Congress.gov bytes → same chunks (chunker is deterministic), so the UPDATE branch overwrites with effectively the
+ * same data on the happy path. The only scenario the gate would protect against — Congress.gov mutating published
+ * amendment text for a given `(amendment_id, version_type, format_type)` — doesn't happen in practice; recovery for the
+ * hypothetical case is "re-emit the event" and the UPSERT overwrites.
+ *
+ * Consequences for this spec: no "older redelivery filtered" or "newer beats older mid-flight" tests — those required
+ * the gate. The remaining test surface covers: empty stream, multi-chunk happy path, concurrent identical redelivery
+ * (both ACK), trim-removes-stale-tail, and the four NACK error paths (embed, DB, trim, markFetched).
  */
 class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
 
@@ -64,236 +80,352 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
 
   }
 
-  private class RecordingRepo extends AmendmentTextChunkRepository[ConnectionIO] {
-    private val rowsRef = new AtomicReference[Vector[List[AmendmentTextChunkDO]]](Vector.empty)
+  /**
+   * In-memory chunk repo. `upsertMany` returns the count of rows written (echoing input size on the happy path),
+   * `trimChunksPast` returns 0 by default. Configurable failure injection for the trim/upsert error cases.
+   */
+  private class RecordingChunkRepo(
+    upsertFailure: Option[Throwable] = None,
+    trimFailure: Option[Throwable] = None,
+  ) extends AmendmentTextChunkRepository[ConnectionIO] {
+    private val rowsRef             = new AtomicReference[Vector[List[AmendmentChunkRow]]](Vector.empty)
+    private val trimCallsRef        = new AtomicReference[Vector[(Long, Int)]](Vector.empty)
+    private val sumContentLengthRef = new AtomicReference[Long](0L)
 
-    override def insertMany(rows: List[AmendmentTextChunkDO]): ConnectionIO[Unit] =
-      doobie.free.connection.delay {
-        val _ = rowsRef.updateAndGet(prev => prev :+ rows)
+    override def upsertMany(rows: List[AmendmentChunkRow]): ConnectionIO[Int] =
+      upsertFailure match {
+        case Some(err) => doobie.free.connection.raiseError(err)
+        case None =>
+          doobie.free.connection.delay {
+            val _ = rowsRef.updateAndGet(prev => prev :+ rows)
+            val _ = sumContentLengthRef.updateAndGet(prev => prev + rows.map(_.content.length.toLong).sum)
+            rows.size
+          }
       }
 
-    override def deleteByVersionId(versionId: Long): ConnectionIO[Unit] = doobie.free.connection.unit
-    override def countByVersionId(versionId: Long): ConnectionIO[Long]  = doobie.free.connection.pure(0L)
+    override def trimChunksPast(versionId: Long, chunkCount: Int): ConnectionIO[Int] =
+      trimFailure match {
+        case Some(err) => doobie.free.connection.raiseError(err)
+        case None =>
+          doobie.free.connection.delay {
+            val _ = trimCallsRef.updateAndGet(prev => prev :+ ((versionId, chunkCount)))
+            0
+          }
+      }
+
+    override def countByVersionId(versionId: Long): ConnectionIO[Long] =
+      doobie.free.connection.pure(rowsRef.get().flatten.count(_.versionId == versionId).toLong)
 
     override def sumContentLengthByVersionId(versionId: Long): ConnectionIO[Long] =
-      doobie.free.connection.pure(0L)
+      doobie.free.connection.pure(
+        rowsRef.get().flatten.filter(_.versionId == versionId).map(_.content.length.toLong).sum
+      )
 
     override def findByVersionId(versionId: Long): ConnectionIO[List[AmendmentTextChunkDO]] =
       doobie.free.connection.pure(List.empty)
 
-    def rows: Vector[List[AmendmentTextChunkDO]] = rowsRef.get()
+    def rows: Vector[List[AmendmentChunkRow]] = rowsRef.get()
+    def trimCalls: Vector[(Long, Int)]        = trimCallsRef.get()
+  }
+
+  /**
+   * In-memory version repo. Captures `markFetched` calls; configurable failure injection for the markFetched error
+   * case. `upsert` is unused by the embedder (only the processor uses it) so we leave it as a no-op stub.
+   */
+  private class RecordingVersionRepo(markFetchedFailure: Option[Throwable] = None)
+      extends AmendmentTextVersionRepository[ConnectionIO] {
+    private val markFetchedCalls = new AtomicReference[Vector[(Long, Instant, Int)]](Vector.empty)
+
+    override def upsert(version: AmendmentTextVersionDO): ConnectionIO[(Long, Boolean, Boolean)] =
+      doobie.free.connection.pure((0L, true, false))
+
+    override def markFetched(versionId: Long, timestamp: Instant, textLength: Int): ConnectionIO[Unit] =
+      markFetchedFailure match {
+        case Some(err) => doobie.free.connection.raiseError(err)
+        case None =>
+          doobie.free.connection.delay {
+            val _ = markFetchedCalls.updateAndGet(prev => prev :+ ((versionId, timestamp, textLength)))
+            ()
+          }
+      }
+
+    override def findCompletedByAmendmentId(amendmentId: Long): ConnectionIO[List[AmendmentTextVersionDO]] =
+      doobie.free.connection.pure(List.empty)
+
+    def markFetchedSeen: Vector[(Long, Instant, Int)] = markFetchedCalls.get()
   }
 
   private val testCtx  = AmendmentEmbedCtx(amendmentId = 42L, versionId = 7L, naturalKey = "117-SAMDT-2137")
   private val testCtx2 = AmendmentEmbedCtx(amendmentId = 99L, versionId = 8L, naturalKey = "117-HAMDT-3")
 
-  "processChunks" should "succeed for a single chunk via finalize-flush" in {
-    val embedSvc = new RecordingEmbeddingService
-    val repo     = new RecordingRepo
+  /**
+   * Test-side ACK / NACK counters. Each invocation increments by 1; tests assert exactly one of ACK or NACK fires per
+   * ackId.
+   */
+  final private class AckCounters {
+    val acks           = new AtomicInteger(0)
+    val nacks          = new AtomicInteger(0)
+    val ack: IO[Unit]  = IO { val _ = acks.incrementAndGet(); () }
+    val nack: IO[Unit] = IO { val _ = nacks.incrementAndGet(); () }
+  }
+
+  "submit" should "ACK immediately on an empty chunk stream (written = 0, no trim, no markFetched)" in {
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
     val program = CrossAmendmentEmbedder
-      .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
-      .use(embedder => embedder.processChunks(testCtx, Stream.emit("only chunk")))
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, Stream.empty, "ack-1", counters.ack, counters.nack))
       .timeout(TestTimeout)
 
-    val result = program.unsafeRunSync()
-    val _ = result match {
-      case ProcessingResult.Succeeded(naturalKey, _) => naturalKey shouldBe "117-SAMDT-2137"
-      case other                                     => fail(s"Expected Succeeded, got $other")
-    }
-    val _ = embedSvc.batches.size shouldBe 1
-    val _ = repo.rows.size shouldBe 1
-    repo.rows.headOption.flatMap(_.headOption).map(_.amendmentId) shouldBe Some(42L)
-  }
-
-  it should "succeed for an empty chunk stream (Deferred resolves immediately at finalize)" in {
-    val embedSvc = new RecordingEmbeddingService
-    val repo     = new RecordingRepo
-    val result = CrossAmendmentEmbedder
-      .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
-      .use(embedder => embedder.processChunks(testCtx, Stream.empty))
-      .timeout(TestTimeout)
-      .unsafeRunSync()
-
-    val _ = result.isSucceeded shouldBe true
+    val _ = program.unsafeRunSync()
+    val _ = counters.acks.get() shouldBe 1
+    val _ = counters.nacks.get() shouldBe 0
     val _ = embedSvc.batches shouldBe empty
-    repo.rows shouldBe empty
+    val _ = chunkRepo.rows shouldBe empty
+    val _ = chunkRepo.trimCalls shouldBe empty
+    versionRepo.markFetchedSeen shouldBe empty
   }
 
-  it should "process multiple chunks for the same amendment in one finalize-flush when batchSize is large" in {
-    val embedSvc = new RecordingEmbeddingService
-    val repo     = new RecordingRepo
-    val result = CrossAmendmentEmbedder
-      .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
-      .use(embedder => embedder.processChunks(testCtx, Stream("chunk-0", "chunk-1", "chunk-2")))
-      .timeout(TestTimeout)
-      .unsafeRunSync()
+  it should "ACK after multi-chunk happy path; trim past tail + markFetched fire when written > 0" in {
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
 
-    val _ = result.isSucceeded shouldBe true
-    val _ = embedSvc.batches.size shouldBe 1
-    val _ = embedSvc.batches.headOption.map(_.size) shouldBe Some(3)
-    repo.rows.flatten should have size 3
-  }
-
-  it should "preserve chunk_index and amendmentId on persisted rows" in {
-    val embedSvc = new RecordingEmbeddingService
-    val repo     = new RecordingRepo
     val _ = CrossAmendmentEmbedder
-      .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
-      .use(embedder => embedder.processChunks(testCtx, Stream("a", "b")))
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder =>
+        embedder.submit(testCtx, Stream("chunk-0", "chunk-1", "chunk-2"), "ack-1", counters.ack, counters.nack)
+      )
       .timeout(TestTimeout)
       .unsafeRunSync()
 
-    val rows = repo.rows.flatten
+    val _ = counters.acks.get() shouldBe 1
+    val _ = counters.nacks.get() shouldBe 0
+    val _ = embedSvc.batches.size shouldBe 1
+    val _ = chunkRepo.rows.flatten.size shouldBe 3
+    val _ = chunkRepo.trimCalls shouldBe Vector((7L, 3))
+    val _ = versionRepo.markFetchedSeen.size shouldBe 1
+    versionRepo.markFetchedSeen.headOption.map(_._1) shouldBe Some(7L)
+  }
+
+  it should "preserve chunk_index, amendmentId, and versionId on persisted rows" in {
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, Stream("a", "b"), "ack-1", counters.ack, counters.nack))
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    val rows = chunkRepo.rows.flatten
     val _    = rows.size shouldBe 2
     val _    = rows.map(_.amendmentId).distinct shouldBe List(42L)
-    val _    = rows.map(_.versionId.getOrElse(-1L)).distinct shouldBe List(7L)
+    val _    = rows.map(_.versionId).distinct shouldBe List(7L)
     rows.map(_.chunkIndex).sorted shouldBe List(0, 1)
   }
 
-  it should "Fail with Transient when the embedding service raises a network error" in {
-    val embedSvc = new FailingEmbeddingService(new java.net.SocketTimeoutException("network timeout"))
-    val repo     = new RecordingRepo
-    val result = CrossAmendmentEmbedder
-      .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
-      .use(embedder => embedder.processChunks(testCtx, Stream.emit("chunk")))
+  it should "NACK when the embedding service raises a network error (DB-error-NACK shape too)" in {
+    val embedSvc    = new FailingEmbeddingService(new java.net.SocketTimeoutException("network timeout"))
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, Stream.emit("chunk"), "ack-1", counters.ack, counters.nack))
       .timeout(TestTimeout)
       .unsafeRunSync()
-    result match {
-      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
-      case other                                     => fail(s"Expected Failed(Transient), got $other")
-    }
+
+    val _ = counters.acks.get() shouldBe 0
+    val _ = counters.nacks.get() shouldBe 1
+    val _ = chunkRepo.trimCalls shouldBe empty
+    versionRepo.markFetchedSeen shouldBe empty
   }
 
-  it should "Fail with Systemic when the embedding service raises an EmbeddingContextLengthExceeded" in {
-    val embedSvc = new FailingEmbeddingService(EmbeddingContextLengthExceeded("too big", 100000))
-    val repo     = new RecordingRepo
-    val result = CrossAmendmentEmbedder
-      .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
-      .use(embedder => embedder.processChunks(testCtx, Stream.emit("oversized chunk")))
+  it should "NACK on EmbeddingContextLengthExceeded" in {
+    val embedSvc    = new FailingEmbeddingService(EmbeddingContextLengthExceeded("too big", 100000))
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, Stream.emit("oversized"), "ack-1", counters.ack, counters.nack))
       .timeout(TestTimeout)
       .unsafeRunSync()
-    result match {
-      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Systemic"
-      case other                                     => fail(s"Expected Failed(Systemic), got $other")
-    }
+
+    val _ = counters.acks.get() shouldBe 0
+    counters.nacks.get() shouldBe 1
   }
 
-  it should "Fail with Transient on EmbeddingGenerationFailed" in {
-    val embedSvc = new FailingEmbeddingService(EmbeddingGenerationFailed("ollama hiccup", 100))
-    val repo     = new RecordingRepo
-    val result = CrossAmendmentEmbedder
-      .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
-      .use(embedder => embedder.processChunks(testCtx, Stream.emit("c")))
+  it should "NACK on EmbeddingGenerationFailed" in {
+    val embedSvc    = new FailingEmbeddingService(EmbeddingGenerationFailed("ollama hiccup", 100))
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, Stream.emit("c"), "ack-1", counters.ack, counters.nack))
       .timeout(TestTimeout)
       .unsafeRunSync()
-    result match {
-      case ProcessingResult.Failed(_, _, errorClass) => errorClass shouldBe "Transient"
-      case other                                     => fail(s"Expected Failed(Transient), got $other")
-    }
+
+    val _ = counters.acks.get() shouldBe 0
+    counters.nacks.get() shouldBe 1
   }
 
-  it should "isolate concurrent submissions for the same amendmentId via distinct versionIds" in {
-    // Same amendmentId (42L) emitting both SUB and MOD versions concurrently — keying on versionId in the
-    // embedder state ensures the second register() doesn't clobber the first's Deferred.
-    val embedSvc       = new RecordingEmbeddingService
-    val repo           = new RecordingRepo
-    val ctxSubmittedV1 = AmendmentEmbedCtx(amendmentId = 42L, versionId = 100L, naturalKey = "117-SAMDT-2137-SUB")
-    val ctxModifiedV1  = AmendmentEmbedCtx(amendmentId = 42L, versionId = 101L, naturalKey = "117-SAMDT-2137-MOD")
-    val program = CrossAmendmentEmbedder
-      .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
+  it should "NACK on DB upsert error" in {
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo(upsertFailure = Some(new java.sql.SQLException("constraint violation")))
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, Stream.emit("chunk"), "ack-1", counters.ack, counters.nack))
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    val _ = counters.acks.get() shouldBe 0
+    counters.nacks.get() shouldBe 1
+  }
+
+  it should "NACK on trim error after a successful UPSERT batch" in {
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo(trimFailure = Some(new java.sql.SQLException("trim failed")))
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, Stream.emit("chunk"), "ack-1", counters.ack, counters.nack))
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    val _ = counters.acks.get() shouldBe 0
+    val _ = counters.nacks.get() shouldBe 1
+    // markFetched does not fire because trim raised first inside the same transaction.
+    versionRepo.markFetchedSeen shouldBe empty
+  }
+
+  it should "NACK on markFetched error after a successful trim" in {
+    val embedSvc  = new RecordingEmbeddingService
+    val chunkRepo = new RecordingChunkRepo
+    val versionRepo =
+      new RecordingVersionRepo(markFetchedFailure = Some(new java.sql.SQLException("markFetched failed")))
+    val counters = new AckCounters
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, Stream.emit("chunk"), "ack-1", counters.ack, counters.nack))
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    val _ = counters.acks.get() shouldBe 0
+    counters.nacks.get() shouldBe 1
+  }
+
+  it should "ACK both ackIds when concurrent identical redelivery hits the same versionId (last-writer-wins UPSERT)" in {
+    // Two concurrent submit calls for the same (amendmentId, versionId) — Pub/Sub at-least-once redelivery. Without
+    // the per-versionId Deferred-join logic of the old design, both submissions just write through the LWW UPSERT;
+    // the second's UPDATE branch overwrites with effectively the same data. Both ACKs must fire — neither hangs.
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters1   = new AckCounters
+    val counters2   = new AckCounters
+
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
       .use { embedder =>
         for {
-          fiber1 <- embedder.processChunks(ctxSubmittedV1, Stream.emit("submitted text")).start
-          fiber2 <- embedder.processChunks(ctxModifiedV1, Stream.emit("modified text")).start
-          r1     <- fiber1.joinWithNever
-          r2     <- fiber2.joinWithNever
-        } yield (r1, r2)
+          fiber1 <- embedder.submit(testCtx, Stream.emit("dup-chunk"), "ack-A", counters1.ack, counters1.nack).start
+          fiber2 <- embedder.submit(testCtx, Stream.emit("dup-chunk"), "ack-B", counters2.ack, counters2.nack).start
+          _      <- fiber1.joinWithNever
+          _      <- fiber2.joinWithNever
+        } yield ()
       }
       .timeout(TestTimeout)
       .unsafeRunSync()
 
-    val (r1, r2) = program
-    val _        = r1.isSucceeded shouldBe true
-    val _        = r2.isSucceeded shouldBe true
-    val flat     = repo.rows.flatten
-    // Both versions persisted, distinct version_ids, same amendment_id.
-    val _ = flat.size shouldBe 2
-    val _ = flat.map(_.amendmentId).distinct shouldBe List(42L)
-    flat.flatMap(_.versionId).toSet shouldBe Set(100L, 101L)
+    val _ = counters1.acks.get() shouldBe 1
+    val _ = counters1.nacks.get() shouldBe 0
+    val _ = counters2.acks.get() shouldBe 1
+    val _ = counters2.nacks.get() shouldBe 0
+    // Both submissions ran their writes; trim called twice with the same (versionId, count=1). markFetched called
+    // twice — idempotent, harmless (per Q2).
+    val _ = chunkRepo.rows.flatten.size shouldBe 2
+    val _ = versionRepo.markFetchedSeen.size shouldBe 2
+    chunkRepo.trimCalls shouldBe Vector((7L, 1), (7L, 1))
   }
 
   it should "complete two amendments via cross-amendment batching when batchSize triggers a shared flush" in {
-    val embedSvc = new RecordingEmbeddingService
-    val repo     = new RecordingRepo
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters1   = new AckCounters
+    val counters2   = new AckCounters
     // batchSize=2 → first amendment's 1 chunk fills slot 1, second amendment's 1 chunk triggers the flush.
-    val program = CrossAmendmentEmbedder
-      .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 2)
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 2)
       .use { embedder =>
         for {
-          fiber1 <- embedder.processChunks(testCtx, Stream.emit("amend-1-chunk")).start
-          fiber2 <- embedder.processChunks(testCtx2, Stream.emit("amend-2-chunk")).start
-          r1     <- fiber1.joinWithNever
-          r2     <- fiber2.joinWithNever
-        } yield (r1, r2)
+          fiber1 <- embedder.submit(testCtx, Stream.emit("amend-1-chunk"), "ack-1", counters1.ack, counters1.nack).start
+          fiber2 <- embedder
+            .submit(testCtx2, Stream.emit("amend-2-chunk"), "ack-2", counters2.ack, counters2.nack)
+            .start
+          _ <- fiber1.joinWithNever
+          _ <- fiber2.joinWithNever
+        } yield ()
       }
       .timeout(TestTimeout)
       .unsafeRunSync()
 
-    val (r1, r2) = program
-    val _        = r1.isSucceeded shouldBe true
-    val _        = r2.isSucceeded shouldBe true
-    val _        = repo.rows.flatten.size shouldBe 2
-    repo.rows.flatten.map(_.amendmentId).toSet shouldBe Set(42L, 99L)
+    val _ = counters1.acks.get() shouldBe 1
+    val _ = counters1.nacks.get() shouldBe 0
+    val _ = counters2.acks.get() shouldBe 1
+    val _ = counters2.nacks.get() shouldBe 0
+    val _ = chunkRepo.rows.flatten.size shouldBe 2
+    chunkRepo.rows.flatten.map(_.amendmentId).toSet shouldBe Set(42L, 99L)
   }
 
-  it should "share a single outcome between concurrent submissions for the same versionId (Pub/Sub redelivery)" in {
-    // Two concurrent processChunks calls for the same `versionId` (e.g., Pub/Sub redelivers a message before the
-    // first delivery's processChunks acks). The second submission must NOT install a competing Deferred — the first
-    // fiber would otherwise hang forever awaiting an orphaned reference. Both fibers must observe the same outcome,
-    // and the chunk pipeline must run only once (no duplicate inserts hitting the (version_id, chunk_index) UNIQUE).
-    import cats.effect.Deferred
-    import cats.syntax.all._
-    val embedSvc = new RecordingEmbeddingService
-    val repo     = new RecordingRepo
+  it should "trim removes stale tail when re-submission produces fewer chunks (Q4)" in {
+    // Sanity check that trimChunksPast is invoked with the new submission's chunk count. The stale-tail removal at
+    // the DB layer is exercised in the integration spec; here we assert the embedder sends the right call.
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
 
-    // Track whether the second call's chunkStream is iterated. After the test we assert it never was — proving the
-    // duplicate's pipeline was short-circuited.
-    val secondStreamWasIterated = new java.util.concurrent.atomic.AtomicBoolean(false)
-
-    val program = (Deferred[IO, Unit], Deferred[IO, Unit]).tupled
-      .flatMap {
-        case (gate, fiber1Registered) =>
-          // Fiber1's stream blocks on `gate` AFTER signaling that fiber1 has entered the stream pipeline (which
-          // implies register has already run). Fiber2 races in once we observe `fiber1Registered`, then we open the
-          // gate so fiber1 can finish.
-          val firstStream: Stream[IO, String] =
-            Stream.exec(fiber1Registered.complete(()).void) ++
-              Stream.eval(gate.get.as("first-chunk"))
-          val secondStream: Stream[IO, String] =
-            Stream("dup-only-chunk").evalTap(_ => IO(secondStreamWasIterated.set(true)))
-
-          CrossAmendmentEmbedder
-            .resource[IO](embedSvc, repo, testXa, testLogger, batchSize = 50)
-            .use { embedder =>
-              for {
-                fiber1  <- embedder.processChunks(testCtx, firstStream).start
-                _       <- fiber1Registered.get
-                fiber2  <- embedder.processChunks(testCtx, secondStream).start
-                _       <- IO.sleep(20.millis) // give fiber2 a moment to hit register
-                _       <- gate.complete(())
-                result1 <- fiber1.joinWithNever
-                result2 <- fiber2.joinWithNever
-              } yield (result1, result2)
-            }
-      }
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, Stream("c0", "c1"), "ack-1", counters.ack, counters.nack))
       .timeout(TestTimeout)
+      .unsafeRunSync()
 
-    val (r1, r2) = program.unsafeRunSync()
-    val _        = r1.isSucceeded shouldBe true
-    val _        = r2.isSucceeded shouldBe true
-    val _        = r1 shouldBe r2
-    val _        = secondStreamWasIterated.get shouldBe false
-    repo.rows.flatten.size shouldBe 1
+    chunkRepo.trimCalls shouldBe Vector((7L, 2))
+  }
+
+  it should "NACK + re-raise when the producer's chunk stream itself raises before finalize" in {
+    val embedSvc    = new RecordingEmbeddingService
+    val chunkRepo   = new RecordingChunkRepo
+    val versionRepo = new RecordingVersionRepo
+    val counters    = new AckCounters
+
+    val streamError                       = new java.io.IOException("upstream extractor blew up")
+    val raisingStream: Stream[IO, String] = Stream.raiseError[IO](streamError)
+
+    val raised: Either[Throwable, Unit] = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, raisingStream, "ack-stream-fail", counters.ack, counters.nack))
+      .timeout(TestTimeout)
+      .attempt
+      .unsafeRunSync()
+
+    val _ = raised.left.toOption.map(_.getMessage) shouldBe Some("upstream extractor blew up")
+    val _ = counters.acks.get() shouldBe 0
+    val _ = counters.nacks.get() shouldBe 1
+    val _ = chunkRepo.rows shouldBe empty
+    versionRepo.markFetchedSeen shouldBe empty
   }
 
 }

@@ -16,7 +16,7 @@ import repcheck.ingestion.amendments.text.errors.{
   AmendmentTextDownloadHttpError,
   AmendmentTextProcessingFailed,
 }
-import repcheck.ingestion.amendments.text.persistence.{AmendmentTextChunkRepository, AmendmentTextVersionRepository}
+import repcheck.ingestion.amendments.text.persistence.AmendmentTextVersionRepository
 import repcheck.ingestion.bills.common.persistence.TransactionRunner
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.chunking.TextChunker
@@ -28,32 +28,33 @@ import repcheck.shared.models.congress.common.FormatType
 import repcheck.shared.models.congress.dos.amendment.AmendmentTextVersionDO
 
 /**
- * Processes one [[AmendmentTextAvailableEvent]] end-to-end. Mirror of
- * [[repcheck.ingestion.bills.text.pipeline.BillTextProcessor]] for the amendment side. Crash semantics, heap profile,
- * and back-pressure behavior are identical to the bill-side processor.
+ * Processes one [[AmendmentTextAvailableEvent]] end-to-end. Mirror of `BillTextProcessor` for the amendment side.
  *
  *   1. **Resolve the storage `FormatType`** from the wire `formatType` (`HTML` → FormattedText, `PDF` → PDF). An
  *      unknown value raises [[AmendmentTextProcessingFailed]] BEFORE the upsert — no fallback row is ever written.
  *   1. **Single-roundtrip upsert** via [[AmendmentTextVersionRepository.upsert]]. The wire `versionTypeCode`
  *      (`SUB`/`MOD`) is now exactly the value the DB enum stores (since db-migrations 0.1.36), so it is bound directly.
  *      Returns `(versionId, inserted, alreadyComplete)`. If `alreadyComplete = true`, short-circuit to
- *      `Skipped("already-ingested")` and ACK the message.
- *   1. **Clear orphan chunks** for this `version_id` (idempotent — no-op when row was just inserted).
- *   1. **Open the streaming pipeline**: HTTP body bytes → format-dispatched extractor (HTML/PDF) → chunker →
- *      cross-amendment embedder → per-batch INSERT. Backpressure flows end-to-end as in the bill side.
- *   1. **Mark the version complete** via UPDATE `amendment_text_versions SET fetched_at = NOW(), text_length = $bytes`.
- *      **No completion event is emitted** — readiness is signaled by `fetched_at IS NOT NULL`.
+ *      `Skipped("already-ingested")` and ACK the message immediately.
+ *   1. **Hand off to the embedder via [[AmendmentChunkEmbedder.submit]]** with the chunk stream + Pub/Sub ack/nack
+ *      effects. The embedder owns chunk persistence, post-batch trim of the stale tail, `markFetched`, and the eventual
+ *      ACK / NACK. The processor returns immediately as `ProcessingResult.Succeeded` once the submission is enqueued —
+ *      the actual ACK fires asynchronously when the embedder drains this submission's chunks.
+ *
+ * ==Idempotency at the chunk layer==
+ *
+ * `clearOrphanChunks` is gone. The chunk repository now uses last-writer-wins UPSERT on `(version_id, chunk_index)`, so
+ * re-deliveries (Pub/Sub at-least-once, post-crash retry) overwrite chunk rows in place. The embedder's post-completion
+ * `trimChunksPast` removes any stale tail when a re-stream produces fewer chunks than a previous run.
  *
  * ==No completion event==
  *
  * Per §7.6 spec the processor never publishes a `*.text.ingested` event. Downstream consumers (analysis, scoring)
- * discover ready amendments by polling `amendment_text_versions WHERE fetched_at IS NOT NULL`. The partial index
- * `idx_amendment_text_versions_fetched_not_null` from db-migration 039 makes that polling cheap.
+ * discover ready amendments by polling `amendment_text_versions WHERE fetched_at IS NOT NULL`.
  */
 class AmendmentTextProcessor[F[_]: Async] private[text] (
   downloader: AmendmentTextDownloader[F],
   amendmentTextVersionRepository: AmendmentTextVersionRepository[ConnectionIO],
-  amendmentTextChunkRepository: AmendmentTextChunkRepository[ConnectionIO],
   embedder: AmendmentChunkEmbedder[F],
   embeddingConfig: EmbeddingConfig,
   xa: Transactor[F],
@@ -63,7 +64,21 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
 
   private val StepName = "amendment-text-processing"
 
-  def processEvent(event: AmendmentTextAvailableEvent): F[ProcessingResult] = {
+  /**
+   * Process one event. Returns:
+   *   - `Skipped` when the version row is already complete (ack delegated immediately to caller).
+   *   - `Succeeded` once the chunk stream has been handed off to the embedder. The actual Pub/Sub ACK / NACK fires
+   *     later when the embedder drains this ackId's chunks; the result here is purely a stats signal for the
+   *     pipeline-executor's counters.
+   *   - `Failed` when the version-row UPSERT raises (caller invokes `nack` directly), or when `submit` itself raises
+   *     (the embedder already invoked `nack` internally before re-raising).
+   */
+  def processEvent(
+    event: AmendmentTextAvailableEvent,
+    ackId: String,
+    ack: F[Unit],
+    nack: F[Unit],
+  ): F[ProcessingResult] = {
     val correlationId = event.correlationId
     val logCtx = LogContext(
       runId = correlationId.toString,
@@ -72,19 +87,22 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
       entityId = Some(event.naturalKey),
     )
 
-    processEventInternal(event, logCtx).handleErrorWith { error =>
+    processEventInternal(event, ackId, ack, nack, logCtx).handleErrorWith { error =>
       val errorClass = classifyError(error)
       logger.error(
         logCtx,
         s"Failed to process amendment text for ${event.naturalKey}: ${error.getMessage}",
         Some(error),
-      ) *>
+      ) *> nack.attempt.void *>
         Async[F].pure(ProcessingResult.Failed(event.naturalKey, error.getMessage, errorClass))
     }
   }
 
   private[pipeline] def processEventInternal(
     event: AmendmentTextAvailableEvent,
+    ackId: String,
+    ack: F[Unit],
+    nack: F[Unit],
     logCtx: LogContext,
   ): F[ProcessingResult] =
     for {
@@ -98,14 +116,15 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
       upsertResult <- upsertVersion(pendingVersion)
       result <- upsertResult match {
         case (versionId, _, true) =>
+          // Already complete — fire ACK immediately; no chunks to stream.
           logger
             .info(
               logCtx,
               s"Skipping ${event.naturalKey} (versionTypeCode=${event.versionTypeCode}, format=${event.formatType}) — version $versionId already complete",
-            )
+            ) *> ack
             .as(ProcessingResult.Skipped(event.naturalKey, "already-ingested"))
         case (versionId, _, false) =>
-          processFreshVersion(event, versionId, logCtx)
+          handOffToEmbedder(event, versionId, ackId, ack, nack, logCtx)
       }
     } yield result
 
@@ -127,91 +146,38 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
   private[pipeline] def upsertVersion(version: AmendmentTextVersionDO): F[(Long, Boolean, Boolean)] =
     TransactionRunner.run(xa)(amendmentTextVersionRepository.upsert(version))
 
-  private[pipeline] def processFreshVersion(
-    event: AmendmentTextAvailableEvent,
-    versionId: Long,
-    logCtx: LogContext,
-  ): F[ProcessingResult] =
-    for {
-      _ <- clearOrphanChunks(versionId)
-      embedderResult <- streamDownloadExtractChunkEmbedAndPersist(
-        event = event,
-        versionId = versionId,
-      )
-      finalResult <- embedderResult match {
-        case ProcessingResult.Succeeded(_, _) =>
-          for {
-            _ <- markVersionFetched(versionId)
-            _ <- logger.info(
-              logCtx,
-              s"Successfully processed amendment text for ${event.naturalKey} — version $versionId",
-            )
-          } yield ProcessingResult.Succeeded(event.naturalKey, eventEmitted = false)
-        case ProcessingResult.Failed(_, reason, errorClass) =>
-          logger
-            .warn(logCtx, s"Cross-amendment embedder failed for ${event.naturalKey} (version $versionId): $reason")
-            .as(ProcessingResult.Failed(event.naturalKey, reason, errorClass))
-        case ProcessingResult.Skipped(_, reason) =>
-          Async[F].raiseError[ProcessingResult](
-            AmendmentTextProcessingFailed(
-              event.naturalKey,
-              s"Cross-amendment embedder unexpectedly returned Skipped(reason=$reason) for version $versionId",
-            )
-          )
-      }
-    } yield finalResult
-
-  private[pipeline] def clearOrphanChunks(versionId: Long): F[Unit] =
-    TransactionRunner.run(xa)(amendmentTextChunkRepository.deleteByVersionId(versionId))
-
   /**
-   * Build the per-amendment chunk stream and submit it to the cross-amendment embedder. Pipeline stages within this
-   * method:
-   *
-   *   1. `downloader.streamBody` — `Stream[F, Byte]` of HTTP response bytes. URL is rewritten to api.govinfo.gov when
-   *      it matches the CREC pattern.
-   *   1. `extractText(bytes, formatType)` — `Stream[F, String]` of semantic fragments (paragraphs / page text).
-   *   1. `stripNullBytes` + `filter(nonEmpty)` — Postgres TEXT can't hold null bytes; defensive scrub.
-   *   1. `TextChunker.chunkPipe(maxChunkChars)` — accumulate fragments + emit fixed-size chunks.
-   *   1. `embedder.processChunks` — submits each chunk to the shared cross-amendment queue; awaits the amendment's
-   *      Deferred.
+   * Hand the chunk stream off to the embedder and return immediately. The embedder owns chunk persistence + trim +
+   * markFetched + ACK/NACK from this point on. Returning `Succeeded` here is a stats signal only — the actual ACK
+   * lifecycle is in the embedder's hands.
    */
-  private[pipeline] def streamDownloadExtractChunkEmbedAndPersist(
+  private[pipeline] def handOffToEmbedder(
     event: AmendmentTextAvailableEvent,
     versionId: Long,
+    ackId: String,
+    ack: F[Unit],
+    nack: F[Unit],
+    logCtx: LogContext,
   ): F[ProcessingResult] = {
-    val ctx   = AmendmentEmbedCtx(amendmentId = event.amendmentId, versionId = versionId, naturalKey = event.naturalKey)
+    val ctx = AmendmentEmbedCtx(
+      amendmentId = event.amendmentId,
+      versionId = versionId,
+      naturalKey = event.naturalKey,
+    )
     val bytes = downloader.streamBody(event.url, event.formatType, event.correlationId)
     val chunkStream = extractText(bytes, event.formatType, event.naturalKey)
       .map(stripNullBytes)
       .filter(_.nonEmpty)
       .through(TextChunker.chunkPipe(embeddingConfig.maxChunkChars))
-    embedder.processChunks(ctx, chunkStream)
+    embedder.submit(ctx, chunkStream, ackId, ack, nack) *>
+      logger
+        .info(logCtx, s"Submitted ${event.naturalKey} chunks to embedder; version $versionId")
+        .as(ProcessingResult.Succeeded(event.naturalKey, eventEmitted = false))
   }
 
   /** Postgres TEXT can't hold null bytes; defensive per-fragment scrub. */
   private[pipeline] def stripNullBytes(text: String): String =
     text.filter(_.toInt != 0)
-
-  /**
-   * Mark the version row complete: set `fetched_at = NOW()` and `text_length` to the actual character total of the
-   * persisted chunks (`SUM(LENGTH(content))` from the chunks table). Computing it post-write avoids threading a counter
-   * Ref through the streaming pipeline; the cost is one SUM aggregation per amendment which is cheap for the chunk
-   * volume per amendment. After this UPDATE commits, downstream consumers polling `fetched_at IS NOT NULL` see the row.
-   *
-   * `text_length` is bounded to `Int.MaxValue` defensively — the column is `INT` per migration 039 and a pathological
-   * multi-GB document would overflow. In practice amendment text fits comfortably within int range.
-   */
-  private[pipeline] def markVersionFetched(versionId: Long): F[Unit] =
-    Async[F].delay(Instant.now()).flatMap { now =>
-      TransactionRunner.run(xa) {
-        for {
-          totalChars <- amendmentTextChunkRepository.sumContentLengthByVersionId(versionId)
-          clamped = math.min(totalChars, Int.MaxValue.toLong).toInt
-          _ <- amendmentTextVersionRepository.markFetched(versionId, now, clamped)
-        } yield ()
-      }
-    }
 
   /**
    * Build the `AmendmentTextVersionDO` that goes into the upsert. The `versionType` is the wire `versionTypeCode`
@@ -230,8 +196,7 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
       formatType = formatType,
       url = event.url,
       // Populated only when the rewriter recognized the URL — `None` otherwise so the column reflects whether
-      // the api.govinfo.gov path was used. The `rewriter_miss` outcome counter (per §7.6 observability) reads
-      // off the `download_url IS NULL AND fetched_at IS NOT NULL` predicate.
+      // the api.govinfo.gov path was used.
       downloadUrl = downloader.previewDownloadUrl(event.url),
       textLength = None,
       fetchedAt = None,
@@ -241,9 +206,6 @@ class AmendmentTextProcessor[F[_]: Async] private[text] (
   private[pipeline] def classifyError(error: Throwable): String =
     error match {
       case http: AmendmentTextDownloadHttpError =>
-        // Delegate to the typed classifier so 429 / 5xx route to Transient and 401/403 (invalid api_key) + other
-        // 4xx route to Systemic. Without this case the typed error fell into the default Systemic bucket and the
-        // classifier was effectively dead code.
         AmendmentTextDownloadErrorClassifier.classify(http) match {
           case ErrorClass.Transient => "Transient"
           case ErrorClass.Systemic  => "Systemic"

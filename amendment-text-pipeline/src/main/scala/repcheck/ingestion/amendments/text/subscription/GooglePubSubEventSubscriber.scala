@@ -8,7 +8,7 @@ import cats.syntax.all._
 import io.circe.parser
 
 import com.google.cloud.pubsub.v1.stub.SubscriberStub
-import com.google.pubsub.v1.{AcknowledgeRequest, PullRequest}
+import com.google.pubsub.v1.{AcknowledgeRequest, ModifyAckDeadlineRequest, PullRequest}
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.events.{AmendmentTextAvailableEvent, PipelineEvent}
@@ -57,6 +57,22 @@ class GooglePubSubEventSubscriber[F[_]: Async] private[subscription] (
         .build()
 
       Async[F].blocking(stub.acknowledgeCallable().call(ackRequest)).void
+    }
+
+  override def nack(ackIds: List[String]): F[Unit] =
+    if (ackIds.isEmpty) {
+      Async[F].unit
+    } else {
+      // ModifyAckDeadline with deadlineSeconds=0 is the documented Pub/Sub NACK pattern: makes the message immediately
+      // re-deliverable instead of waiting for the 60-second ack deadline to elapse.
+      val nackRequest = ModifyAckDeadlineRequest
+        .newBuilder()
+        .setSubscription(subscriptionName)
+        .addAllAckIds(ackIds.asJava)
+        .setAckDeadlineSeconds(0)
+        .build()
+
+      Async[F].blocking(stub.modifyAckDeadlineCallable().call(nackRequest)).void
     }
 
   private[subscription] def deserializeEvent(

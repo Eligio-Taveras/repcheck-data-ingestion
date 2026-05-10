@@ -17,7 +17,6 @@ import repcheck.ingestion.amendments.text.download.AmendmentTextDownloader
 import repcheck.ingestion.amendments.text.embedding.CrossAmendmentEmbedder
 import repcheck.ingestion.amendments.text.extraction.AmendmentTextExtractor
 import repcheck.ingestion.amendments.text.persistence.{
-  AmendmentTextChunkRepository,
   AmendmentTextVersionRepository,
   DoobieAmendmentTextChunkRepository,
   DoobieAmendmentTextVersionRepository,
@@ -129,8 +128,6 @@ private[app] object AmendmentTextPipelinePipeline {
   ): AmendmentTextProcessor[F] = {
     val versionRepository: AmendmentTextVersionRepository[doobie.ConnectionIO] =
       new DoobieAmendmentTextVersionRepository
-    val chunkRepository: AmendmentTextChunkRepository[doobie.ConnectionIO] =
-      new DoobieAmendmentTextChunkRepository
     val downloader = new AmendmentTextDownloader[F](
       client = httpClient,
       govInfoApiKey = config.pipeline.govInfoApiKey,
@@ -141,7 +138,6 @@ private[app] object AmendmentTextPipelinePipeline {
     new AmendmentTextProcessor[F](
       downloader = downloader,
       amendmentTextVersionRepository = versionRepository,
-      amendmentTextChunkRepository = chunkRepository,
       embedder = embedder,
       embeddingConfig = config.embedding,
       xa = transactor,
@@ -193,30 +189,29 @@ private[app] object AmendmentTextPipelinePipeline {
       .takeWhile(_.nonEmpty)
       .flatMap(Stream.emits)
       .parEvalMap(config.pipeline.parallelism) { receivedEvent =>
-        processAndAck(subscriber, processor, receivedEvent, logger)
+        processWithDelegatedAck(subscriber, processor, receivedEvent)
       }
   }
 
-  private[app] def processAndAck[F[_]: Async](
+  /**
+   * Wire per-message `ack` / `nack` effects to the processor. The processor either:
+   *   - hands off the chunk stream to the embedder (which ACKs when chunks land), or
+   *   - fires `ack` synchronously for `Skipped` (already-ingested), or
+   *   - fires `nack` synchronously when the version-row UPSERT raises (Failed).
+   *
+   * `ProcessingResult` here is a stats signal only — the actual Pub/Sub ACK lifecycle is owned by either the processor
+   * (skip / version-upsert failure) or the embedder (chunk persistence).
+   */
+  private[app] def processWithDelegatedAck[F[_]](
     subscriber: PubSubEventSubscriber[F],
     processor: AmendmentTextProcessor[F],
     receivedEvent: ReceivedEvent,
-    logger: PipelineLogger[F],
   ): F[ProcessingResult] = {
     val event = receivedEvent.event.payload
-    processor.processEvent(event).flatTap { result =>
-      if (result.isSucceeded || result.isSkipped) {
-        subscriber.acknowledge(List(receivedEvent.ackId))
-      } else {
-        logger.warn(
-          LogContext(
-            runId = event.correlationId.toString,
-            stepName = PipelineName,
-          ),
-          s"Not acking message for ${event.naturalKey} — processing failed, will be redelivered",
-        )
-      }
-    }
+    val ackId = receivedEvent.ackId
+    val ack   = subscriber.acknowledge(List(ackId))
+    val nack  = subscriber.nack(List(ackId))
+    processor.processEvent(event, ackId, ack, nack)
   }
 
   private[app] def buildResources[F[_]: Async](
@@ -236,6 +231,7 @@ private[app] object AmendmentTextPipelinePipeline {
       embedder <- CrossAmendmentEmbedder.resource[F](
         embeddingService = embeddingService,
         amendmentTextChunkRepository = new DoobieAmendmentTextChunkRepository,
+        amendmentTextVersionRepository = new DoobieAmendmentTextVersionRepository,
         xa = transactor,
         logger = logger,
         batchSize = config.embedding.embedBatchSize,

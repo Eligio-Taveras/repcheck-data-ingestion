@@ -9,7 +9,14 @@ import cats.effect.unsafe.implicits.global
 import com.google.api.gax.rpc.UnaryCallable
 import com.google.cloud.pubsub.v1.stub.SubscriberStub
 import com.google.protobuf.ByteString
-import com.google.pubsub.v1.{AcknowledgeRequest, PubsubMessage, PullRequest, PullResponse, ReceivedMessage}
+import com.google.pubsub.v1.{
+  AcknowledgeRequest,
+  ModifyAckDeadlineRequest,
+  PubsubMessage,
+  PullRequest,
+  PullResponse,
+  ReceivedMessage,
+}
 
 import org.mockito.ArgumentMatchers.any
 import org.mockito.Mockito.{never, verify, when}
@@ -205,6 +212,35 @@ class GooglePubSubEventSubscriberSpec extends AnyFlatSpec with Matchers with Moc
     val subscriber = makeStubSubscriber(logger, stubMock)
     subscriber.acknowledge(List.empty).unsafeRunSync()
     verify(stubMock, never()).acknowledgeCallable()
+  }
+
+  // --- nack ---
+
+  "nack" should "invoke modifyAckDeadlineCallable with deadlineSeconds=0 for non-empty ack IDs" in {
+    val logger       = new StubPipelineLogger
+    val stubMock     = mock[SubscriberStub]
+    val nackCallable = mock[UnaryCallable[ModifyAckDeadlineRequest, com.google.protobuf.Empty]]
+
+    when(stubMock.modifyAckDeadlineCallable()).thenReturn(nackCallable)
+    when(nackCallable.call(any[ModifyAckDeadlineRequest]())).thenReturn(com.google.protobuf.Empty.getDefaultInstance)
+
+    val subscriber = makeStubSubscriber(logger, stubMock)
+    subscriber.nack(List("ack-1", "ack-2")).unsafeRunSync()
+
+    val captor = org.mockito.ArgumentCaptor.forClass(classOf[ModifyAckDeadlineRequest])
+    val _      = verify(nackCallable).call(captor.capture())
+    val _      = captor.getValue.getAckDeadlineSeconds shouldBe 0
+    captor.getValue.getAckIdsList.size shouldBe 2
+  }
+
+  it should "not invoke the callable when the ack IDs list is empty" in {
+    val logger       = new StubPipelineLogger
+    val stubMock     = mock[SubscriberStub]
+    val nackCallable = mock[UnaryCallable[ModifyAckDeadlineRequest, com.google.protobuf.Empty]]
+    when(stubMock.modifyAckDeadlineCallable()).thenReturn(nackCallable)
+    val subscriber = makeStubSubscriber(logger, stubMock)
+    subscriber.nack(List.empty).unsafeRunSync()
+    verify(stubMock, never()).modifyAckDeadlineCallable()
   }
 
   // --- PubSubSubscriberResource ---
