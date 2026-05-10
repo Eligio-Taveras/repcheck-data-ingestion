@@ -277,11 +277,18 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
   }
 
   /**
-   * If this ackId has finalized AND `submitted == expected`, run completion: trim + markFetched (gated on `written >
-   * 0`), invoke `ack`, remove from state. Idempotent: a second call after completion is a no-op.
+   * If this ackId has finalized AND `submitted == expected`, run completion: trim past the new tail + markFetched
+   * (always, regardless of `written` — empty submissions still record the fact that we processed the version with
+   * `text_length = 0`), then invoke `ack`. Idempotent: a second call after completion is a no-op.
    *
-   * If `markFetched`/trim raise, NACK the ackId and remove from state — the chunk UPSERT is idempotent and the
-   * version-row upsert path is idempotent, so redelivery converges.
+   * Empty-stream completion behavior: `submitted = 0` → `trimChunksPast(versionId, 0)` wipes any prior chunks for that
+   * versionId (LWW-consistent: the latest submission decided "no text"), and `markFetched(versionId, NOW(), 0)` records
+   * the fact in the version row. Without this, `version_row.fetched_at` would stay NULL forever for empty extractions
+   * even though Pub/Sub ACKed the message.
+   *
+   * Errors at trim/markFetched: NACK + log; the chunk UPSERT is idempotent so redelivery converges. ACK / NACK errors
+   * are isolated via `safeAck` so one ackId's downstream failure can't short-circuit completion for sibling ackIds in
+   * the same batch.
    */
   private[embedding] def completeAckIfReady(ackId: String): F[Unit] =
     state
@@ -296,35 +303,54 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
         case None => Async[F].unit
         case Some(progress) =>
           val versionId = progress.ctx.versionId
-          val finalize: F[Unit] =
-            if (progress.written <= 0) {
-              // No chunks landed (empty stream, or every flush filtered/failed). ACK still fires per the contract.
-              progress.ack
-            } else {
-              val markVersionWork: F[Unit] = Async[F].delay(Instant.now()).flatMap { now =>
-                TransactionRunner.run(xa) {
-                  for {
-                    _          <- amendmentTextChunkRepository.trimChunksPast(versionId, progress.submitted)
-                    totalChars <- amendmentTextChunkRepository.sumContentLengthByVersionId(versionId)
-                    clamped = math.min(totalChars, Int.MaxValue.toLong).toInt
-                    _ <- amendmentTextVersionRepository.markFetched(versionId, now, clamped)
-                  } yield ()
-                }
-              }
-              markVersionWork.attempt
-                .flatMap {
-                  case Right(_) => progress.ack
-                  case Left(error) =>
-                    val errMsg = Option(error.getMessage).getOrElse(error.getClass.getSimpleName)
-                    logger.error(
-                      ackLogCtx(progress),
-                      s"trim/markFetched failed for ackId=$ackId, version=$versionId: $errMsg; NACKing",
-                      Some(error),
-                    ) *> progress.nack
-                }
+          val markVersionWork: F[Unit] = Async[F].delay(Instant.now()).flatMap { now =>
+            TransactionRunner.run(xa) {
+              for {
+                _          <- amendmentTextChunkRepository.trimChunksPast(versionId, progress.submitted)
+                totalChars <- amendmentTextChunkRepository.sumContentLengthByVersionId(versionId)
+                clamped = math.min(totalChars, Int.MaxValue.toLong).toInt
+                _ <- amendmentTextVersionRepository.markFetched(versionId, now, clamped)
+              } yield ()
             }
-          finalize
+          }
+          markVersionWork.attempt
+            .flatMap {
+              case Right(_) => safeAck(progress)
+              case Left(error) =>
+                logger
+                  .error(
+                    ackLogCtx(progress),
+                    s"trim/markFetched failed for ackId=$ackId, version=$versionId: ${describeError(error)}; NACKing",
+                    Some(error),
+                  )
+                  .attempt
+                  .void *> progress.nack.attempt.void
+            }
       }
+
+  /**
+   * Run the user-supplied `ack` effect, isolating failures. If `ack` raises (e.g., the processor wired
+   * `publishIngestedEvent *> subscriber.acknowledge(ackId)` and publish failed), we log + invoke `nack` so Pub/Sub
+   * redelivers; the next attempt's UPSERT + trim + markFetched + ack are all idempotent. Errors from the fallback
+   * `nack` are also swallowed so one failed completion never escapes into the flushing producer's effect channel and
+   * short-circuits a `traverse_(completeAckIfReady)` over sibling ackIds in the same batch.
+   */
+  private[embedding] def safeAck(progress: AmendmentAckProgress[F]): F[Unit] =
+    progress.ack.attempt.flatMap {
+      case Right(_) => Async[F].unit
+      case Left(error) =>
+        logger
+          .error(
+            ackLogCtx(progress),
+            s"ack callback raised for ackId=${progress.ackId}; falling back to NACK: ${describeError(error)}",
+            Some(error),
+          )
+          .attempt
+          .void *> progress.nack.attempt.void
+    }
+
+  private[embedding] def describeError(error: Throwable): String =
+    Option(error.getMessage).getOrElse(error.getClass.getSimpleName)
 
   /**
    * On batch-level error (embedding service raised, or UPSERT raised): atomically remove every distinct ackId in the

@@ -169,7 +169,10 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
     val nack: IO[Unit] = IO { val _ = nacks.incrementAndGet(); () }
   }
 
-  "submit" should "ACK immediately on an empty chunk stream (written = 0, no trim, no markFetched)" in {
+  "submit" should "ACK + trim(0) + markFetched(text_length=0) on an empty chunk stream so the version row reflects 'processed, no text'" in {
+    // Empty extraction is a legitimate outcome (e.g., a corrupted source returning zero bytes). Without trim+markFetched
+    // here, `amendment_text_versions.fetched_at` would stay NULL forever even though the Pub/Sub message ACKed,
+    // leaving the row perpetually "incomplete" in the DB.
     val embedSvc    = new RecordingEmbeddingService
     val chunkRepo   = new RecordingChunkRepo
     val versionRepo = new RecordingVersionRepo
@@ -184,8 +187,12 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
     val _ = counters.nacks.get() shouldBe 0
     val _ = embedSvc.batches shouldBe empty
     val _ = chunkRepo.rows shouldBe empty
-    val _ = chunkRepo.trimCalls shouldBe empty
-    versionRepo.markFetchedSeen shouldBe empty
+    // Trim past 0 wipes any prior chunks for that versionId (LWW-consistent: latest submission decided "no text").
+    val _ = chunkRepo.trimCalls shouldBe Vector((7L, 0))
+    // markFetched runs with text_length = 0 — sumContentLengthByVersionId returns 0 because no rows persisted.
+    val _ = versionRepo.markFetchedSeen.size shouldBe 1
+    val _ = versionRepo.markFetchedSeen.headOption.map(_._1) shouldBe Some(7L)
+    versionRepo.markFetchedSeen.headOption.map(_._3) shouldBe Some(0)
   }
 
   it should "ACK after multi-chunk happy path; trim past tail + markFetched fire when written > 0" in {
@@ -322,6 +329,59 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
 
     val _ = counters.acks.get() shouldBe 0
     counters.nacks.get() shouldBe 1
+  }
+
+  it should "fall back to NACK when the user-supplied ack effect itself raises (e.g., publishIngestedEvent failure)" in {
+    // The processor wires `publishIngestedEvent *> subscriber.acknowledge(ackId)` as the ack effect. If publish raises
+    // (transient broker failure), the ackId is already removed from state; if the embedder didn't fall back to NACK
+    // here, the Pub/Sub message would just sit until ackDeadline and rely on implicit redelivery. Explicit NACK forces
+    // immediate redelivery via modifyAckDeadline=0.
+    val embedSvc                = new RecordingEmbeddingService
+    val chunkRepo               = new RecordingChunkRepo
+    val versionRepo             = new RecordingVersionRepo
+    val nackCounter             = new AtomicInteger(0)
+    val ackThatRaises: IO[Unit] = IO.raiseError(new RuntimeException("publish failed"))
+    val nackEffect: IO[Unit]    = IO { val _ = nackCounter.incrementAndGet(); () }
+
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 50)
+      .use(embedder => embedder.submit(testCtx, Stream.emit("chunk"), "ack-1", ackThatRaises, nackEffect))
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    nackCounter.get() shouldBe 1
+  }
+
+  it should "isolate ACK failures so one ackId's raising ack doesn't strand sibling ackIds in state" in {
+    // applyBatchResult runs `traverse_(completeAckIfReady)` over every ackId in the batch. If one of those ackIds'
+    // ack effect raises and isn't isolated, the traversal short-circuits and later ackIds never get their completion
+    // call. With safeAck wrapping ack in `.attempt`, the failed ackId falls back to NACK and the loop continues.
+    val embedSvc              = new RecordingEmbeddingService
+    val chunkRepo             = new RecordingChunkRepo
+    val versionRepo           = new RecordingVersionRepo
+    val raisingAck: IO[Unit]  = IO.raiseError(new RuntimeException("publish broken"))
+    val failingNackCounter    = new AtomicInteger(0)
+    val failingNack: IO[Unit] = IO { val _ = failingNackCounter.incrementAndGet(); () }
+    val sibling               = new AckCounters
+
+    // batchSize=2 so the two submissions land in one shared batch
+    val _ = CrossAmendmentEmbedder
+      .resource[IO](embedSvc, chunkRepo, versionRepo, testXa, testLogger, batchSize = 2)
+      .use { embedder =>
+        for {
+          fiberA <- embedder.submit(testCtx, Stream.emit("a"), "ack-fail", raisingAck, failingNack).start
+          fiberB <- embedder.submit(testCtx2, Stream.emit("b"), "ack-ok", sibling.ack, sibling.nack).start
+          _      <- fiberA.joinWithNever
+          _      <- fiberB.joinWithNever
+        } yield ()
+      }
+      .timeout(TestTimeout)
+      .unsafeRunSync()
+
+    // The failing-ack ackId fell back to NACK; its sibling completed normally with ACK.
+    val _ = failingNackCounter.get() shouldBe 1
+    val _ = sibling.acks.get() shouldBe 1
+    sibling.nacks.get() shouldBe 0
   }
 
   it should "ACK both ackIds when concurrent identical redelivery hits the same versionId (last-writer-wins UPSERT)" in {
