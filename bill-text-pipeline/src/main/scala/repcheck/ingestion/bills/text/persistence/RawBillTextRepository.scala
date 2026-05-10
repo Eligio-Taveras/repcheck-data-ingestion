@@ -8,7 +8,8 @@ import repcheck.shared.models.congress.dos.bill.RawBillTextDO
  * Post-Option-C-refactor: writes are idempotent UPSERTs keyed on `(version_id, chunk_index)`. The previous `replaceAll`
  * / `deleteByVersionId` / `insertOne` / `insertMany` methods are gone — the new
  * [[repcheck.ingestion.bills.text.embedding.CrossBillEmbedder]] writes via [[upsertMany]] (last-writer-wins on the
- * conflict key) and prunes any leftover stale tail via [[trimChunksPast]] after each successful batch.
+ * conflict key). [[trimChunksPast]] runs once per completed ackId (not per batch) to prune any leftover stale tail when
+ * a re-stream produced fewer chunks than a previous run.
  *
  * Bills uses a plain UPSERT (no version-date gate) because `BillTextAvailableEvent` does not carry a `versionDate`
  * field and `bill_text_versions.version_date` is currently always written as `None`. See the corresponding
@@ -17,18 +18,20 @@ import repcheck.shared.models.congress.dos.bill.RawBillTextDO
 trait RawBillTextRepository[F[_]] {
 
   /**
-   * Idempotent batch UPSERT keyed on `(version_id, chunk_index)`. INSERTs new rows; on conflict, overwrites `content` +
-   * `embedding` with the new values (last-writer-wins). Returns the number of rows affected (each row counts as 1
-   * whether it INSERTed or UPDATEd) so the embedder can populate its per-ackId `written` counter.
+   * Idempotent batch UPSERT keyed on `(version_id, chunk_index)`. INSERTs new rows; on conflict, overwrites `bill_id` +
+   * `content` + `embedding` with the new values (last-writer-wins on every non-key column). Returns the number of rows
+   * affected (each row counts as 1 whether it INSERTed or UPDATEd); the affected-row count is currently unused by the
+   * embedder, which attributes per-ackId completion against the full batch.
    *
    * Empty `rows` short-circuits to `0` without touching the DB.
    */
   def upsertMany(rows: List[RawBillTextDO]): F[Int]
 
   /**
-   * Delete any chunks whose `chunk_index >= chunkCount` for the given `versionId`. Run after a successful UPSERT batch
-   * to prune leftover chunks from a prior run that produced more chunks than the current submission. Idempotent — a
-   * no-op when no stale tail exists. Returns the number of rows deleted.
+   * Delete any chunks whose `chunk_index >= chunkCount` for the given `versionId`. Run once per completed ackId — after
+   * its full submission has been UPSERTed and right before `markFetched` — to prune leftover chunks from a prior run
+   * that produced more chunks than the current submission. Idempotent — a no-op when no stale tail exists. Returns the
+   * number of rows deleted.
    */
   def trimChunksPast(versionId: Long, chunkCount: Int): F[Int]
 

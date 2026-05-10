@@ -165,9 +165,12 @@ class PipelineIntegrationSpec
   }
 
   /**
-   * Run `processor.processEvent` with the new 5-arg signature, providing simple ack/nack effects so the embedder's
-   * `runTrimAndMarkFetched + composedAck` lifecycle drives the publishEvent + acknowledgement that the integration
-   * tests assert on.
+   * Run `processor.processEvent` with the new 5-arg signature. Both `ack` and `nack` are passed as `IO.unit` no-ops:
+   * these integration tests do NOT exercise the Pub/Sub acknowledgement / NACK pathway — they exercise the embedder's
+   * persistence + `publishIngestedEvent` lifecycle (chunks UPSERTed, `markFetched` flips, `BillTextIngestedEvent`
+   * published). The Pub/Sub-side wiring (real `subscriber.acknowledge` / `modifyAckDeadline=0`) is covered by the
+   * subscriber unit specs (`GooglePubSubEventSubscriberSpec`) and by the e2e harness; here we'd just be re-asserting
+   * `IO.unit` ran.
    */
   private def runProcessEvent(processor: BillTextProcessor[IO], event: BillTextAvailableEvent): ProcessingResult =
     processor

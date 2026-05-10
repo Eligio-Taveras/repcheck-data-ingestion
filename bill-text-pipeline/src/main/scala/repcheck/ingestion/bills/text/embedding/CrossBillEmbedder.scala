@@ -351,7 +351,14 @@ class CrossBillEmbedder[F[_]: Async] private[embedding] (
   /**
    * Run the caller-supplied `ack` effect, isolating failures. If `ack` raises (e.g., the processor wrapped
    * `publishIngestedEvent *> subscriber.acknowledge(ackId)` and publish failed), we log + invoke `nack` so Pub/Sub
-   * redelivers; the next attempt will re-run trim + markFetched + the user's `ack` (idempotent at every step).
+   * redelivers.
+   *
+   * Retry path on the redelivery: trim + markFetched have ALREADY committed in this attempt's transaction (they ran
+   * before this `safeAck` call), so the next delivery's processor will hit `isAlreadyProcessed` and take the skip
+   * branch — which itself re-publishes the `BillTextIngestedEvent` and ACKs. Net effect: a publish failure surfaces as
+   * one NACK + one redelivery + one re-publish + one ACK, with no embedder roundtrip on the retry. (The embedder's
+   * chunk UPSERT and trim are idempotent, so even if redelivery DID re-enter the fresh path for some other reason, the
+   * work would converge.)
    */
   private[embedding] def safeAck(progress: AckProgress[F], logCtx: LogContext): F[Unit] =
     progress.ack.attempt.flatMap {

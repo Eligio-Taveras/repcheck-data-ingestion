@@ -32,12 +32,13 @@ import repcheck.shared.models.congress.dos.bill.{BillTextVersionDO, RawBillTextD
  * to plain UPSERT on `(version_id, chunk_index)` — older redeliveries simply rewrite identical data (Congress.gov text
  * for a given (billId, versionCode) is monotonic).
  *
- * Each test wraps its IO in `IO.timeout(2.seconds)` so a hang surfaces as a fast failure rather than blocking sbt
- * forever — the FG-only design has no background fibers, so nothing should ever actually hang, but the timeout is cheap
- * insurance against future regressions.
+ * Each test wraps its IO in `.timeout(TestTimeout)` (currently 30 seconds — bumped from 2s after the cross-subproject
+ * test-parallelism flake; see the `TestTimeout` comment below). The timeout is cheap insurance: the FG-only design has
+ * no background fibers, so nothing should ever actually hang.
  *
  * What we cover:
- *   - empty-stream ACK: ackId with `expected = Some(0)` → ack fires immediately, no UPSERT, no trim, no markFetched
+ *   - empty-stream ACK: ackId with `expected = Some(0)` → ack fires immediately, no UPSERT, but trim(0) + markFetched
+ *     DO run so `bill_text_versions.fetched_at` flips to NOT NULL (otherwise the row sits "incomplete" forever)
  *   - multi-chunk happy path: ack fires after the last chunk persists; trim + markFetched run once
  *   - cross-bill batching: chunks from multiple ackIds in one batch, each ackId completes independently
  *   - concurrent identical (same versionId, two ackIds): both ACK; UPSERT idempotent; both trim + markFetched run
@@ -47,6 +48,8 @@ import repcheck.shared.models.congress.dos.bill.{BillTextVersionDO, RawBillTextD
  *   - trim error → NACK that ackId; no ack fires
  *   - markFetched error → NACK that ackId; no ack fires
  *   - chunk-stream error in `submit` → NACK and remove ackId from state
+ *   - producer fiber cancellation → NACK + cleanup state via `guaranteeCase`
+ *   - orphan-buffer cleanup: chunks for a failed ackId are purged before they leak into another ackId's flush
  */
 class CrossBillEmbedderSpec extends AnyFlatSpec with Matchers {
 
