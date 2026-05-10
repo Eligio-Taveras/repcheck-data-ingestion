@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?><vote_summary>
+  <congress>117</congress>
+  <session>1</session>
+  <congress_year>2021</congress_year>
+  <votes>
+    <vote>
+      <vote_number>00001</vote_number>
+      <vote_date>10-Aug</vote_date>
+      <issue>S.Amdt. 100</issue>
+      <question>On the Amendment
+         </question>
+      <result>Agreed to</result>
+      <vote_tally>
+        <yeas>60</yeas>
+        <nays>40</nays>
+      </vote_tally>
+      <title>S.Amdt. 100 to H.R. 3684; Amendment to the Infrastructure Investment and Jobs Act.</title>
+    </vote>
+  </votes>
+</vote_summary>
