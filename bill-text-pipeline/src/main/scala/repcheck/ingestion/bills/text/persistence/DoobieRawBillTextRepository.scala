@@ -10,13 +10,11 @@ import repcheck.shared.models.congress.dos.bill.RawBillTextDO
 /**
  * Doobie implementation of [[RawBillTextRepository]] keyed at `ConnectionIO`.
  *
- * `replaceAll` is the canonical write path: a single `ConnectionIO` that DELETEs by `version_id` then batch-inserts the
- * new chunks. Callers compose it with the parent version's INSERT/UPDATE under one `xa.trans` so a downstream failure
- * (e.g. event publish) rolls back the entire (version, chunks) tuple together.
- *
- * The pgvector `embedding` column is written via the `::vector` cast on the parameter — Doobie's `floatArrayPut` from
- * `bills-common.DoobieInstances` formats `Array[Float]` as `[1.0,2.0,...]` and PostgreSQL rejects the literal without
- * the explicit cast. Reads use `floatArrayGet` which parses the same shape back into `Array[Float]`.
+ * `upsertMany` uses `INSERT ... ON CONFLICT (version_id, chunk_index) DO UPDATE` so concurrent / replayed deliveries
+ * are last-writer-wins. The pgvector `embedding` column is written via the `::vector` cast on the parameter — Doobie's
+ * `floatArrayPut` from `bills-common.DoobieInstances` formats `Array[Float]` as `[1.0,2.0,...]` and PostgreSQL rejects
+ * the literal without the explicit cast. Reads use `floatArrayGet` which parses the same shape back into
+ * `Array[Float]`.
  *
  * NOTE: the `raw_bill_text` table name is a literal here pending a `Tables.RawBillText` constant in
  * `repcheck-pipeline-models` (follow-up PR; deliberately deferred to keep this PR self-contained).
@@ -37,49 +35,43 @@ class DoobieRawBillTextRepository extends RawBillTextRepository[ConnectionIO] {
     created_at
   """
 
-  // Update[] needs a literal SQL string (not a Fragment) so the table-name constant has to be inlined here.
-  private val insertSql: String =
-    s"INSERT INTO $tableName (bill_id, version_id, chunk_index, content, embedding) VALUES (?, ?, ?, ?, ?::vector)"
+  // Update[] needs a literal SQL string (not a Fragment) so the table name stays inlined here.
+  // ON CONFLICT keys on the PARTIAL unique index `uq_raw_bill_text_version_chunk` defined in db-migrations 026:
+  //
+  //     CREATE UNIQUE INDEX uq_raw_bill_text_version_chunk
+  //       ON raw_bill_text (version_id, chunk_index)
+  //       WHERE version_id IS NOT NULL;
+  //
+  // PostgreSQL requires the conflict target's `index_predicate` to match the partial index's predicate exactly,
+  // so the `WHERE version_id IS NOT NULL` clause is mandatory here. Without it PG raises
+  // "there is no unique or exclusion constraint matching the ON CONFLICT specification" and the whole batch fails.
+  //
+  // EXCLUDED holds the row that would have been INSERTed; we copy ALL non-key columns including bill_id so a
+  // corrected/replayed write can repair an earlier bad bill_id and keep the redundant key columns consistent.
+  // Per the LWW semantics on (version_id, chunk_index), the latest writer wins for every non-key column.
+  //
+  // The embedder always writes rows with `version_id = Some(versionId)` so the partial-index predicate is satisfied;
+  // a row with NULL version_id (the bill-without-linked-version case) would not match the unique index and would
+  // simply append on each call (duplicate-INSERT semantics, no conflict). The schema permits that case explicitly.
+  private val upsertSql: String =
+    s"""INSERT INTO $tableName (bill_id, version_id, chunk_index, content, embedding)
+       |VALUES (?, ?, ?, ?, ?::vector)
+       |ON CONFLICT (version_id, chunk_index) WHERE version_id IS NOT NULL DO UPDATE SET
+       |  bill_id = EXCLUDED.bill_id,
+       |  content = EXCLUDED.content,
+       |  embedding = EXCLUDED.embedding""".stripMargin
 
-  override def replaceAll(versionId: Long, chunks: List[RawBillTextDO]): ConnectionIO[Unit] = {
-    val deleteOldChunks: ConnectionIO[Unit] =
-      sql"DELETE FROM $table WHERE version_id = $versionId".update.run.map(_ => ())
-
-    // Branch at description-construction time, not inside a deferred `flatMap` lambda.
-    // Both arms of the if/else are evaluated when `replaceAll` is invoked, so unit tests
-    // that just build the description (no DB run needed) cover both paths cleanly.
-    if (chunks.isEmpty) {
-      deleteOldChunks
-    } else {
-      val rowsForUpdate: List[(Long, Option[Long], Int, String, Option[Array[Float]])] =
-        chunks.map(chunk => (chunk.billId, chunk.versionId, chunk.chunkIndex, chunk.content, chunk.embedding))
-      val insertNewChunks: ConnectionIO[Unit] =
-        Update[(Long, Option[Long], Int, String, Option[Array[Float]])](insertSql)
-          .updateMany(rowsForUpdate)
-          .map(_ => ())
-      deleteOldChunks.flatMap(_ => insertNewChunks)
-    }
-  }
-
-  override def deleteByVersionId(versionId: Long): ConnectionIO[Unit] =
-    sql"DELETE FROM $table WHERE version_id = $versionId".update.run.map(_ => ())
-
-  override def insertOne(chunk: RawBillTextDO): ConnectionIO[Unit] = {
-    val row: (Long, Option[Long], Int, String, Option[Array[Float]]) =
-      (chunk.billId, chunk.versionId, chunk.chunkIndex, chunk.content, chunk.embedding)
-    Update[(Long, Option[Long], Int, String, Option[Array[Float]])](insertSql).run(row).map(_ => ())
-  }
-
-  override def insertMany(rows: List[RawBillTextDO]): ConnectionIO[Unit] =
+  override def upsertMany(rows: List[RawBillTextDO]): ConnectionIO[Int] =
     if (rows.isEmpty) {
-      doobie.free.connection.unit
+      doobie.free.connection.pure(0)
     } else {
       val params: List[(Long, Option[Long], Int, String, Option[Array[Float]])] =
         rows.map(r => (r.billId, r.versionId, r.chunkIndex, r.content, r.embedding))
-      Update[(Long, Option[Long], Int, String, Option[Array[Float]])](insertSql)
-        .updateMany(params)
-        .map(_ => ())
+      Update[(Long, Option[Long], Int, String, Option[Array[Float]])](upsertSql).updateMany(params)
     }
+
+  override def trimChunksPast(versionId: Long, chunkCount: Int): ConnectionIO[Int] =
+    sql"DELETE FROM $table WHERE version_id = $versionId AND chunk_index >= $chunkCount".update.run
 
   override def findByVersionId(versionId: Long): ConnectionIO[List[RawBillTextDO]] =
     (fr"SELECT" ++ selectColumns ++

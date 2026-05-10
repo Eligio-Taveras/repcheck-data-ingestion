@@ -317,6 +317,7 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       .resource[IO](
         embeddingService = embeddingService,
         rawBillTextRepository = rawTextRepo,
+        textVersionRepository = textVersionRepo,
         xa = xa,
         logger = testLogger,
         batchSize = embeddingConfig.embedBatchSize,
@@ -329,7 +330,6 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
-      rawBillTextRepository = rawTextRepo,
       embedder = embedder,
       embeddingConfig = embeddingConfig,
       eventPublisher = eventPublisher,
@@ -479,8 +479,10 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
 
     // Step 3: Processor downloads text, stores in DB with embedding
     val processor = buildProcessorWithOllama()
-    val result    = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
-    val _         = result.isSucceeded shouldBe true
+    val result = processor
+      .processEvent(event, UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
+    val _ = result.isSucceeded shouldBe true
 
     // Step 4: Verify text stored in DB
     val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
@@ -520,7 +522,9 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val event    = parseEvent(messages.headOption.getOrElse(fail("No message")))
 
     val processor = buildProcessorWithOllama()
-    val _         = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
+    val _ = processor
+      .processEvent(event, UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
 
     // Verify embedding stored on at least one chunk
     val versions   = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
@@ -599,7 +603,9 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val msg702 = messages
       .find(m => extractPayloadField(m.getData.toStringUtf8, "naturalKey").contains("118-HR-702"))
       .getOrElse(fail(s"No event for bill 702 after $attempts pulls (got ${messages.size} messages)"))
-    val _ = processor.processEvent(parseEvent(msg702), UUID.randomUUID()).unsafeRunSync()
+    val _ = processor
+      .processEvent(parseEvent(msg702), UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
 
     // Switch to embedding2 for bill 703
     wireMock.resetMappings()
@@ -609,7 +615,9 @@ class DevPubSubSanitySpec extends AnyFlatSpec with Matchers with TransactorFixtu
     val msg703 = messages
       .find(m => extractPayloadField(m.getData.toStringUtf8, "naturalKey").contains("118-HR-703"))
       .getOrElse(fail("No event for bill 703"))
-    val _ = processor.processEvent(parseEvent(msg703), UUID.randomUUID()).unsafeRunSync()
+    val _ = processor
+      .processEvent(parseEvent(msg703), UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
 
     // Verify cross-bill vector search: query with embedding1 ranks bill 702 first.
     // Embeddings now live on raw_bill_text rows (P6.H4c refactor), so the search joins via that table.

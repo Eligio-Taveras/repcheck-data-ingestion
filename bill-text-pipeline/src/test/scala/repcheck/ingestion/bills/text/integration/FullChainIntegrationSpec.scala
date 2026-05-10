@@ -171,6 +171,7 @@ class FullChainIntegrationSpec
       .resource[IO](
         embeddingService = new NoOpEmbeddingService[IO],
         rawBillTextRepository = rawTextRepo,
+        textVersionRepository = textVersionRepo,
         xa = xa,
         logger = testLogger,
         batchSize = embeddingConfigStub.embedBatchSize,
@@ -183,7 +184,6 @@ class FullChainIntegrationSpec
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
-      rawBillTextRepository = rawTextRepo,
       embedder = embedder,
       embeddingConfig = embeddingConfigStub,
       eventPublisher = pipelineEventPublisher,
@@ -311,9 +311,11 @@ class FullChainIntegrationSpec
     )
 
     // Step 3: Run pipeline processor with the event
-    val processor      = buildProcessor()
-    val pipelineResult = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
-    val _              = pipelineResult.isSucceeded shouldBe true
+    val processor = buildProcessor()
+    val pipelineResult = processor
+      .processEvent(event, UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
+    val _ = pipelineResult.isSucceeded shouldBe true
 
     // Step 4: Verify text stored in DB. Content lives on raw_bill_text chunks post P6.H4c.
     val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
@@ -477,8 +479,10 @@ class FullChainIntegrationSpec
         versionCode = p.downField("versionCode").as[String].getOrElse(""),
         previousVersionCode = p.downField("previousVersionCode").as[String].toOption,
       )
-      val result = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
-      val _      = result.isSucceeded shouldBe true
+      val result = processor
+        .processEvent(event, UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+        .unsafeRunSync()
+      val _ = result.isSucceeded shouldBe true
     }
 
     // Verify both bills have text versions stored

@@ -35,6 +35,7 @@ import repcheck.ingestion.text.embedding.{
 }
 import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
+import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.BillDO
 
@@ -140,6 +141,7 @@ class PipelineIntegrationSpec
       .resource[IO](
         embeddingService = embeddingService,
         rawBillTextRepository = rawTextRepo,
+        textVersionRepository = textVersionRepo,
         xa = xa,
         logger = testLogger,
         batchSize = embeddingConfig.embedBatchSize,
@@ -152,7 +154,6 @@ class PipelineIntegrationSpec
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
-      rawBillTextRepository = rawTextRepo,
       embedder = embedder,
       embeddingConfig = embeddingConfig,
       eventPublisher = eventPublisher,
@@ -162,6 +163,19 @@ class PipelineIntegrationSpec
         repcheck.ingestion.text.extraction.TextExtractor.extractStream[IO](bytes, format),
     )
   }
+
+  /**
+   * Run `processor.processEvent` with the new 5-arg signature. Both `ack` and `nack` are passed as `IO.unit` no-ops:
+   * these integration tests do NOT exercise the Pub/Sub acknowledgement / NACK pathway — they exercise the embedder's
+   * persistence + `publishIngestedEvent` lifecycle (chunks UPSERTed, `markFetched` flips, `BillTextIngestedEvent`
+   * published). The Pub/Sub-side wiring (real `subscriber.acknowledge` / `modifyAckDeadline=0`) is covered by the
+   * subscriber unit specs (`GooglePubSubEventSubscriberSpec`) and by the e2e harness; here we'd just be re-asserting
+   * `IO.unit` ran.
+   */
+  private def runProcessEvent(processor: BillTextProcessor[IO], event: BillTextAvailableEvent): ProcessingResult =
+    processor
+      .processEvent(event, UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
 
   private def buildProcessorNoEmbed(): BillTextProcessor[IO] =
     buildProcessor(new NoOpEmbeddingService[IO])
@@ -284,7 +298,7 @@ class PipelineIntegrationSpec
       textUrl = s"http://127.0.0.1:${wireMock.port().toString}$textPath",
     )
     val processor = buildProcessorNoEmbed()
-    val result    = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
+    val result    = runProcessEvent(processor, event)
 
     val _ = result.isSucceeded shouldBe true
 
@@ -304,7 +318,7 @@ class PipelineIntegrationSpec
       versionCode = "IH",
     )
     val processor = buildProcessorNoEmbed()
-    val _         = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
+    val _         = runProcessEvent(processor, event)
 
     // Query stored version from DB
     val versions =
@@ -333,7 +347,7 @@ class PipelineIntegrationSpec
       textUrl = s"http://127.0.0.1:${wireMock.port().toString}$textPath",
     )
     val processor = buildProcessorWithOllama()
-    val _         = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
+    val _         = runProcessEvent(processor, event)
 
     // Verify embedding stored on at least one raw_bill_text chunk row
     val versions   = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
@@ -369,7 +383,7 @@ class PipelineIntegrationSpec
       textUrl = s"http://127.0.0.1:${wireMock.port().toString}$textPath",
     )
     val processor = buildProcessorNoEmbed()
-    val result    = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
+    val result    = runProcessEvent(processor, event)
 
     val _ = result.isFailed shouldBe true
 
@@ -390,7 +404,7 @@ class PipelineIntegrationSpec
       textUrl = s"http://127.0.0.1:${wireMock.port().toString}$textPath",
     )
     val processor = buildProcessorNoEmbed()
-    val result    = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
+    val result    = runProcessEvent(processor, event)
 
     val _ = result.isFailed shouldBe true
     pullMessages() shouldBe empty
@@ -412,7 +426,7 @@ class PipelineIntegrationSpec
       textUrl = s"http://127.0.0.1:${wireMock.port().toString}$textPath",
     )
     val processor = buildProcessorWithOllama()
-    val result    = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
+    val result    = runProcessEvent(processor, event)
 
     val _ = result.isSucceeded shouldBe true
 
@@ -432,7 +446,7 @@ class PipelineIntegrationSpec
       textUrl = s"http://127.0.0.1:${wireMock.port().toString}/text/does-not-matter",
     )
     val processor = buildProcessorNoEmbed()
-    val result    = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
+    val result    = runProcessEvent(processor, event)
 
     val _ = result.isFailed shouldBe true
     pullMessages() shouldBe empty
@@ -451,7 +465,7 @@ class PipelineIntegrationSpec
       textUrl = s"http://127.0.0.1:${wireMock.port().toString}$textPath",
     )
     val processor = buildProcessorNoEmbed()
-    val _         = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
+    val _         = runProcessEvent(processor, event)
 
     val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
     val storedV  = versions.headOption.getOrElse(fail("No version stored"))
@@ -477,7 +491,9 @@ class PipelineIntegrationSpec
       previousVersionCode = Some("IH"),
     )
     val processor = buildProcessorNoEmbed()
-    val _         = processor.processEvent(event, correlationId).unsafeRunSync()
+    val _ = processor
+      .processEvent(event, correlationId, s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
 
     val messages = pullMessages()
     val _        = messages.size shouldBe 1

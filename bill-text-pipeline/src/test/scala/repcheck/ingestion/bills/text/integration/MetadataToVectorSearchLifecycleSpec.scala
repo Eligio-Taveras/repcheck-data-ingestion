@@ -256,6 +256,7 @@ class MetadataToVectorSearchLifecycleSpec
       .resource[IO](
         embeddingService = embeddingService,
         rawBillTextRepository = rawTextRepo,
+        textVersionRepository = textVersionRepo,
         xa = xa,
         logger = testLogger,
         batchSize = embeddingConfig.embedBatchSize,
@@ -268,7 +269,6 @@ class MetadataToVectorSearchLifecycleSpec
       downloader = downloader,
       billRepository = billRepo,
       textVersionRepository = textVersionRepo,
-      rawBillTextRepository = rawTextRepo,
       embedder = embedder,
       embeddingConfig = embeddingConfig,
       eventPublisher = eventPublisher,
@@ -464,8 +464,10 @@ class MetadataToVectorSearchLifecycleSpec
 
     // Step 5: Text processor downloads and stores text (no embedding)
     val processor = buildProcessor(withEmbedding = false)
-    val result    = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
-    val _         = result.isSucceeded shouldBe true
+    val result = processor
+      .processEvent(event, UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
+    val _ = result.isSucceeded shouldBe true
 
     // Step 6: Verify text version stored in DB. Content lives on raw_bill_text chunks post P6.H4c.
     val versions = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
@@ -518,7 +520,9 @@ class MetadataToVectorSearchLifecycleSpec
     )
 
     val processor = buildProcessor(withEmbedding = true)
-    val _         = processor.processEvent(event, UUID.randomUUID()).unsafeRunSync()
+    val _ = processor
+      .processEvent(event, UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
 
     // Step 4: Verify embedding stored on at least one chunk row
     val versions   = textVersionRepo.findByBillId(dbBillId).transact(xa).unsafeRunSync()
@@ -577,7 +581,9 @@ class MetadataToVectorSearchLifecycleSpec
       previousVersionCode = p1.downField("previousVersionCode").as[String].toOption,
     )
     val proc1 = buildProcessor(withEmbedding = true)
-    val _     = proc1.processEvent(evt1, UUID.randomUUID()).unsafeRunSync()
+    val _ = proc1
+      .processEvent(evt1, UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
 
     // --- Bill 903 (needs fresh stubs) ---
     wireMock.resetMappings()
@@ -630,7 +636,9 @@ class MetadataToVectorSearchLifecycleSpec
       previousVersionCode = p2.downField("previousVersionCode").as[String].toOption,
     )
     val proc2 = buildProcessor(withEmbedding = true)
-    val _     = proc2.processEvent(evt2, UUID.randomUUID()).unsafeRunSync()
+    val _ = proc2
+      .processEvent(evt2, UUID.randomUUID(), s"ack-${UUID.randomUUID().toString}", IO.unit, IO.unit)
+      .unsafeRunSync()
 
     // --- Vector search: query with embedding1 should rank bill 902 first.
     // Embeddings now live on raw_bill_text rows (P6.H4c).

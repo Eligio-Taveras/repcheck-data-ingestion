@@ -114,6 +114,16 @@ private[app] object BillTextPipelinePipeline {
       }
     } yield exitCode
 
+  /**
+   * No-op retry-callback wrapper for `RetryWrapper`. Extracted as a named def so it's directly testable — otherwise the
+   * lambda body shows up as uncovered scoverage statements because `RetryWrapper`'s callback only fires between retries
+   * and our happy-path tests don't exercise that path. Functionally equivalent to inlining `new RetryWrapper[F]((_, _,
+   * _, _, _, _) => Async[F].unit)` at the call site; the surrounding `RetryWrapper` constructor pins the lambda's
+   * parameter types via type inference, so we don't have to re-declare them here.
+   */
+  private[app] def noopRetryWrapper[F[_]: Async]: RetryWrapper[F] =
+    new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
+
   private[app] def buildProcessor[F[_]: Async](
     httpClient: Client[F],
     xa: Transactor[F],
@@ -124,14 +134,13 @@ private[app] object BillTextPipelinePipeline {
   ): BillTextProcessor[F] = {
     val billRepository        = new DoobieBillRepository
     val textVersionRepository = new DoobieBillTextVersionRepository
-    val rawBillTextRepository = new DoobieRawBillTextRepository
     val downloader = new BillTextDownloader[F](
       client = httpClient,
       govInfoApiKey = config.pipeline.govInfoApiKey,
       govInfoBaseUrl = config.pipeline.govInfoBaseUrl,
       logger = logger,
     )
-    val retryWrapper = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
+    val retryWrapper = noopRetryWrapper[F]
     val eventPublisher = new DefaultIngestionEventPublisher[F](
       publisher = pubSubPublisher,
       topicName = config.eventPublisher.topicName,
@@ -144,7 +153,6 @@ private[app] object BillTextPipelinePipeline {
       downloader = downloader,
       billRepository = billRepository,
       textVersionRepository = textVersionRepository,
-      rawBillTextRepository = rawBillTextRepository,
       embedder = embedder,
       embeddingConfig = config.embedding,
       eventPublisher = eventPublisher,
@@ -214,6 +222,15 @@ private[app] object BillTextPipelinePipeline {
       }
   }
 
+  /**
+   * Drive one Pub/Sub message through the processor. ACK / NACK are now delegated effects: the processor passes them
+   * through to the embedder, which fires whichever is appropriate once the chunks have been processed (or failed). The
+   * returned `ProcessingResult` is used only for run-summary aggregation — actual completion may happen later inside
+   * the embedder's per-ackId state machine.
+   *
+   * `nack` is implemented as `subscriber.nack(ackId)`, which calls `modifyAckDeadline(ackId, 0)` to make Pub/Sub
+   * redeliver immediately. Bounded retries via the subscription's `max_delivery_attempts` + dead-letter topic.
+   */
   private[app] def processAndAck[F[_]: Async](
     subscriber: PubSubEventSubscriber[F],
     processor: BillTextProcessor[F],
@@ -222,19 +239,18 @@ private[app] object BillTextPipelinePipeline {
   ): F[ProcessingResult] = {
     val event         = receivedEvent.event.payload
     val correlationId = receivedEvent.event.correlationId
-    processor.processEvent(event, correlationId).flatTap { result =>
-      if (result.isSucceeded || result.isSkipped) {
-        subscriber.acknowledge(List(receivedEvent.ackId))
-      } else {
-        logger.warn(
-          repcheck.ingestion.common.logging.LogContext(
-            runId = correlationId.toString,
-            stepName = PipelineName,
-          ),
-          s"Not acking message for ${event.naturalKey} — processing failed, will be redelivered",
-        )
-      }
+    val ackId         = receivedEvent.ackId
+    val ack           = subscriber.acknowledge(List(ackId))
+    val nack = subscriber.nack(ackId).handleErrorWith { error =>
+      logger.warn(
+        repcheck.ingestion.common.logging.LogContext(
+          runId = correlationId.toString,
+          stepName = PipelineName,
+        ),
+        s"NACK call failed for ${event.naturalKey}: ${error.getMessage}",
+      )
     }
+    processor.processEvent(event, correlationId, ackId, ack, nack)
   }
 
   private[app] def buildResources[F[_]: Async](
@@ -258,11 +274,12 @@ private[app] object BillTextPipelinePipeline {
       embeddingService = new OllamaEmbeddingService[F](ollamaClient, config.embedding, logger)
       // Foreground-only embedder: no background fiber, no Queue, no timeout. The producer that fills the buffer
       // to `batchSize` synchronously embeds + persists; the producer whose chunk stream ends force-flushes the
-      // residual via finalizeSubmission. `embedBatchTimeout` and `embedQueueCapacityMultiplier` are no longer
-      // needed at construction time (the buffer is unbounded by Ref semantics; flushes are threshold-triggered).
+      // residual via finalizeSubmission. The embedder also owns trim + markFetched + ack/nack delegation per
+      // the Option-C refactor.
       embedder <- CrossBillEmbedder.resource[F](
         embeddingService = embeddingService,
         rawBillTextRepository = new DoobieRawBillTextRepository,
+        textVersionRepository = new DoobieBillTextVersionRepository,
         xa = xa,
         logger = logger,
         batchSize = config.embedding.embedBatchSize,

@@ -8,7 +8,7 @@ import cats.syntax.all._
 import io.circe.parser
 
 import com.google.cloud.pubsub.v1.stub.SubscriberStub
-import com.google.pubsub.v1.{AcknowledgeRequest, PullRequest}
+import com.google.pubsub.v1.{AcknowledgeRequest, ModifyAckDeadlineRequest, PullRequest}
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.events.{BillTextAvailableEvent, PipelineEvent}
@@ -59,6 +59,17 @@ class GooglePubSubEventSubscriber[F[_]: Async] private[subscription] (
 
       Async[F].blocking(stub.acknowledgeCallable().call(ackRequest)).void
     }
+
+  override def nack(ackId: String): F[Unit] = {
+    val request = ModifyAckDeadlineRequest
+      .newBuilder()
+      .setSubscription(subscriptionName)
+      .addAckIds(ackId)
+      .setAckDeadlineSeconds(0)
+      .build()
+
+    Async[F].blocking(stub.modifyAckDeadlineCallable().call(request)).void
+  }
 
   private[subscription] def deserializeEvent(
     json: String,
