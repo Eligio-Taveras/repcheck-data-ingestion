@@ -60,6 +60,29 @@ final class ComposeStackFixture(
     runOneShot("votes-pipeline")
   }
 
+  /**
+   * Run the amendments slice of the e2e stack on top of an already-started infra. Intended for callers that have called
+   * [[start]] (or [[startInfraOnly]]) first. Sequence:
+   *
+   *   1. `amendments-pipeline` (one-shot) — drains the WireMock /v3/amendment list and persists every fixture amendment
+   *      + its inline-recursed parents. 2. `amendment-text-pipeline` (long-running, started detached) — subscriber for
+   *      `amendment-text-available`. Started BEFORE the checker so an event published during step 3 is delivered live
+   *      rather than queued indefinitely. 3. `amendment-text-availability-checker` (one-shot) — polls candidate rows in
+   *      `amendments`, fetches text-version metadata from WireMock, publishes `AmendmentTextAvailableEvent` for each
+   *      new (versionType, formatType) tuple. 4. Wait for `amendment-text-pipeline` to drain — best-effort polling on
+   *      the side-effect (`amendment_text_versions` row count) in the caller's spec; this method just makes sure the
+   *      container is up.
+   *
+   * The amendment-text-pipeline container is left running and torn down by [[stop]].
+   */
+  def startAmendments(): Unit = {
+    runOneShot("amendments-pipeline")
+    // amendment-text-pipeline is a long-running Cloud Run Service — bring it up
+    // detached so the checker's published event arrives at a live subscriber.
+    upBackground("amendment-text-pipeline")
+    runOneShot("amendment-text-availability-checker")
+  }
+
   def stop(): Unit =
     if (!stopped.getAndSet(true)) {
       val _ = compose("down", "-v", "--remove-orphans")
@@ -108,6 +131,19 @@ final class ComposeStackFixture(
     val exit = compose("run", "--rm", "--no-deps", service)
     if (exit != 0) {
       sys.error(s"`docker compose run $service` exited with code $exit")
+    }
+  }
+
+  /**
+   * Start a long-running service detached. Unlike [[runOneShot]] this does NOT block on container exit — useful for the
+   * amendment-text-pipeline subscriber which needs to be live while a separate one-shot publishes events into it.
+   * Caller-side polling (DB-row appearance, container log scrape) confirms readiness; this method only guarantees the
+   * container has been requested.
+   */
+  private def upBackground(service: String): Unit = {
+    val exit = compose("up", "-d", "--no-deps", service)
+    if (exit != 0) {
+      sys.error(s"`docker compose up -d $service` exited with code $exit")
     }
   }
 

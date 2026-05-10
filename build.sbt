@@ -411,6 +411,9 @@ lazy val dockerComposeE2e = (project in file("docker-compose-e2e"))
         votesPipeline / assembly,
         memberProfilePipeline / assembly,
         lisMappingRefresher / assembly,
+        amendmentsPipeline / assembly,
+        amendmentTextAvailabilityChecker / assembly,
+        amendmentTextPipeline / assembly,
       )
       .value,
     publish / skip := true,

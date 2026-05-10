@@ -22,6 +22,14 @@
 #                              publishes MemberUpdatedEvent on member-updated)
 #   - lis-mapping-refresher   (senate.gov senators_cfm.xml → member_lis_mapping,
 #                              publishes MemberUpdatedEvent on member-updated)
+#   - amendments-pipeline     (Congress.gov /v3/amendment → amendments;
+#                              no event emission, per §7.2)
+#   - amendment-text-availability-checker  (polls candidates → Congress.gov
+#                              /v3/amendment/.../text → publishes
+#                              AmendmentTextAvailableEvent on amendment-text-available)
+#   - amendment-text-pipeline (subscribes amendment-text-available-pipeline-sub →
+#                              GovInfo CREC granule → chunks + embeddings →
+#                              amendment_text_versions.fetched_at; no event emission)
 #
 # Note on Ollama: instead of running the real Ollama image (heavy, needs model
 # weights), the single WireMock container also serves `POST /api/embed` with a
@@ -36,7 +44,10 @@
 #            "billTextPipeline/assembly" \
 #            "votesPipeline/assembly" \
 #            "memberProfilePipeline/assembly" \
-#            "lisMappingRefresher/assembly"
+#            "lisMappingRefresher/assembly" \
+#            "amendmentsPipeline/assembly" \
+#            "amendmentTextAvailabilityChecker/assembly" \
+#            "amendmentTextPipeline/assembly"
 #   2. `docker compose -f docker-compose.e2e.yml build`
 #
 # Usage:
@@ -388,6 +399,152 @@ services:
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       PUBSUB_PROJECT_ID: repcheck-e2e
       PUBSUB_TOPIC_NAME: member-updated
+
+  # ---------------------------------------------------------------------------
+  # Amendments — three new pipelines (§7.7 Phase 6 e2e half).
+  # ---------------------------------------------------------------------------
+  #
+  # Wiring contract:
+  #   amendments-pipeline             one-shot Cloud Run Job. Polls Congress.gov
+  #                                   /v3/amendment, recursively hydrates parent
+  #                                   chains, upserts into the `amendments` table.
+  #                                   No event emission (§7.2).
+  #   amendment-text-availability-checker  one-shot Cloud Run Job. Polls candidate
+  #                                   amendments, fetches /amendment/.../text,
+  #                                   publishes AmendmentTextAvailableEvent on the
+  #                                   `amendment-text-available` topic for each
+  #                                   newly-seen (versionType, formatType) tuple.
+  #   amendment-text-pipeline         long-running Cloud Run Service. Subscribes
+  #                                   to `amendment-text-available-pipeline-sub`,
+  #                                   streams the granule via the CrecGovInfoUrlRewriter,
+  #                                   chunks + embeds, writes amendment_text_chunks
+  #                                   + amendment_text_versions.fetched_at. No event
+  #                                   emission on completion — readiness is signaled
+  #                                   by `fetched_at IS NOT NULL` (§7.6).
+  #
+  # All three point at the single WireMock container for Congress.gov + GovInfo.
+  # AmendmentChainFixtures + the e2e/wiremock/__files/amendments/ fixtures cover
+  # one bill (117-HR-3684), three amendments (SAMDT 100 + SUAMDT 200 chain plus
+  # the fan-out SAMDT 101) and one text-version granule.
+
+  amendments-pipeline:
+    build:
+      context: .
+      dockerfile: amendments-pipeline/Dockerfile
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
+      wiremock:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      # P1 sizing: max-connections >= parallelism × maxRecursionDepth + 5. With
+      # the e2e overrides below (parallelism=1, maxRecursionDepth=3) we only need 8,
+      # but keep the application.conf default of 45 to mirror production config.
+      CONGRESS_API_BASE_URL: http://wiremock:8080/v3
+      CONGRESS_GOV_API_KEY: e2e-test-key
+      AMENDMENTS_CONGRESSES_MIN: "102"
+      AMENDMENTS_CONGRESSES_MAX: "119"
+      # Lookback wide enough that fixture updateDate=2024-06-01 falls inside the
+      # window (current date - lookbackDays). 100000 days ≈ 274 years, safe to
+      # leave in place regardless of when CI runs.
+      AMENDMENTS_LOOKBACK_DAYS: "100000"
+      AMENDMENTS_PARALLELISM: "1"
+      # Depth 3 matches the SAMDT 100 → bill chain; SUAMDT 200 → SAMDT 100 → bill
+      # is the deepest path in fixtures. Production default 10 unchanged.
+      AMENDMENTS_MAX_RECURSION_DEPTH: "3"
+
+  amendment-text-availability-checker:
+    build:
+      context: .
+      dockerfile: amendment-text-availability-checker/Dockerfile
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-emulator:
+        condition: service_healthy
+      pubsub-init:
+        condition: service_completed_successfully
+      wiremock:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_API_BASE_URL: http://wiremock:8080/v3
+      CONGRESS_GOV_API_KEY: e2e-test-key
+      # `stale-after = 0s` so even amendments that were just inserted by
+      # amendments-pipeline qualify as candidates immediately (otherwise the
+      # default 4h would skip every row whose `last_text_check_at` is NULL
+      # only after the first check — but the NULL case is handled separately
+      # so this is belt-and-suspenders for a deterministic single-run e2e).
+      AMENDMENT_TEXT_CHECK_STALE_AFTER: "0s"
+      AMENDMENT_TEXT_CHECK_PARALLELISM: "1"
+      # Pub/Sub — publishes AmendmentTextAvailableEvent on the
+      # `amendment-text-available` topic created by pubsub-init.sh. The
+      # default topic name in application.conf is dot-separated
+      # (`amendment.text.available`); override to the hyphen form used in
+      # the emulator + downstream subscription.
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-e2e
+      PUBSUB_TOPIC_NAME: amendment-text-available
+
+  amendment-text-pipeline:
+    build:
+      context: .
+      dockerfile: amendment-text-pipeline/Dockerfile
+    depends_on:
+      alloydb:
+        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-emulator:
+        condition: service_healthy
+      pubsub-init:
+        condition: service_completed_successfully
+      wiremock:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck_e2e
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      # Pub/Sub — uses GCP_PROJECT_ID + EVENT_SUBSCRIBER_SUBSCRIPTION names per
+      # application.conf (mirrors bill-text-pipeline's key naming, not the
+      # PUBSUB_* convention).
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      GCP_PROJECT_ID: repcheck-e2e
+      # `amendment-text-available-pipeline-sub` is the subscription created by
+      # pubsub-init.sh for this pipeline. The application.conf default is
+      # `amendment-text-available-sub` — override here so subscriber binds to
+      # the actually-created one.
+      EVENT_SUBSCRIBER_SUBSCRIPTION: amendment-text-available-pipeline-sub
+      # GovInfo — CrecGovInfoUrlRewriter maps congress.gov CREC URLs to
+      # `${baseUrl}/packages/{pkg}/granules/{granule}/htm`. Point at WireMock so
+      # the mapping in e2e/wiremock/mappings/amendment-text-govinfo-crec.json
+      # serves the fixture content.
+      GOVINFO_API_KEY: e2e-test-key
+      GOVINFO_BASE_URL: http://wiremock:8080
+      # Ollama — same shared WireMock stub as bill-text-pipeline (1024-dim
+      # zero-vector response from ollama-embed.json).
+      OLLAMA_BASE_URL: http://wiremock:8080
+      OLLAMA_MODEL_NAME: bill-text-embedding
+      OLLAMA_EMBEDDING_DIMENSIONS: "1024"
+      OLLAMA_TIMEOUT_SECONDS: "30"
+      OLLAMA_EMBED_BATCH_SIZE: "5"
+      OLLAMA_EMBED_BATCH_TIMEOUT: "200ms"
+      PIPELINE_PARALLELISM: "1"
 
 volumes:
   alloydbdata:

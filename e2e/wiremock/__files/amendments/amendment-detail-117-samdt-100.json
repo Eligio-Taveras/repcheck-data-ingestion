@@ -1,0 +1,49 @@
+{
+  "amendment": {
+    "congress": 117,
+    "number": "100",
+    "type": "SAMDT",
+    "amendedBill": {
+      "congress": 117,
+      "number": "3684",
+      "originChamber": "House",
+      "originChamberCode": "H",
+      "title": "Infrastructure Investment and Jobs Act",
+      "type": "HR",
+      "url": "http://wiremock:8080/v3/bill/117/hr/3684"
+    },
+    "chamber": "Senate",
+    "description": "E2E SAMDT 100 — root amendment in the chain",
+    "purpose": "To improve the bill",
+    "sponsors": [
+      {
+        "bioguideId": "S001217",
+        "firstName": "Jeanne",
+        "lastName": "Shaheen",
+        "fullName": "Sen. Shaheen, Jeanne [D-NH]",
+        "party": "D",
+        "state": "NH"
+      }
+    ],
+    "submittedDate": "2021-08-01",
+    "proposedDate": "2021-08-02",
+    "latestAction": {
+      "actionDate": "2024-06-01",
+      "text": "Amendment SA 100 agreed to in Senate by Voice Vote.",
+      "actionTime": "12:00:00"
+    },
+    "updateDate": "2024-06-01T12:00:00Z",
+    "actions": {
+      "count": 1,
+      "url": "http://wiremock:8080/v3/amendment/117/samdt/100/actions"
+    },
+    "textVersions": {
+      "count": 1,
+      "url": "http://wiremock:8080/v3/amendment/117/samdt/100/text"
+    },
+    "cosponsors": {
+      "count": 0,
+      "url": "http://wiremock:8080/v3/amendment/117/samdt/100/cosponsors"
+    }
+  }
+}
