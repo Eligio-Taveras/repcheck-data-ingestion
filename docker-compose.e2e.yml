@@ -431,6 +431,10 @@ services:
     build:
       context: .
       dockerfile: amendments-pipeline/Dockerfile
+    # Launcher contract: args(0) = config (unused — PureConfig reads env),
+    # args(1) = runId (PipelineBootstrap.extractRunId pulls from index 1),
+    # args(2) = stepRunId. PipelineBootstrap raises RunIdMissing if args(1) is absent.
+    command: ["cfg-unused", "e2e-amendments-run", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -464,6 +468,10 @@ services:
     build:
       context: .
       dockerfile: amendment-text-availability-checker/Dockerfile
+    # Launcher contract: args(0) = runId (Long), args(1) = stepRunId (Long).
+    # Both default to 0L if missing/unparseable, so this command is for log clarity rather than
+    # a hard requirement — `args.lift(0).flatMap(_.toLongOption).getOrElse(0L)` won't crash.
+    command: ["1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -503,6 +511,10 @@ services:
     build:
       context: .
       dockerfile: amendment-text-pipeline/Dockerfile
+    # Launcher contract: args(0) = runId (Long), args(1) = stepRunId (Long).
+    # Same convention as the availability-checker — defaults to 0L on missing/unparseable, so
+    # this is for log clarity. A non-zero runId here also activates the WorkflowStateUpdater.
+    command: ["1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
