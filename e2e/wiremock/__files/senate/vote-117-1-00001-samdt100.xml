@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?><roll_call_vote>
+  <congress>117</congress>
+  <session>1</session>
+  <congress_year>2021</congress_year>
+  <vote_number>1</vote_number>
+  <vote_date>August 10, 2021, 10:30 AM</vote_date>
+  <modify_date>August 10, 2021, 11:00 AM</modify_date>
+  <vote_question_text>On the Amendment (S.Amdt. 100 to H.R. 3684)</vote_question_text>
+  <vote_document_text>Amendment to the Infrastructure Investment and Jobs Act.</vote_document_text>
+  <vote_result_text>Amendment Agreed to (60-40)</vote_result_text>
+  <question>On the Amendment</question>
+  <vote_title>S.Amdt. 100 to H.R. 3684</vote_title>
+  <majority_requirement>1/2</majority_requirement>
+  <vote_result>Amendment Agreed to</vote_result>
+  <document>
+    <document_congress>117</document_congress>
+    <document_type>S.Amdt.</document_type>
+    <document_number>100</document_number>
+    <document_name>S.Amdt. 100</document_name>
+    <document_title>Amendment to the Infrastructure Investment and Jobs Act.</document_title>
+    <document_short_title/>
+  </document>
+  <amendment_number>S.Amdt. 100</amendment_number>
+  <amendment_to_amendment_number/>
+  <amendment_to_amendment_to_amendment_number/>
+  <amendment_to_document_number>H.R. 3684</amendment_to_document_number>
+  <amendment_to_document_short_title>Infrastructure Investment and Jobs Act</amendment_to_document_short_title>
+  <count>
+    <yeas>60</yeas>
+    <nays>40</nays>
+    <present/>
+    <absent>0</absent>
+  </count>
+  <tie_breaker>
+    <by_whom/>
+    <tie_breaker_vote/>
+  </tie_breaker>
+  <members>
+  </members>
+</roll_call_vote>

@@ -1,5 +1,7 @@
 package repcheck.e2e
 
+import java.util.concurrent.atomic.AtomicReference
+
 import scala.annotation.tailrec
 
 import cats.effect.IO
@@ -22,6 +24,12 @@ import repcheck.ingestion.bills.common.testing.DockerRequired
  *
  *   - S1 — Chain happy path. Bill → SAMDT 100 → SUAMDT 200 all hydrate via inline recursion. SAMDT 101 fan-out proves
  *     the same bill anchors multiple amendments.
+ *   - S2 — Placeholder upgrade. The 117-1-00001 senate-vote fixture references S.Amdt. 100 on H.R. 3684; votes-pipeline
+ *     runs FIRST in the baseline (see ComposeStackFixture.start ordering) and calls
+ *     `AmendmentRepository.upsertPlaceholder('117-SAMDT-100')` via SenateVoteConverter.handleAmendment, inserting an
+ *     unhydrated row (chamber + natural_key + type + number; description/purpose/sponsor all NULL). Then
+ *     amendments-pipeline runs and the `upsert` path uses `ON CONFLICT (natural_key) DO UPDATE SET ...` to overwrite
+ *     the placeholder with the full hydrated row from the WireMock amendment-detail fixture.
  *   - S3 — Fan-out. One bill (117-HR-3684), two SAMDTs (100 + 101) — both rows share `bill_id` after the chain
  *     resolves. SUAMDT 200's `bill_id` is the resolved ancestor (the same bill via SAMDT 100), not its direct parent.
  *   - S4 — Text ingestion. Availability checker publishes one `AmendmentTextAvailableEvent` (only SAMDT 100 has a text
@@ -33,9 +41,6 @@ import repcheck.ingestion.bills.common.testing.DockerRequired
  *     disturbed (sanity-check; the full regression lives in the existing spec).
  *
  * Out of scope for this spec (deferred to follow-on PRs — see PR description):
- *   - S2 (votes-pipeline placeholder upgrade). Requires a Senate amendment-vote XML fixture and votes-pipeline run
- *     before the amendments-pipeline run. The wiring exists in code (`SenateVoteConverter`'s amendment branch from
- *     §7.4) but the e2e ordering + fixture work is its own change.
  *   - S5 failure modes. WireMock stateful-stub support (`scenarios`) for the 5xx-then-200 path, fault-injection for
  *     crash recovery, and Ollama-down simulation — each its own scenario PR.
  *
@@ -58,11 +63,28 @@ class AmendmentsCrossPipelineSpec extends AnyFlatSpec with Matchers with BeforeA
     logHandler = None,
   )
 
+  // Captured at the boundary between fixture.start() (votes-pipeline ran) and fixture.startAmendments()
+  // (amendments-pipeline runs). Used by the S2 assertion to prove votes-pipeline did write a placeholder row
+  // before amendments-pipeline hydrated it. AtomicReference (not `var`) per WartRemover Wart.Var.
+  private val placeholderRowAfterVotes: AtomicReference[Option[PlaceholderSnapshot]] =
+    new AtomicReference(None)
+
+  final private case class PlaceholderSnapshot(
+    chamber: Option[String],
+    description: Option[String],
+    purpose: Option[String],
+    sponsorMemberId: Option[Long],
+  )
+
   override def beforeAll(): Unit = {
     super.beforeAll()
     // The baseline stack (bills + members + votes) populates `bills` and `members` so the §S3 fan-out assertion
     // (one bill anchors two amendments) has a stable row to FK against, and S6 regression has the data it needs.
     fixture.start()
+    // S2 — capture amendments-table state AFTER votes-pipeline (which calls upsertPlaceholder for the SAMDT 100
+    // referenced by the 117-1-00001 senate-vote fixture) but BEFORE amendments-pipeline runs. The placeholder
+    // should have chamber set but description/purpose/sponsor all NULL.
+    placeholderRowAfterVotes.set(captureSamdt100Snapshot())
     // Seed the workflow_runs parent row so AmendmentsPipeline's WorkflowStateUpdater.recordStepStarted insert
     // satisfies the workflow_run_steps → workflow_runs FK. AmendmentsPipeline is the first pipeline in this stack
     // that actually writes workflow_run_steps; bills/members/votes pipelines either hardcode runId=0L (and skip the
@@ -75,6 +97,19 @@ class AmendmentsCrossPipelineSpec extends AnyFlatSpec with Matchers with BeforeA
     // inference), and chunking + DB write should be sub-second.
     waitForFetchedAt(timeoutMs = 90_000L, pollMs = 1_500L)
   }
+
+  private def captureSamdt100Snapshot(): Option[PlaceholderSnapshot] =
+    sql"""SELECT chamber::text, description, purpose, sponsor_member_id
+          FROM amendments
+          WHERE natural_key = '117-SAMDT-100'"""
+      .query[(Option[String], Option[String], Option[String], Option[Long])]
+      .option
+      .transact(xa)
+      .unsafeRunSync()
+      .map {
+        case (chamber, description, purpose, sponsorMemberId) =>
+          PlaceholderSnapshot(chamber, description, purpose, sponsorMemberId)
+      }
 
   private def seedWorkflowRun(id: Long): Unit = {
     val idFr = doobie.Fragment.const(id.toString)
@@ -152,6 +187,38 @@ class AmendmentsCrossPipelineSpec extends AnyFlatSpec with Matchers with BeforeA
               AND b.congress = 117 AND b.bill_type = 'hr' AND b.number = 3684"""
     )
     billRow shouldBe defined
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scenario S2 — placeholder upgrade. votes-pipeline writes a minimal `amendments` row first; then
+  // amendments-pipeline's ON CONFLICT (natural_key) DO UPDATE overwrites with the full hydrated fields.
+  // ---------------------------------------------------------------------------
+
+  it should "have a votes-pipeline placeholder amendments row before amendments-pipeline runs (S2)" taggedAs DockerRequired in {
+    // The senate-vote-117-samdt100 fixture references S.Amdt. 100 — SenateVoteConverter.handleAmendment calls
+    // `amendmentRepo.upsertPlaceholder('117-SAMDT-100')` which writes only natural_key / congress / type /
+    // number / chamber. description / purpose / sponsor_member_id stay NULL until amendments-pipeline hydrates.
+    val snap = placeholderRowAfterVotes
+      .get()
+      .getOrElse(
+        fail(
+          "placeholderRowAfterVotes was not captured; check that fixture.start() ran votes-pipeline successfully"
+        )
+      )
+    val _ = snap.chamber shouldBe Some("Senate")
+    val _ = snap.description shouldBe None
+    val _ = snap.purpose shouldBe None
+    snap.sponsorMemberId shouldBe None
+  }
+
+  it should "upgrade the placeholder to a hydrated row after amendments-pipeline runs (S2)" taggedAs DockerRequired in {
+    // After amendments-pipeline runs, the same natural_key now has description/purpose populated from the
+    // WireMock amendment-detail fixture — proving the ON CONFLICT DO UPDATE path (not the placeholder
+    // upsertPlaceholder's ON CONFLICT DO NOTHING) is what amendments-pipeline executes.
+    val description = sqlOptString(
+      sql"""SELECT description FROM amendments WHERE natural_key = '117-SAMDT-100'"""
+    )
+    description shouldBe defined
   }
 
   // ---------------------------------------------------------------------------

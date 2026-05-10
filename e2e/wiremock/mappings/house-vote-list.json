@@ -1,7 +1,7 @@
 {
   "request": {
     "method": "GET",
-    "urlPathPattern": "/v3/house-vote/[0-9]+/[0-9]+",
+    "urlPathPattern": "/v3/house-vote/119/[0-9]+",
     "queryParameters": {
       "api_key": { "equalTo": "e2e-test-key" }
     }

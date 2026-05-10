@@ -305,11 +305,17 @@ services:
       CONGRESS_GOV_API_KEY: e2e-test-key
       # Senate — served under /senate/* from the same WireMock container.
       SENATE_BASE_URL: http://wiremock:8080/senate
-      # Pin to a single congress for the WireMock fixture set (recorded for 119/1 only).
+      # Pin to two congresses for the WireMock fixture set:
+      #   - 119: existing baseline (3 senate votes + 1 house list page)
+      #   - 117: amendment-vote fixture (S.Amdt. 100 on H.R. 3684) — drives the S2 placeholder-upgrade
+      #     e2e scenario where votes-pipeline writes an `amendments` placeholder via
+      #     SenateVoteConverter.handleAmendment BEFORE amendments-pipeline runs and hydrates it.
+      # The house-vote-list mapping is pinned to `/v3/house-vote/119/...` so 117 House requests 404
+      # (HouseVotesApiClient treats list-404 as "no votes for this (congress, session)" and skips).
       # Per P6.H5 the pipeline normally derives the congress list from the bills table; in
       # the E2E stack we override via VOTES_CONGRESSES so the test is deterministic regardless
       # of how many bills the fixture seeds into the DB.
-      VOTES_CONGRESSES: "119"
+      VOTES_CONGRESSES: "117,119"
       # lookback-days=0 accepts every recorded fixture regardless of timestamp (the fixtures
       # were captured months ago; real lookback would filter them out).
       HOUSE_LOOKBACK_DAYS: "0"

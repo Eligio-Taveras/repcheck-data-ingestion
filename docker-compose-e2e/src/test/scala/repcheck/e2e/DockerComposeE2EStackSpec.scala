@@ -150,18 +150,22 @@ class DockerComposeE2EStackSpec extends AnyFlatSpec with Matchers with BeforeAnd
     count should be >= 1L
   }
 
-  it should "persist exactly 6 votes (3 Senate + 3 House incl. Speaker election) from votes-pipeline" taggedAs DockerRequired in {
+  it should "persist exactly 7 votes (4 Senate + 3 House incl. Speaker election) from votes-pipeline" taggedAs DockerRequired in {
+    // 4 Senate = 3 baseline (119/1: 632 HJRes131, 648 S1071, 659 PN373) + 1 amendment vote added with the
+    // §S2 placeholder-upgrade scenario (117/1: vote 1 on S.Amdt. 100 → H.R. 3684). 3 House baseline votes
+    // unchanged (a 117-House fixture would also force VOTES_CONGRESSES=117 to populate the House side,
+    // which the AmendmentsCrossPipelineSpec doesn't need — only the Senate amendment vote does).
     val count = sqlLong(sql"SELECT COUNT(*) FROM votes")
-    count shouldBe 6L
+    count shouldBe 7L
   }
 
-  it should "split votes by chamber correctly (3 House / 3 Senate)" taggedAs DockerRequired in {
+  it should "split votes by chamber correctly (3 House / 4 Senate)" taggedAs DockerRequired in {
     val house  = sqlLong(sql"SELECT COUNT(*) FROM votes WHERE chamber='House'")
     val senate = sqlLong(sql"SELECT COUNT(*) FROM votes WHERE chamber='Senate'")
     // Bind the first assertion's result so the value isn't discarded (the
     // final assertion in a `in { ... }` block is returned implicitly).
     val _ = house shouldBe 3L
-    senate shouldBe 3L
+    senate shouldBe 4L
   }
 
   it should "classify the Speaker-election vote as VoteType.Election" taggedAs DockerRequired in {

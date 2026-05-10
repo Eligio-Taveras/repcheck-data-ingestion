@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/senate/roll_call_lists/vote_menu_117_1\\.xml"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/xml" },
+    "bodyFileName": "senate/vote-menu-117-1.xml"
+  }
+}

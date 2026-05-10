@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/senate/roll_call_votes/vote1171/vote_117_1_00001\\.xml"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/xml" },
+    "bodyFileName": "senate/vote-117-1-00001-samdt100.xml"
+  }
+}
