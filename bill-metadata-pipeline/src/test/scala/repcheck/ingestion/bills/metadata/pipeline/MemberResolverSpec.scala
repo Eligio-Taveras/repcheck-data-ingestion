@@ -150,7 +150,7 @@ class MemberResolverSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       .thenReturn(doobie.free.connection.pure(Some(makeMemberDO(42L, "S001"))))
     val logger   = makeLogger()
     val resolver = makeResolver(repo, logger)
-    val sponsor  = SponsorDTO("S001", None, None, None, None, None, None, None, None)
+    val sponsor  = SponsorDTO.MemberSponsorDTO("S001", None, None, None, None, None, None, None, None, None)
     val detail   = makeDetail(sponsors = Some(List(sponsor)))
 
     val result = resolver.ensureSponsorPlaceholder(baseBillDO, detail, logCtx).unsafeRunSync()
@@ -163,7 +163,7 @@ class MemberResolverSpec extends AnyFlatSpec with Matchers with MockitoSugar {
       .thenReturn(doobie.free.connection.pure(Option.empty[MemberDO]))
     val logger   = makeLogger()
     val resolver = makeResolver(repo, logger)
-    val sponsor  = SponsorDTO("GHOST", None, None, None, None, None, None, None, None)
+    val sponsor  = SponsorDTO.MemberSponsorDTO("GHOST", None, None, None, None, None, None, None, None, None)
     val detail   = makeDetail(sponsors = Some(List(sponsor)))
 
     val result = resolver.ensureSponsorPlaceholder(baseBillDO, detail, logCtx).unsafeRunSync()

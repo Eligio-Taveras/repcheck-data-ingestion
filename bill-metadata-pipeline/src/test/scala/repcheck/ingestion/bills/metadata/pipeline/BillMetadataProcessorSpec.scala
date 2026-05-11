@@ -389,7 +389,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     val detail = makeDetailDTO(
       sponsors = Some(
         List(
-          SponsorDTO(
+          SponsorDTO.MemberSponsorDTO(
             bioguideId = "S001234",
             firstName = None,
             lastName = None,
@@ -398,6 +398,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
             isByRequest = None,
             party = None,
             state = None,
+            district = None,
             url = None,
           )
         )
@@ -419,7 +420,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     val detail = makeDetailDTO(
       sponsors = Some(
         List(
-          SponsorDTO(
+          SponsorDTO.MemberSponsorDTO(
             bioguideId = "GHOST001",
             firstName = None,
             lastName = None,
@@ -428,6 +429,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
             isByRequest = None,
             party = None,
             state = None,
+            district = None,
             url = None,
           )
         )
