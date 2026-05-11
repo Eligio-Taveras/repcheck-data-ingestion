@@ -100,26 +100,38 @@ class CommitteeMembershipProcessor[F[_]: Async](
           val committeeType = item.committeeTypeCode.getOrElse(
             if (parentCode.isDefined) "Subcommittee" else "Standing"
           )
-          val committeeDO = CommitteeDO(
-            committeeCode = committeeCode,
-            name = item.name,
-            chamber = chamber.capitalize,
-            committeeType = committeeType,
-            parentCommitteeCode = parentCode,
-            isCurrent = true,
-            updateDate = item.updateDate.map(d => Instant.parse(s"${d}T00:00:00Z")).orElse(Some(Instant.now())),
-            createdAt = None,
-            updatedAt = None,
-          )
-          committeeRepo
-            .upsert(committeeDO)
-            .transact(xa)
-            .handleErrorWith { error =>
-              Async[F].raiseError(
-                CommitteeUpsertFailed(committeeCode, Option(error.getMessage).getOrElse("unknown"), Some(error))
-              )
-            }
-            .map(_ => counter.incrementAndGet())
+
+          val resolveParentId: F[Option[Long]] = parentCode match {
+            case Some(pc) =>
+              committeeRepo.findByCode(pc).transact(xa).map(_.map(_.id))
+            case None => Async[F].pure(None)
+          }
+
+          for {
+            parentId <- resolveParentId
+            committeeDO = CommitteeDO(
+              id = 0L,
+              naturalKey = committeeCode,
+              name = item.name,
+              chamber = chamber.capitalize,
+              committeeType = Some(committeeType),
+              parentCommitteeId = parentId,
+              url = item.url,
+              updateDate = item.updateDate.map(d => Instant.parse(s"${d}T00:00:00Z")).orElse(Some(Instant.now())),
+              isCurrent = Some(true),
+              createdAt = None,
+              updatedAt = None,
+            )
+            _ <- committeeRepo
+              .upsert(committeeDO)
+              .transact(xa)
+              .handleErrorWith { error =>
+                Async[F].raiseError(
+                  CommitteeUpsertFailed(committeeCode, Option(error.getMessage).getOrElse("unknown"), Some(error))
+                )
+              }
+              .map(_ => counter.incrementAndGet())
+          } yield ()
         }
         _ <- page.nextOffset match {
           case Some(next) => fetchPage(next)
@@ -163,21 +175,21 @@ class CommitteeMembershipProcessor[F[_]: Async](
         case Some(member) =>
           val _ = memberCounter.incrementAndGet()
           dto.committees.traverse_ { assignment =>
-            val committeeMemberDO = CommitteeMemberDO(
-              id = 0L,
-              committeeCode = assignment.committeeCode,
-              memberId = member.memberId,
-              position = None,
-              side = assignment.side,
-              rank = assignment.rank,
-              congress = config.currentCongress,
-              beginDate = None,
-              endDate = None,
-              createdAt = None,
-              updatedAt = None,
-            )
             for {
-              _ <- committeeRepo.upsertPlaceholder(assignment.committeeCode, "House").transact(xa)
+              committee <- committeeRepo.upsertPlaceholder(assignment.committeeCode, "House").transact(xa)
+              committeeMemberDO = CommitteeMemberDO(
+                id = 0L,
+                committeeId = committee.id,
+                memberId = member.memberId,
+                role = None,
+                startDate = None,
+                endDate = None,
+                side = assignment.side,
+                rank = assignment.rank,
+                congress = config.currentCongress,
+                createdAt = None,
+                updatedAt = None,
+              )
               _ <- committeeMemberRepo.upsert(committeeMemberDO).transact(xa).handleErrorWith { error =>
                 Async[F].raiseError(
                   CommitteeMemberUpsertFailed(
@@ -204,10 +216,8 @@ class CommitteeMembershipProcessor[F[_]: Async](
     val membershipCounter = new AtomicInteger(0)
 
     for {
-      _ <- logger.info(logCtx, "Phase 3: Processing Senate committee membership")
-      // Pass A: Build identity map from cvc_member_data.xml
+      _           <- logger.info(logCtx, "Phase 3: Processing Senate committee membership")
       identityMap <- buildSenateIdentityMap(runId, logCtx)
-      // Pass B: Fetch per-committee XML and resolve members
       parentCodes <- committeeRepo.findAllSenateParentCodes().transact(xa)
       _           <- logger.info(logCtx, s"Found ${parentCodes.size.toString} Senate parent committees to process")
       _ <- parentCodes.traverse_ { code =>
@@ -258,7 +268,6 @@ class CommitteeMembershipProcessor[F[_]: Async](
     memberCounter: AtomicInteger,
     membershipCounter: AtomicInteger,
   ): F[Unit] = {
-    // Try to resolve via bioguideId first, then by identity map
     val resolvedMemberId: F[Option[Long]] = senMember.bioguideId match {
       case Some(bio) =>
         memberRepo.findByBioguideId(bio).transact(xa).map(_.map(_.memberId))
@@ -272,21 +281,21 @@ class CommitteeMembershipProcessor[F[_]: Async](
       _ <- maybeMemberId match {
         case Some(memberId) =>
           val _ = memberCounter.incrementAndGet()
-          val committeeMemberDO = CommitteeMemberDO(
-            id = 0L,
-            committeeCode = senMember.committeeCode,
-            memberId = memberId,
-            position = senMember.position,
-            side = None,
-            rank = senMember.rank,
-            congress = config.currentCongress,
-            beginDate = None,
-            endDate = None,
-            createdAt = None,
-            updatedAt = None,
-          )
           for {
-            _ <- committeeRepo.upsertPlaceholder(senMember.committeeCode, "Senate").transact(xa)
+            committee <- committeeRepo.upsertPlaceholder(senMember.committeeCode, "Senate").transact(xa)
+            committeeMemberDO = CommitteeMemberDO(
+              id = 0L,
+              committeeId = committee.id,
+              memberId = memberId,
+              role = senMember.position,
+              startDate = None,
+              endDate = None,
+              side = None,
+              rank = senMember.rank,
+              congress = config.currentCongress,
+              createdAt = None,
+              updatedAt = None,
+            )
             _ <- committeeMemberRepo.upsert(committeeMemberDO).transact(xa).handleErrorWith { error =>
               Async[F].raiseError(
                 CommitteeMemberUpsertFailed(

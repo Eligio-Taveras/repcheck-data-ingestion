@@ -13,46 +13,58 @@ class DoobieCommitteeRepository extends CommitteeRepository {
 
   private val table: Fragment = Fragment.const(Tables.Committees)
 
-  private val columns: Fragment =
-    fr"""committee_code, name, chamber, committee_type, parent_committee_code,
-         is_current, update_date, created_at, updated_at"""
+  private val selectColumns: Fragment =
+    fr"""id, natural_key, name, chamber, committee_type::text,
+         parent_committee_id, url, update_date, is_current, created_at, updated_at"""
 
-  override def upsert(committee: CommitteeDO): ConnectionIO[Unit] =
-    sql"""INSERT INTO $table (
-            committee_code, name, chamber, committee_type, parent_committee_code,
-            is_current, update_date
+  private val returningColumns: Fragment =
+    fr"""RETURNING id, natural_key, name, chamber, committee_type::text,
+         parent_committee_id, url, update_date, is_current, created_at, updated_at"""
+
+  override def upsert(committee: CommitteeDO): ConnectionIO[CommitteeDO] =
+    (sql"""INSERT INTO $table (
+            natural_key, name, chamber, committee_type, parent_committee_id,
+            url, update_date, is_current
           ) VALUES (
-            ${committee.committeeCode}, ${committee.name}, ${committee.chamber},
-            ${committee.committeeType}, ${committee.parentCommitteeCode},
-            ${committee.isCurrent}, ${committee.updateDate}
+            ${committee.naturalKey}, ${committee.name}, ${committee.chamber}::chamber_type,
+            ${committee.committeeType}::committee_type_enum, ${committee.parentCommitteeId},
+            ${committee.url}, ${committee.updateDate}, ${committee.isCurrent}
           )
-          ON CONFLICT (committee_code) DO UPDATE SET
+          ON CONFLICT (natural_key) DO UPDATE SET
             name = EXCLUDED.name,
             chamber = EXCLUDED.chamber,
             committee_type = EXCLUDED.committee_type,
-            parent_committee_code = COALESCE(EXCLUDED.parent_committee_code, $table.parent_committee_code),
-            is_current = EXCLUDED.is_current,
+            parent_committee_id = COALESCE(EXCLUDED.parent_committee_id, committees.parent_committee_id),
+            url = EXCLUDED.url,
             update_date = EXCLUDED.update_date,
-            updated_at = NOW()""".update.run.void
+            is_current = EXCLUDED.is_current,
+            updated_at = NOW()
+          """ ++ returningColumns)
+      .query[CommitteeDO]
+      .unique
 
-  override def upsertPlaceholder(committeeCode: String, chamber: String): ConnectionIO[Unit] =
-    sql"""INSERT INTO $table (committee_code, name, chamber, committee_type, is_current)
-          VALUES ($committeeCode, $committeeCode, $chamber, 'Unknown', true)
-          ON CONFLICT (committee_code) DO NOTHING""".update.run.void
+  override def upsertPlaceholder(naturalKey: String, chamber: String): ConnectionIO[CommitteeDO] =
+    (sql"""INSERT INTO $table (natural_key, name, chamber, is_current)
+          VALUES ($naturalKey, $naturalKey, $chamber::chamber_type, true)
+          ON CONFLICT (natural_key) DO UPDATE SET
+            updated_at = NOW()
+          """ ++ returningColumns)
+      .query[CommitteeDO]
+      .unique
 
-  override def findByCode(committeeCode: String): ConnectionIO[Option[CommitteeDO]] =
-    (fr"SELECT" ++ columns ++ fr"FROM" ++ table ++ fr"WHERE committee_code = $committeeCode")
+  override def findByCode(naturalKey: String): ConnectionIO[Option[CommitteeDO]] =
+    (fr"SELECT" ++ selectColumns ++ fr"FROM" ++ table ++ fr"WHERE natural_key = $naturalKey")
       .query[CommitteeDO]
       .option
 
   override def findAllSenateParentCodes(): ConnectionIO[List[String]] =
-    (fr"SELECT committee_code FROM" ++ table ++
-      fr"WHERE chamber = 'Senate' AND parent_committee_code IS NULL AND committee_type != 'Subcommittee'")
+    (fr"SELECT natural_key FROM" ++ table ++
+      fr"WHERE chamber = 'Senate' AND parent_committee_id IS NULL AND committee_type != 'Subcommittee'")
       .query[String]
       .to[List]
 
-  override def setParent(childCode: String, parentCode: String): ConnectionIO[Unit] =
-    sql"""UPDATE $table SET parent_committee_code = $parentCode, updated_at = NOW()
-          WHERE committee_code = $childCode AND parent_committee_code IS NULL""".update.run.void
+  override def setParent(childCode: String, parentId: Long): ConnectionIO[Unit] =
+    sql"""UPDATE $table SET parent_committee_id = $parentId, updated_at = NOW()
+          WHERE natural_key = $childCode AND parent_committee_id IS NULL""".update.run.void
 
 }

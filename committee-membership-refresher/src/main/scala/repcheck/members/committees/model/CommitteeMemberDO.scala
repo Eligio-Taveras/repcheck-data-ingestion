@@ -3,19 +3,19 @@ package repcheck.members.committees.model
 import java.time.Instant
 
 /**
- * Domain object for the `committee_members` table. Tracks temporal membership: `endDate = None` means the member is
- * currently serving on this committee.
+ * Domain object for the `committee_members` table. Field order matches the explicit SELECT column list in
+ * DoobieCommitteeMemberRepository (Doobie maps positionally).
  */
 final case class CommitteeMemberDO(
   id: Long,
-  committeeCode: String,
+  committeeId: Long,
   memberId: Long,
-  position: Option[String],
+  role: Option[String],
+  startDate: Option[Instant],
+  endDate: Option[Instant],
   side: Option[String],
   rank: Option[Int],
   congress: Int,
-  beginDate: Option[Instant],
-  endDate: Option[Instant],
   createdAt: Option[Instant],
   updatedAt: Option[Instant],
 )

@@ -3,17 +3,19 @@ package repcheck.members.committees.model
 import java.time.Instant
 
 /**
- * Domain object for the `committees` table. `committeeCode` is the natural primary key stored in clerk format
- * (uppercase, e.g., "SSFI00", "RU00", "JJEC00").
+ * Domain object for the `committees` table. Field order matches the explicit SELECT column list in
+ * DoobieCommitteeRepository (Doobie maps positionally).
  */
 final case class CommitteeDO(
-  committeeCode: String,
+  id: Long,
+  naturalKey: String,
   name: String,
   chamber: String,
-  committeeType: String,
-  parentCommitteeCode: Option[String],
-  isCurrent: Boolean,
+  committeeType: Option[String],
+  parentCommitteeId: Option[Long],
+  url: Option[String],
   updateDate: Option[Instant],
+  isCurrent: Option[Boolean],
   createdAt: Option[Instant],
   updatedAt: Option[Instant],
 )

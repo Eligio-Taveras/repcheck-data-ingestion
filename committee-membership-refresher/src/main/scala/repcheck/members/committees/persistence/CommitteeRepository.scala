@@ -6,14 +6,14 @@ import repcheck.members.committees.model.CommitteeDO
 
 trait CommitteeRepository {
 
-  def upsert(committee: CommitteeDO): ConnectionIO[Unit]
+  def upsert(committee: CommitteeDO): ConnectionIO[CommitteeDO]
 
-  def upsertPlaceholder(committeeCode: String, chamber: String): ConnectionIO[Unit]
+  def upsertPlaceholder(naturalKey: String, chamber: String): ConnectionIO[CommitteeDO]
 
-  def findByCode(committeeCode: String): ConnectionIO[Option[CommitteeDO]]
+  def findByCode(naturalKey: String): ConnectionIO[Option[CommitteeDO]]
 
   def findAllSenateParentCodes(): ConnectionIO[List[String]]
 
-  def setParent(childCode: String, parentCode: String): ConnectionIO[Unit]
+  def setParent(childCode: String, parentId: Long): ConnectionIO[Unit]
 
 }

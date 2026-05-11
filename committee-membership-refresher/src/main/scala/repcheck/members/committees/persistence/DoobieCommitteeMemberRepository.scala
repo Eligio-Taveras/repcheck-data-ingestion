@@ -13,34 +13,34 @@ class DoobieCommitteeMemberRepository extends CommitteeMemberRepository {
 
   private val table: Fragment = Fragment.const(Tables.CommitteeMembers)
 
-  private val columns: Fragment =
-    fr"""id, committee_code, member_id, position, side, rank, congress,
-         begin_date, end_date, created_at, updated_at"""
+  private val selectColumns: Fragment =
+    fr"""id, committee_id, member_id, role, start_date, end_date,
+         side, rank, congress, created_at, updated_at"""
 
   override def upsert(member: CommitteeMemberDO): ConnectionIO[Unit] =
     sql"""INSERT INTO $table (
-            committee_code, member_id, position, side, rank, congress,
-            begin_date, end_date
+            committee_id, member_id, role, start_date, end_date,
+            side, rank, congress
           ) VALUES (
-            ${member.committeeCode}, ${member.memberId}, ${member.position},
-            ${member.side}, ${member.rank}, ${member.congress},
-            ${member.beginDate}, ${member.endDate}
+            ${member.committeeId}, ${member.memberId}, ${member.role}::committee_position_type,
+            ${member.startDate}, ${member.endDate},
+            ${member.side}, ${member.rank}, ${member.congress}
           )
-          ON CONFLICT (committee_code, member_id, congress) DO UPDATE SET
-            position = EXCLUDED.position,
+          ON CONFLICT (committee_id, member_id, congress) DO UPDATE SET
+            role = EXCLUDED.role,
+            start_date = EXCLUDED.start_date,
+            end_date = EXCLUDED.end_date,
             side = EXCLUDED.side,
             rank = EXCLUDED.rank,
-            begin_date = EXCLUDED.begin_date,
-            end_date = EXCLUDED.end_date,
             updated_at = NOW()""".update.run.void
 
-  override def findByCommittee(committeeCode: String): ConnectionIO[List[CommitteeMemberDO]] =
-    (fr"SELECT" ++ columns ++ fr"FROM" ++ table ++ fr"WHERE committee_code = $committeeCode")
+  override def findByCommittee(committeeId: Long): ConnectionIO[List[CommitteeMemberDO]] =
+    (fr"SELECT" ++ selectColumns ++ fr"FROM" ++ table ++ fr"WHERE committee_id = $committeeId")
       .query[CommitteeMemberDO]
       .to[List]
 
   override def findByMember(memberId: Long): ConnectionIO[List[CommitteeMemberDO]] =
-    (fr"SELECT" ++ columns ++ fr"FROM" ++ table ++ fr"WHERE member_id = $memberId")
+    (fr"SELECT" ++ selectColumns ++ fr"FROM" ++ table ++ fr"WHERE member_id = $memberId")
       .query[CommitteeMemberDO]
       .to[List]
 

@@ -8,7 +8,7 @@ trait CommitteeMemberRepository {
 
   def upsert(member: CommitteeMemberDO): ConnectionIO[Unit]
 
-  def findByCommittee(committeeCode: String): ConnectionIO[List[CommitteeMemberDO]]
+  def findByCommittee(committeeId: Long): ConnectionIO[List[CommitteeMemberDO]]
 
   def findByMember(memberId: Long): ConnectionIO[List[CommitteeMemberDO]]
 

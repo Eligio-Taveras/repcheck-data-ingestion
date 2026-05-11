@@ -121,6 +121,21 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
       updatedAt = None,
     )
 
+  private def makeCommitteeDO(id: Long, naturalKey: String, chamber: String): CommitteeDO =
+    CommitteeDO(
+      id = id,
+      naturalKey = naturalKey,
+      name = naturalKey,
+      chamber = chamber,
+      committeeType = None,
+      parentCommitteeId = None,
+      url = None,
+      updateDate = None,
+      isCurrent = Some(true),
+      createdAt = None,
+      updatedAt = None,
+    )
+
   private def stubPhase1Empty(f: TestFixture): Unit = {
     val _ = when(f.committeeApiClient.fetchPageForChamber(anyString(), any[FetchParams]))
       .thenReturn(IO.pure(PagedResponse(items = List.empty, totalCount = 0, nextOffset = None)))
@@ -168,8 +183,10 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
     val _ = when(f.houseXmlClient.fetchMembers(anyLong())).thenReturn(fs2.Stream.emit(houseDto))
     val _ = when(f.memberRepo.findByBioguideId(eqTo("H001")))
       .thenReturn(connection.pure(Some(makeMember(memberId = 100L, bioguideId = "H001"))))
-    val _ = when(f.committeeRepo.upsertPlaceholder(anyString(), anyString()))
-      .thenReturn(connection.pure(()))
+    val _ = when(f.committeeRepo.upsertPlaceholder(eqTo("RU00"), anyString()))
+      .thenReturn(connection.pure(makeCommitteeDO(10L, "RU00", "House")))
+    val _ = when(f.committeeRepo.upsertPlaceholder(eqTo("AP00"), anyString()))
+      .thenReturn(connection.pure(makeCommitteeDO(11L, "AP00", "House")))
     val _ = when(f.committeeMemberRepo.upsert(any[CommitteeMemberDO]))
       .thenReturn(connection.pure(()))
 
@@ -243,7 +260,7 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
     val _ = when(f.committeeApiClient.fetchPageForChamber(eqTo("joint"), any[FetchParams]))
       .thenReturn(IO.pure(PagedResponse(items = List.empty, totalCount = 0, nextOffset = None)))
     val _ = when(f.committeeRepo.upsert(any[CommitteeDO]))
-      .thenReturn(connection.pure(()))
+      .thenReturn(connection.pure(makeCommitteeDO(1L, "RU00", "House")))
 
     val result = f.processor.refreshAll(runId).unsafeRunSync()
 
