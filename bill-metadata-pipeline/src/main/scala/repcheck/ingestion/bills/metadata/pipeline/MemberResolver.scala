@@ -13,7 +13,7 @@ import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCrea
 import repcheck.members.common.persistence.MemberRepository
 import repcheck.shared.models.congress.dos.bill.{BillCosponsorDO, BillDO}
 import repcheck.shared.models.congress.dos.member.MemberDO
-import repcheck.shared.models.congress.dto.bill.CoSponsorDTO
+import repcheck.shared.models.congress.dto.bill.{CoSponsorDTO, SponsorDTO}
 
 private[pipeline] class MemberResolver[F[_]: Async](
   memberRepo: MemberRepository,
@@ -28,7 +28,8 @@ private[pipeline] class MemberResolver[F[_]: Async](
     detail: repcheck.shared.models.congress.dto.bill.BillDetailDTO,
     logCtx: LogContext,
   ): F[BillDO] = {
-    val sponsorBioguideId = detail.sponsors.flatMap(_.headOption).map(_.bioguideId)
+    val sponsorBioguideId =
+      detail.sponsors.flatMap(_.headOption).collect { case m: SponsorDTO.MemberSponsorDTO => m.bioguideId }
     sponsorBioguideId match {
       case Some(bioguideId) =>
         for {

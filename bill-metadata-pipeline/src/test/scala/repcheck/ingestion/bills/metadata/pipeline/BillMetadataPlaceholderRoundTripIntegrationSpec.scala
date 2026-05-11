@@ -138,7 +138,7 @@ class BillMetadataPlaceholderRoundTripIntegrationSpec
       policyArea = None,
       sponsors = Some(
         List(
-          SponsorDTO(
+          SponsorDTO.MemberSponsorDTO(
             bioguideId = "T000001",
             firstName = Some("Test"),
             lastName = Some("Sponsor"),
@@ -147,6 +147,7 @@ class BillMetadataPlaceholderRoundTripIntegrationSpec
             isByRequest = None,
             party = None,
             state = None,
+            district = None,
             url = None,
           )
         )

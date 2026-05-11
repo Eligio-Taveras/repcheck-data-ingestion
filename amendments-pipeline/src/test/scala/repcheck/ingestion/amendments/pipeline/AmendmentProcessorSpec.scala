@@ -104,7 +104,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       purpose = Some("Test purpose"),
       sponsors = sponsorBioguide.map { id =>
         List(
-          SponsorDTO(
+          SponsorDTO.MemberSponsorDTO(
             bioguideId = id,
             firstName = Some("Test"),
             lastName = Some("Senator"),
@@ -113,6 +113,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
             isByRequest = None,
             party = Some("D"),
             state = Some("NY"),
+            district = None,
             url = None,
           )
         )

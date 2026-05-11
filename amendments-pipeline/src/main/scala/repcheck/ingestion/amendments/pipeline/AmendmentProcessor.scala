@@ -26,6 +26,7 @@ import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.dos.amendment.AmendmentDO
 import repcheck.shared.models.congress.dos.member.MemberDO
 import repcheck.shared.models.congress.dto.amendment.{AmendmentDetailDTO, AmendmentListItemDTO}
+import repcheck.shared.models.congress.dto.bill.SponsorDTO
 import repcheck.shared.models.congress.dto.conversions.AmendmentConversions._
 
 /**
@@ -265,7 +266,7 @@ class AmendmentProcessor[F[_]: Async](
     detail: AmendmentDetailDTO,
     ctx: LogContext,
   ): F[Option[Long]] =
-    detail.sponsors.flatMap(_.headOption).map(_.bioguideId) match {
+    detail.sponsors.flatMap(_.headOption).collect { case m: SponsorDTO.MemberSponsorDTO => m.bioguideId } match {
       case Some(bioguideId) =>
         for {
           _        <- logger.debug(ctx, s"resolveSponsor.start bioguideId=$bioguideId")
