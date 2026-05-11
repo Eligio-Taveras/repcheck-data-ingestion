@@ -46,14 +46,23 @@
 #   5. lis-mapping-refresher          — fetches senate.gov XML → maps LIS IDs → DB → member-updated events
 #   6. votes-pipeline                 — fetches House + Senate votes → DB → vote-events events
 #                                       (runs AFTER lis-mapping-refresher so LIS→bioguide map is fresh)
+#   7. amendments-pipeline            — fetches Congressional amendments → DB (placeholders + chain hydration)
+#   8. amendment-text-availability-checker — scans DB for amendments needing text → Pub/Sub
+#   9. amendment-text-pipeline        — subscribes to Pub/Sub → downloads CREC text via GovInfo → DB
+#                                       (amendments triplet runs on a separate 4-hour cadence per
+#                                        IMPLEMENTATION_PLAN §6.3 L10: 30/50 offset gives amendments-
+#                                        pipeline time to complete before the checker scans)
 #
 # Schedule defaults (override via .env):
-#   BILL_METADATA_SCHEDULE          = 0 */6 * * *         (every 6 hours)
-#   BILL_TEXT_AVAILABILITY_SCHEDULE = 0 1,7,13,19 * * *   (every 6 hours, offset +1h)
-#   BILL_TEXT_PIPELINE_SCHEDULE     = 0 2,8,14,20 * * *   (every 6 hours, offset +2h)
-#   MEMBER_PROFILE_SCHEDULE         = 0 3,9,15,21 * * *   (every 6 hours, offset +3h)
-#   LIS_MAPPING_SCHEDULE            = 0 4,10,16,22 * * *  (every 6 hours, offset +4h)
-#   VOTES_SCHEDULE                  = 0 5,11,17,23 * * *  (every 6 hours, offset +5h)
+#   BILL_METADATA_SCHEDULE          = 0 */6 * * *           (every 6 hours)
+#   BILL_TEXT_AVAILABILITY_SCHEDULE = 0 1,7,13,19 * * *     (every 6 hours, offset +1h)
+#   BILL_TEXT_PIPELINE_SCHEDULE     = 0 2,8,14,20 * * *     (every 6 hours, offset +2h)
+#   MEMBER_PROFILE_SCHEDULE         = 0 3,9,15,21 * * *     (every 6 hours, offset +3h)
+#   LIS_MAPPING_SCHEDULE            = 0 4,10,16,22 * * *    (every 6 hours, offset +4h)
+#   VOTES_SCHEDULE                  = 0 5,11,17,23 * * *    (every 6 hours, offset +5h)
+#   AMENDMENTS_SCHEDULE             = 30 */4 * * *          (every 4 hours, minute 30)
+#   AMENDMENT_TEXT_CHECK_SCHEDULE   = 50 */4 * * *          (every 4 hours, minute 50 — +20m offset)
+#   AMENDMENT_TEXT_PIPELINE_SCHEDULE= 0 1,5,9,13,17,21 * * *(every 4 hours, +30m after the checker)
 # =============================================================================
 
 services:
@@ -120,6 +129,30 @@ services:
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       PUBSUB_PROJECT_ID: repcheck-local
 
+  # Init container: seeds a workflow_runs row so amendments-pipeline's
+  # WorkflowStateUpdater.recordStepStarted has a parent row to FK against.
+  # AmendmentsPipeline.runWithFactories writes workflow_run_steps unconditionally
+  # (unlike the bill-side which either hardcodes runId=0L and skips the updater,
+  # or wraps it in Optional). Without this seed the pipeline crashes on first
+  # run with `workflow_run_steps_workflow_run_id_fkey` (see PR #125 diagnosis).
+  # Idempotent via ON CONFLICT (id) DO NOTHING — safe across compose restarts.
+  workflow-runs-init:
+    image: postgres:16-alpine
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: repcheck
+    entrypoint:
+      - sh
+      - -c
+      - |
+        psql -h alloydb -U repcheck -d repcheck -v ON_ERROR_STOP=1 -c "
+          INSERT INTO workflow_runs (id, workflow_name, status, triggered_by, started_at)
+          VALUES (1, 'local-amendments-stack', 'running'::workflow_status_type, 'compose-local', NOW())
+          ON CONFLICT (id) DO NOTHING;
+        "
+
   ollama:
     build:
       context: ./ollama
@@ -165,6 +198,8 @@ services:
       db-migrations:
         condition: service_completed_successfully
       pubsub-init:
+        condition: service_completed_successfully
+      workflow-runs-init:
         condition: service_completed_successfully
       ollama:
         condition: service_healthy
@@ -431,6 +466,137 @@ services:
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: repcheck-local
       VOTE_EVENTS_TOPIC: vote-events
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Amendments triplet (per IMPLEMENTATION_PLAN §6.1)
+  # ---------------------------------------------------------------------------
+  # 1. amendments-pipeline (Cloud Run Job in production; cron-triggered locally)
+  # 2. amendment-text-availability-checker (Cloud Run Job; cron-triggered locally)
+  # 3. amendment-text-pipeline (Cloud Run Service in production — long-running
+  #    Pub/Sub subscriber; cron-triggered locally to drain & exit, matching the
+  #    bill-text-pipeline precedent).
+
+  amendments-pipeline:
+    container_name: amendments-pipeline
+    build:
+      context: .
+      dockerfile: amendments-pipeline/Dockerfile
+    # Launcher contract: args(0) = config (unused — PureConfig reads env),
+    # args(1) = runId (PipelineBootstrap.extractRunId parses args(1).toLong;
+    # MUST be numeric — non-numeric raises RunIdMissing). args(2) = stepRunId.
+    # `1` matches the workflow_runs row seeded by workflow-runs-init, so
+    # AmendmentsPipeline's WorkflowStateUpdater.recordStepStarted has a parent
+    # FK target.
+    command: ["cfg-unused", "1", "1"]
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+      workflow-runs-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
+      # P1 sizing: max-connections >= parallelism × maxRecursionDepth + 5.
+      # With application.conf defaults (parallelism=4, maxRecursionDepth=10)
+      # → 45. AmendmentsPipelineResources.validatePoolSizing fails boot if undersized.
+      AMENDMENTS_CONGRESSES_MIN: ${AMENDMENTS_CONGRESSES_MIN:-102}
+      AMENDMENTS_CONGRESSES_MAX: ${AMENDMENTS_CONGRESSES_MAX:-119}
+      # 30-day lookback for steady-state cron runs — wide enough to catch
+      # late-arriving updateDate revisions in the 4-hour cycle. Override to
+      # 999999 for full-history backfill (per IMPLEMENTATION_PLAN §7.2).
+      AMENDMENTS_LOOKBACK_DAYS: ${AMENDMENTS_LOOKBACK_DAYS:-30}
+      AMENDMENTS_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      AMENDMENTS_MAX_RECURSION_DEPTH: ${AMENDMENTS_MAX_RECURSION_DEPTH:-10}
+    restart: "no"
+
+  amendment-text-availability-checker:
+    container_name: amendment-text-availability-checker
+    build:
+      context: .
+      dockerfile: amendment-text-availability-checker/Dockerfile
+    # Launcher contract: args(0) = runId (Long), args(1) = stepRunId (Long).
+    # Defaults to 0L if missing/unparseable so any token would work, but pass
+    # `"1"` so a non-zero runId activates the WorkflowStateUpdater path against
+    # the workflow_runs row seeded by workflow-runs-init.
+    command: ["1", "1"]
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-init:
+        condition: service_completed_successfully
+      workflow-runs-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
+      # 4h cadence per IMPLEMENTATION_PLAN §6.3. staleAfter must be > 0
+      # (AmendmentTextCheckerConfig.require), but the SQL filter is
+      # `last_text_check_at IS NULL OR older than staleAfter` so freshly-
+      # inserted rows qualify regardless. 4h matches the cron cadence —
+      # nothing checked within the last cron tick gets re-checked.
+      AMENDMENT_TEXT_CHECK_STALE_AFTER: ${AMENDMENT_TEXT_CHECK_STALE_AFTER:-4h}
+      AMENDMENT_TEXT_CHECK_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      # Pub/Sub — publishes AmendmentTextAvailableEvent on the
+      # `amendment-text-available` topic (created by pubsub-init.sh).
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: repcheck-local
+      PUBSUB_TOPIC_NAME: amendment-text-available
+    restart: "no"
+
+  amendment-text-pipeline:
+    container_name: amendment-text-pipeline
+    build:
+      context: .
+      dockerfile: amendment-text-pipeline/Dockerfile
+    # Launcher contract: args(0) = runId (Long), args(1) = stepRunId (Long).
+    # `"1"` matches the seeded workflow_runs row (activates WorkflowStateUpdater).
+    command: ["1", "1"]
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+      pubsub-init:
+        condition: service_completed_successfully
+      workflow-runs-init:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      # GovInfo API key — required for CREC granule downloads via
+      # CrecGovInfoUrlRewriter. Same key as bill-text-pipeline.
+      GOVINFO_API_KEY: ${GOVINFO_API_KEY}
+      # Pub/Sub — uses the GCP_PROJECT_ID + EVENT_SUBSCRIBER_SUBSCRIPTION
+      # convention (per amendment-text-pipeline/application.conf), mirroring
+      # bill-text-pipeline. Override the default subscription name to match
+      # what pubsub-init.sh creates (`amendment-text-available-pipeline-sub`,
+      # not the application.conf default `amendment-text-available-sub`).
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      GCP_PROJECT_ID: repcheck-local
+      EVENT_SUBSCRIBER_SUBSCRIPTION: amendment-text-available-pipeline-sub
+      # Drain mode — single Pull RPC pulls up to N messages and the stream
+      # exits when the pull batch completes. Pub/Sub caps Pull at 1000.
+      EVENT_SUBSCRIBER_MAX_MESSAGES: ${EVENT_SUBSCRIBER_MAX_MESSAGES:-1000}
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL_NAME: bill-text-embedding
+      OLLAMA_EMBEDDING_DIMENSIONS: "1024"
+      OLLAMA_TIMEOUT_SECONDS: "60"
+      OLLAMA_EMBED_BATCH_SIZE: ${OLLAMA_EMBED_BATCH_SIZE:-50}
+      OLLAMA_EMBED_BATCH_TIMEOUT: ${OLLAMA_EMBED_BATCH_TIMEOUT:-1s}
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-20}
     restart: "no"
 
 volumes:
