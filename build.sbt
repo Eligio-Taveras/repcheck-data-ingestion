@@ -133,6 +133,7 @@ lazy val root = (project in file("."))
     amendmentsPipeline,
     amendmentTextAvailabilityChecker,
     amendmentTextPipeline,
+    committeeMembershipRefresher,
     dockerComposeE2e,
     docGenerator,
   )
@@ -271,6 +272,21 @@ lazy val lisMappingRefresher = (project in file("lis-mapping-refresher"))
     Test / parallelExecution   := false,
     assembly / mainClass       := Some("repcheck.members.lismapping.app.LisMappingRefresherApp"),
     assembly / assemblyJarName := "lis-mapping-refresher.jar",
+  )
+
+lazy val committeeMembershipRefresher = (project in file("committee-membership-refresher"))
+  .enablePlugins(com.repcheck.sbt.ExceptionUniquenessPlugin)
+  .dependsOn(membersCommon % "compile->compile;test->test")
+  .settings(pipelineSettings)
+  .settings(
+    name := "committee-membership-refresher",
+    libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
+      ++ catsEffect ++ doobie ++ xml ++ fs2 ++ logging ++ testDeps,
+    libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
+    coverageExcludedFiles                  := ".*CommitteeMembershipRefresherApp",
+    Test / parallelExecution               := false,
+    assembly / mainClass                   := Some("repcheck.members.committees.app.CommitteeMembershipRefresherApp"),
+    assembly / assemblyJarName             := "committee-membership-refresher.jar",
   )
 
 lazy val billTextPipeline = (project in file("bill-text-pipeline"))
