@@ -6,7 +6,7 @@ import doobie._
 import doobie.implicits._
 import doobie.postgres.implicits._
 
-import repcheck.members.committees.model.CommitteeMemberDO
+import repcheck.members.committees.model.{CommitteeMemberDO, CommitteeMemberInsert}
 import repcheck.pipeline.models.constants.Tables
 
 class DoobieCommitteeMemberRepository extends CommitteeMemberRepository {
@@ -17,19 +17,16 @@ class DoobieCommitteeMemberRepository extends CommitteeMemberRepository {
     fr"""id, committee_id, member_id, role, start_date, end_date,
          side, rank, congress, created_at, updated_at"""
 
-  override def upsert(member: CommitteeMemberDO): ConnectionIO[Unit] =
+  override def upsert(member: CommitteeMemberInsert): ConnectionIO[Unit] =
     sql"""INSERT INTO $table (
-            committee_id, member_id, role, start_date, end_date,
+            committee_id, member_id, role,
             side, rank, congress
           ) VALUES (
             ${member.committeeId}, ${member.memberId}, ${member.role}::committee_position_type,
-            ${member.startDate}, ${member.endDate},
             ${member.side}, ${member.rank}, ${member.congress}
           )
           ON CONFLICT (committee_id, member_id, congress) DO UPDATE SET
             role = EXCLUDED.role,
-            start_date = EXCLUDED.start_date,
-            end_date = EXCLUDED.end_date,
             side = EXCLUDED.side,
             rank = EXCLUDED.rank,
             updated_at = NOW()""".update.run.void

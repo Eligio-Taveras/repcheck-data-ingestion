@@ -10,7 +10,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.members.committees.client.{SenateCommitteeMembershipXmlClient, SenateIdentityXmlClient}
 import repcheck.members.committees.config.CommitteeMembershipConfig
 import repcheck.members.committees.errors.CommitteeMemberUpsertFailed
-import repcheck.members.committees.model.{CommitteeMemberDO, SenateCommitteeMemberXmlDTO}
+import repcheck.members.committees.model.{CommitteeMemberInsert, SenateCommitteeMemberXmlDTO}
 import repcheck.members.committees.persistence.{CommitteeMemberRepository, CommitteeRepository}
 import repcheck.members.common.persistence.MemberRepository
 
@@ -86,15 +86,15 @@ private[pipeline] class Phase3SenateProcessor[F[_]: Async](
         case Some(memberId) =>
           for {
             committee <- committeeRepo.upsertPlaceholder(senMember.committeeCode, "Senate").transact(xa)
-            committeeMemberDO = CommitteeMemberDO.forInsert(
+            insert = CommitteeMemberInsert(
               committeeId = committee.id,
               memberId = memberId,
-              role = senMember.position,
+              role = CommitteeMemberInsert.normalizeRole(senMember.position),
               side = None,
               rank = senMember.rank,
               congress = config.currentCongress,
             )
-            _ <- committeeMemberRepo.upsert(committeeMemberDO).transact(xa).handleErrorWith { error =>
+            _ <- committeeMemberRepo.upsert(insert).transact(xa).handleErrorWith { error =>
               Async[F].raiseError(
                 CommitteeMemberUpsertFailed(
                   senMember.committeeCode,

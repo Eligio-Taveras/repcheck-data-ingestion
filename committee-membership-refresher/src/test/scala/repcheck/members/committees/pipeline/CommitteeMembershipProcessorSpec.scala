@@ -196,7 +196,7 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
       .thenReturn(connection.pure(makeCommitteeDO(10L, "RU00", "House")))
     val _ = when(f.committeeRepo.upsertPlaceholder(eqTo("AP00"), anyString()))
       .thenReturn(connection.pure(makeCommitteeDO(11L, "AP00", "House")))
-    val _ = when(f.committeeMemberRepo.upsert(any[CommitteeMemberDO]))
+    val _ = when(f.committeeMemberRepo.upsert(any[CommitteeMemberInsert]))
       .thenReturn(connection.pure(()))
     stubCountMethods(f, committees = 2, memberships = 2, distinctMembers = 1)
 
@@ -204,7 +204,7 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
 
     val _ = result.distinctMembersProcessed shouldBe 1
     val _ = result.membershipRowsUpserted shouldBe 2
-    verify(f.committeeMemberRepo, times(2)).upsert(any[CommitteeMemberDO])
+    verify(f.committeeMemberRepo, times(2)).upsert(any[CommitteeMemberInsert])
   }
 
   it should "skip House members not in the members table" in {
@@ -231,7 +231,7 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
 
     val _ = result.distinctMembersProcessed shouldBe 0
     val _ = result.membershipRowsUpserted shouldBe 0
-    verify(f.committeeMemberRepo, never()).upsert(any[CommitteeMemberDO])
+    verify(f.committeeMemberRepo, never()).upsert(any[CommitteeMemberInsert])
   }
 
   it should "propagate XML client failure" in {
@@ -270,14 +270,14 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
       .thenReturn(IO.pure(PagedResponse(items = List.empty, totalCount = 0, nextOffset = None)))
     val _ = when(f.committeeApiClient.fetchPageForChamber(eqTo("joint"), any[FetchParams]))
       .thenReturn(IO.pure(PagedResponse(items = List.empty, totalCount = 0, nextOffset = None)))
-    val _ = when(f.committeeRepo.upsert(any[CommitteeDO]))
+    val _ = when(f.committeeRepo.upsert(any[CommitteeInsert]))
       .thenReturn(connection.pure(makeCommitteeDO(1L, "RU00", "House")))
     stubCountMethods(f, committees = 1, memberships = 0, distinctMembers = 0)
 
     val result = f.processor.refreshAll(runId).unsafeRunSync()
 
     val _ = result.committeesUpserted shouldBe 1
-    verify(f.committeeRepo, times(1)).upsert(any[CommitteeDO])
+    verify(f.committeeRepo, times(1)).upsert(any[CommitteeInsert])
   }
 
 }

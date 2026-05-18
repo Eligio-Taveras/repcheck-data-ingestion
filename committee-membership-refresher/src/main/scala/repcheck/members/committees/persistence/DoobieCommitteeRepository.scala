@@ -6,7 +6,7 @@ import doobie._
 import doobie.implicits._
 import doobie.postgres.implicits._
 
-import repcheck.members.committees.model.CommitteeDO
+import repcheck.members.committees.model.{CommitteeDO, CommitteeInsert}
 import repcheck.pipeline.models.constants.Tables
 
 class DoobieCommitteeRepository extends CommitteeRepository {
@@ -21,7 +21,7 @@ class DoobieCommitteeRepository extends CommitteeRepository {
     fr"""RETURNING id, natural_key, name, chamber, committee_type::text,
          parent_committee_id, url, update_date, is_current, created_at, updated_at"""
 
-  override def upsert(committee: CommitteeDO): ConnectionIO[CommitteeDO] =
+  override def upsert(committee: CommitteeInsert): ConnectionIO[CommitteeDO] =
     (sql"""INSERT INTO $table (
             natural_key, name, chamber, committee_type, parent_committee_id,
             url, update_date, is_current

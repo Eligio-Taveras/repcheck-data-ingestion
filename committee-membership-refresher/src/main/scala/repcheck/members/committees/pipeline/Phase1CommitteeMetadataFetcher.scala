@@ -13,7 +13,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.members.committees.client.CommitteeMetadataApiClient
 import repcheck.members.committees.config.CommitteeMembershipConfig
 import repcheck.members.committees.errors.CommitteeUpsertFailed
-import repcheck.members.committees.model.{CommitteeCodeNormalizer, CommitteeDO}
+import repcheck.members.committees.model.{CommitteeCodeNormalizer, CommitteeInsert}
 import repcheck.members.committees.persistence.CommitteeRepository
 
 private[pipeline] class Phase1CommitteeMetadataFetcher[F[_]: Async](
@@ -60,7 +60,7 @@ private[pipeline] class Phase1CommitteeMetadataFetcher[F[_]: Async](
 
           for {
             parentId <- resolveParentId
-            committeeDO = CommitteeDO.forInsert(
+            insert = CommitteeInsert(
               naturalKey = committeeCode,
               name = item.name,
               chamber = chamber.capitalize,
@@ -71,7 +71,7 @@ private[pipeline] class Phase1CommitteeMetadataFetcher[F[_]: Async](
               isCurrent = Some(true),
             )
             _ <- committeeRepo
-              .upsert(committeeDO)
+              .upsert(insert)
               .transact(xa)
               .handleErrorWith { error =>
                 Async[F].raiseError(

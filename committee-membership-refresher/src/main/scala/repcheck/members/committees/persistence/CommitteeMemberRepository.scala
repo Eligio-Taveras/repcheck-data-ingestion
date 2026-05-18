@@ -2,11 +2,11 @@ package repcheck.members.committees.persistence
 
 import doobie.ConnectionIO
 
-import repcheck.members.committees.model.CommitteeMemberDO
+import repcheck.members.committees.model.{CommitteeMemberDO, CommitteeMemberInsert}
 
 trait CommitteeMemberRepository {
 
-  def upsert(member: CommitteeMemberDO): ConnectionIO[Unit]
+  def upsert(member: CommitteeMemberInsert): ConnectionIO[Unit]
 
   def findByCommittee(committeeId: Long): ConnectionIO[List[CommitteeMemberDO]]
 

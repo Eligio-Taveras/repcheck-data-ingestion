@@ -10,7 +10,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.members.committees.client.HouseMemberDataXmlClient
 import repcheck.members.committees.config.CommitteeMembershipConfig
 import repcheck.members.committees.errors.CommitteeMemberUpsertFailed
-import repcheck.members.committees.model.{CommitteeMemberDO, HouseMemberDataXmlDTO}
+import repcheck.members.committees.model.{CommitteeMemberInsert, HouseMemberDataXmlDTO}
 import repcheck.members.committees.persistence.{CommitteeMemberRepository, CommitteeRepository}
 import repcheck.members.common.persistence.MemberRepository
 
@@ -48,7 +48,7 @@ private[pipeline] class Phase2HouseProcessor[F[_]: Async](
           dto.committees.traverse_ { assignment =>
             for {
               committee <- committeeRepo.upsertPlaceholder(assignment.committeeCode, "House").transact(xa)
-              committeeMemberDO = CommitteeMemberDO.forInsert(
+              insert = CommitteeMemberInsert(
                 committeeId = committee.id,
                 memberId = member.memberId,
                 role = None,
@@ -56,7 +56,7 @@ private[pipeline] class Phase2HouseProcessor[F[_]: Async](
                 rank = assignment.rank,
                 congress = config.currentCongress,
               )
-              _ <- committeeMemberRepo.upsert(committeeMemberDO).transact(xa).handleErrorWith { error =>
+              _ <- committeeMemberRepo.upsert(insert).transact(xa).handleErrorWith { error =>
                 Async[F].raiseError(
                   CommitteeMemberUpsertFailed(
                     assignment.committeeCode,

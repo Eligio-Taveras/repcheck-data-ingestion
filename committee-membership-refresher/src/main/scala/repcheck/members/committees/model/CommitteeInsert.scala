@@ -2,12 +2,7 @@ package repcheck.members.committees.model
 
 import java.time.Instant
 
-/**
- * Domain object for the `committees` table. Field order matches the explicit SELECT column list in
- * DoobieCommitteeRepository (Doobie maps positionally).
- */
-final case class CommitteeDO(
-  id: Long,
+final case class CommitteeInsert(
   naturalKey: String,
   name: String,
   chamber: String,
@@ -16,6 +11,4 @@ final case class CommitteeDO(
   url: Option[String],
   updateDate: Option[Instant],
   isCurrent: Option[Boolean],
-  createdAt: Option[Instant],
-  updatedAt: Option[Instant],
 )

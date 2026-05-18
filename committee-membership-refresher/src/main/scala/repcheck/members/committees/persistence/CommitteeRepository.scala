@@ -2,11 +2,11 @@ package repcheck.members.committees.persistence
 
 import doobie.ConnectionIO
 
-import repcheck.members.committees.model.CommitteeDO
+import repcheck.members.committees.model.{CommitteeDO, CommitteeInsert}
 
 trait CommitteeRepository {
 
-  def upsert(committee: CommitteeDO): ConnectionIO[CommitteeDO]
+  def upsert(committee: CommitteeInsert): ConnectionIO[CommitteeDO]
 
   def upsertPlaceholder(naturalKey: String, chamber: String): ConnectionIO[CommitteeDO]
 
