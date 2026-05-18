@@ -54,9 +54,10 @@ class SenateIdentityXmlClientSpec extends AnyFlatSpec with Matchers with BeforeA
       parallelism = 1,
       requestTimeout = 5.seconds,
       currentCongress = 119,
-      houseMemberDataUrl = "http://localhost/house.xml",
+      pageSize = 250,
+      houseMemberDataUrl = "http://localhost:8080/house.xml",
       senateIdentityUrl = s"http://localhost:${wireMock.port().toString}/cvc_member_data.xml",
-      senateCommitteeBaseUrl = "http://localhost/senate",
+      senateCommitteeBaseUrl = "http://localhost:8080/senate",
     )
 
   private def makeClient(config: CommitteeMembershipConfig): SenateIdentityXmlClient[IO] = {

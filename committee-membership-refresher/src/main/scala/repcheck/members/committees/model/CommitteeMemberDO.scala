@@ -19,3 +19,35 @@ final case class CommitteeMemberDO(
   createdAt: Option[Instant],
   updatedAt: Option[Instant],
 )
+
+object CommitteeMemberDO {
+
+  private val ValidRoles: Set[String] =
+    Set("Chairman", "Ranking Member", "Vice Chairman", "Member")
+
+  def normalizeRole(raw: Option[String]): Option[String] =
+    raw.map(_.trim).filter(ValidRoles.contains)
+
+  def forInsert(
+    committeeId: Long,
+    memberId: Long,
+    role: Option[String],
+    side: Option[String],
+    rank: Option[Int],
+    congress: Int,
+  ): CommitteeMemberDO =
+    CommitteeMemberDO(
+      id = 0L,
+      committeeId = committeeId,
+      memberId = memberId,
+      role = normalizeRole(role),
+      startDate = None,
+      endDate = None,
+      side = side,
+      rank = rank,
+      congress = congress,
+      createdAt = None,
+      updatedAt = None,
+    )
+
+}

@@ -8,6 +8,7 @@ final case class CommitteeMembershipConfig(
   parallelism: Int,
   requestTimeout: FiniteDuration,
   currentCongress: Int,
+  pageSize: Int,
   houseMemberDataUrl: String,
   senateIdentityUrl: String,
   senateCommitteeBaseUrl: String,

@@ -11,7 +11,6 @@ import fs2.Stream
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.xml.XmlFeedClient
 import repcheck.members.committees.config.CommitteeMembershipConfig
-import repcheck.members.committees.errors.SenateCommitteeSoft404
 import repcheck.members.committees.model.{CommitteeCodeNormalizer, SenateCommitteeMemberXmlDTO}
 
 /**
@@ -54,12 +53,10 @@ class SenateCommitteeMembershipXmlClient[F[_]: Async](
             .flatMap(_ => Stream.emits(all))
         }
       }
-      .handleErrorWith {
-        case _: SenateCommitteeSoft404 => Stream.empty
-        case e =>
-          Stream.eval(
-            logger.warn(logCtx, s"Failed to fetch committee $committeeCode: ${e.getMessage}")
-          ) >> Stream.empty
+      .handleErrorWith { e =>
+        Stream.eval(
+          logger.warn(logCtx, s"Failed to fetch committee $committeeCode: ${e.getMessage}")
+        ) >> Stream.empty
       }
   }
 

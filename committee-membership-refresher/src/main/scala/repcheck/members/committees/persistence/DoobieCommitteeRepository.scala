@@ -67,4 +67,9 @@ class DoobieCommitteeRepository extends CommitteeRepository {
     sql"""UPDATE $table SET parent_committee_id = $parentId, updated_at = NOW()
           WHERE natural_key = $childCode AND parent_committee_id IS NULL""".update.run.void
 
+  override def countCurrent(): ConnectionIO[Int] =
+    (fr"SELECT COUNT(*) FROM" ++ table ++ fr"WHERE is_current = true")
+      .query[Int]
+      .unique
+
 }

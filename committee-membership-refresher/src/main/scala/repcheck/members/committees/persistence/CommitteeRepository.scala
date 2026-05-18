@@ -16,4 +16,6 @@ trait CommitteeRepository {
 
   def setParent(childCode: String, parentId: Long): ConnectionIO[Unit]
 
+  def countCurrent(): ConnectionIO[Int]
+
 }

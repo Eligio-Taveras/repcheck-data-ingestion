@@ -58,8 +58,9 @@ class SenateCommitteeMembershipXmlClientSpec
       parallelism = 1,
       requestTimeout = 5.seconds,
       currentCongress = 119,
-      houseMemberDataUrl = "http://localhost/house.xml",
-      senateIdentityUrl = "http://localhost/identity.xml",
+      pageSize = 250,
+      houseMemberDataUrl = "http://localhost:8080/house.xml",
+      senateIdentityUrl = "http://localhost:8080/identity.xml",
       senateCommitteeBaseUrl = s"http://localhost:${wireMock.port().toString}/senate",
     )
 

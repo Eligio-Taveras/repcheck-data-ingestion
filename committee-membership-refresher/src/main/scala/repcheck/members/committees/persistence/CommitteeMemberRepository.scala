@@ -12,4 +12,8 @@ trait CommitteeMemberRepository {
 
   def findByMember(memberId: Long): ConnectionIO[List[CommitteeMemberDO]]
 
+  def countByCongress(congress: Int): ConnectionIO[Int]
+
+  def countDistinctMembersByCongress(congress: Int): ConnectionIO[Int]
+
 }

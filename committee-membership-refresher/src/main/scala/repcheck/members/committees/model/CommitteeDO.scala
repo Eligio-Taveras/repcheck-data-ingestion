@@ -19,3 +19,31 @@ final case class CommitteeDO(
   createdAt: Option[Instant],
   updatedAt: Option[Instant],
 )
+
+object CommitteeDO {
+
+  def forInsert(
+    naturalKey: String,
+    name: String,
+    chamber: String,
+    committeeType: Option[String],
+    parentCommitteeId: Option[Long],
+    url: Option[String],
+    updateDate: Option[Instant],
+    isCurrent: Option[Boolean],
+  ): CommitteeDO =
+    CommitteeDO(
+      id = 0L,
+      naturalKey = naturalKey,
+      name = name,
+      chamber = chamber,
+      committeeType = committeeType,
+      parentCommitteeId = parentCommitteeId,
+      url = url,
+      updateDate = updateDate,
+      isCurrent = isCurrent,
+      createdAt = None,
+      updatedAt = None,
+    )
+
+}

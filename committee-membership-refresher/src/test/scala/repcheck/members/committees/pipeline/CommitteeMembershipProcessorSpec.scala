@@ -10,7 +10,7 @@ import cats.effect.unsafe.implicits.global
 import doobie._
 import doobie.free.connection
 
-import org.mockito.ArgumentMatchers.{any, anyLong, anyString, eq => eqTo}
+import org.mockito.ArgumentMatchers.{any, anyInt, anyLong, anyString, eq => eqTo}
 import org.mockito.Mockito.{never, times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -46,9 +46,10 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
     parallelism = 1,
     requestTimeout = 5.seconds,
     currentCongress = 119,
-    houseMemberDataUrl = "http://localhost/house.xml",
-    senateIdentityUrl = "http://localhost/identity.xml",
-    senateCommitteeBaseUrl = "http://localhost/senate",
+    pageSize = 250,
+    houseMemberDataUrl = "http://localhost:8080/house.xml",
+    senateIdentityUrl = "http://localhost:8080/identity.xml",
+    senateCommitteeBaseUrl = "http://localhost:8080/senate",
   )
 
   private case class TestFixture(
@@ -150,11 +151,19 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
     val _ = when(f.committeeRepo.findAllSenateParentCodes()).thenReturn(connection.pure(List.empty[String]))
   }
 
+  private def stubCountMethods(f: TestFixture, committees: Int, memberships: Int, distinctMembers: Int): Unit = {
+    val _ = when(f.committeeRepo.countCurrent()).thenReturn(connection.pure(committees))
+    val _ = when(f.committeeMemberRepo.countByCongress(anyInt())).thenReturn(connection.pure(memberships))
+    val _ = when(f.committeeMemberRepo.countDistinctMembersByCongress(anyInt()))
+      .thenReturn(connection.pure(distinctMembers))
+  }
+
   "refreshAll" should "return zero counts when all phases produce empty results" in {
     val f = createFixture()
     stubPhase1Empty(f)
     stubPhase2Empty(f)
     stubPhase3Empty(f)
+    stubCountMethods(f, committees = 0, memberships = 0, distinctMembers = 0)
 
     val result = f.processor.refreshAll(runId).unsafeRunSync()
 
@@ -189,10 +198,11 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
       .thenReturn(connection.pure(makeCommitteeDO(11L, "AP00", "House")))
     val _ = when(f.committeeMemberRepo.upsert(any[CommitteeMemberDO]))
       .thenReturn(connection.pure(()))
+    stubCountMethods(f, committees = 2, memberships = 2, distinctMembers = 1)
 
     val result = f.processor.refreshAll(runId).unsafeRunSync()
 
-    val _ = result.houseMembersProcessed shouldBe 1
+    val _ = result.distinctMembersProcessed shouldBe 1
     val _ = result.membershipRowsUpserted shouldBe 2
     verify(f.committeeMemberRepo, times(2)).upsert(any[CommitteeMemberDO])
   }
@@ -215,10 +225,11 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
     val _ = when(f.houseXmlClient.fetchMembers(anyLong())).thenReturn(fs2.Stream.emit(houseDto))
     val _ = when(f.memberRepo.findByBioguideId(eqTo("UNKNOWN")))
       .thenReturn(connection.pure(Option.empty[MemberDO]))
+    stubCountMethods(f, committees = 0, memberships = 0, distinctMembers = 0)
 
     val result = f.processor.refreshAll(runId).unsafeRunSync()
 
-    val _ = result.houseMembersProcessed shouldBe 0
+    val _ = result.distinctMembersProcessed shouldBe 0
     val _ = result.membershipRowsUpserted shouldBe 0
     verify(f.committeeMemberRepo, never()).upsert(any[CommitteeMemberDO])
   }
@@ -261,6 +272,7 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
       .thenReturn(IO.pure(PagedResponse(items = List.empty, totalCount = 0, nextOffset = None)))
     val _ = when(f.committeeRepo.upsert(any[CommitteeDO]))
       .thenReturn(connection.pure(makeCommitteeDO(1L, "RU00", "House")))
+    stubCountMethods(f, committees = 1, memberships = 0, distinctMembers = 0)
 
     val result = f.processor.refreshAll(runId).unsafeRunSync()
 

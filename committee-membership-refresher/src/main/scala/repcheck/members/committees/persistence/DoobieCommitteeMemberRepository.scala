@@ -44,4 +44,14 @@ class DoobieCommitteeMemberRepository extends CommitteeMemberRepository {
       .query[CommitteeMemberDO]
       .to[List]
 
+  override def countByCongress(congress: Int): ConnectionIO[Int] =
+    (fr"SELECT COUNT(*) FROM" ++ table ++ fr"WHERE congress = $congress")
+      .query[Int]
+      .unique
+
+  override def countDistinctMembersByCongress(congress: Int): ConnectionIO[Int] =
+    (fr"SELECT COUNT(DISTINCT member_id) FROM" ++ table ++ fr"WHERE congress = $congress")
+      .query[Int]
+      .unique
+
 }

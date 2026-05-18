@@ -12,9 +12,9 @@ import repcheck.members.committees.app.CommitteeMembershipRefresherPipeline.AppC
 
 object CommitteeMembershipRefresherApp extends IOApp {
 
-  override def run(args: List[String]): IO[ExitCode] = {
-    val _ = args
+  override def run(args: List[String]): IO[ExitCode] =
     CommitteeMembershipRefresherPipeline.runWithFactories[IO](
+      args = args,
       configLoader = Sync[IO].delay(ConfigSource.default.loadOrThrow[AppConfig]),
       loggerFactory = (name: String) => PipelineLoggerFactory.make[IO](name),
       resourceBuilder = (config, logger) =>
@@ -26,6 +26,5 @@ object CommitteeMembershipRefresherApp extends IOApp {
         ),
       processorFactory = CommitteeMembershipRefresherPipeline.buildProcessor[IO],
     )
-  }
 
 }
