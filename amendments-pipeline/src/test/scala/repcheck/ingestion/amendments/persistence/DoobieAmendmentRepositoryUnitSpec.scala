@@ -35,6 +35,8 @@ class DoobieAmendmentRepositoryUnitSpec extends AnyFlatSpec with Matchers {
     description = None,
     purpose = None,
     sponsorMemberId = None,
+    sponsorCommitteeId = None,
+    sponsorType = None,
     submittedDate = None,
     proposedDate = None,
     latestActionDate = None,

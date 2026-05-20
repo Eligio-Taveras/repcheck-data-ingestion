@@ -53,6 +53,8 @@ class DoobieAmendmentRepository extends AmendmentRepository[ConnectionIO] {
          description,
          purpose,
          sponsor_member_id,
+         sponsor_committee_id,
+         sponsor_type,
          submitted_date::date AS submitted_date,
          proposed_date,
          latest_action_date,
@@ -69,7 +71,7 @@ class DoobieAmendmentRepository extends AmendmentRepository[ConnectionIO] {
     sql"""
       INSERT INTO $table (
         natural_key, congress, amendment_type, number, bill_id, chamber,
-        description, purpose, sponsor_member_id,
+        description, purpose, sponsor_member_id, sponsor_committee_id, sponsor_type,
         submitted_date, proposed_date, latest_action_date, latest_action_time, latest_action_text,
         update_date, api_url, parent_amendment_id, last_text_check_at
       ) VALUES (
@@ -82,6 +84,8 @@ class DoobieAmendmentRepository extends AmendmentRepository[ConnectionIO] {
         ${amendment.description},
         ${amendment.purpose},
         ${amendment.sponsorMemberId},
+        ${amendment.sponsorCommitteeId},
+        ${amendment.sponsorType},
         ${amendment.submittedDate}::date::timestamptz,
         ${amendment.proposedDate},
         ${amendment.latestActionDate},
@@ -101,6 +105,8 @@ class DoobieAmendmentRepository extends AmendmentRepository[ConnectionIO] {
         description = EXCLUDED.description,
         purpose = EXCLUDED.purpose,
         sponsor_member_id = EXCLUDED.sponsor_member_id,
+        sponsor_committee_id = EXCLUDED.sponsor_committee_id,
+        sponsor_type = EXCLUDED.sponsor_type,
         submitted_date = EXCLUDED.submitted_date,
         proposed_date = EXCLUDED.proposed_date,
         latest_action_date = EXCLUDED.latest_action_date,
@@ -122,6 +128,8 @@ class DoobieAmendmentRepository extends AmendmentRepository[ConnectionIO] {
         description,
         purpose,
         sponsor_member_id,
+        sponsor_committee_id,
+        sponsor_type,
         submitted_date::date AS submitted_date,
         proposed_date,
         latest_action_date,
@@ -160,7 +168,7 @@ class DoobieAmendmentRepository extends AmendmentRepository[ConnectionIO] {
     sql"""
       INSERT INTO $table (
         natural_key, congress, amendment_type, number, bill_id, chamber,
-        description, purpose, sponsor_member_id,
+        description, purpose, sponsor_member_id, sponsor_committee_id, sponsor_type,
         submitted_date, proposed_date, latest_action_date, latest_action_time, latest_action_text,
         update_date, api_url, parent_amendment_id, last_text_check_at
       ) VALUES (
@@ -173,6 +181,8 @@ class DoobieAmendmentRepository extends AmendmentRepository[ConnectionIO] {
         ${entity.description},
         ${entity.purpose},
         ${entity.sponsorMemberId},
+        ${entity.sponsorCommitteeId},
+        ${entity.sponsorType},
         ${entity.submittedDate}::date::timestamptz,
         ${entity.proposedDate},
         ${entity.latestActionDate},
