@@ -3,17 +3,22 @@ package repcheck.members.committees.app
 import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
-import fs2.Stream
+import org.http4s.client.Client
 
 import doobie.util.transactor.Transactor
 
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.execution.PipelineBootstrap
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.members.committees.config.HistoricalLoaderConfig
-import repcheck.members.committees.persistence.{DoobieCommitteeMemberRepository, DoobieCommitteeRepository}
+import repcheck.members.committees.client.GovInfoCdirClient
+import repcheck.members.committees.config.{GovInfoConfig, HistoricalLoaderConfig}
+import repcheck.members.committees.model.UsStateNames
+import repcheck.members.committees.persistence.{
+  DoobieCommitteeMemberRepository,
+  DoobieCommitteeRepository,
+  DoobieHistoricalMemberRepository,
+}
 import repcheck.members.committees.pipeline.CommitteeHistoryLoader
-import repcheck.members.common.persistence.DoobieMemberRepository
 
 private[app] object CommitteeHistoryLoaderPipeline {
 
@@ -22,47 +27,55 @@ private[app] object CommitteeHistoryLoaderPipeline {
   final case class AppConfig(
     database: DatabaseConfig,
     historical: HistoricalLoaderConfig,
+    govinfo: GovInfoConfig,
   ) derives pureconfig.ConfigReader
+
+  final case class LoaderResources[F[_]](
+    xa: Transactor[F],
+    httpClient: Client[F],
+  )
 
   private[app] def runWithFactories[F[_]: Async](
     args: List[String],
     configLoader: F[AppConfig],
     loggerFactory: String => F[PipelineLogger[F]],
-    transactorFactory: DatabaseConfig => Resource[F, Transactor[F]],
-    linesFactory: String => Stream[F, String],
-    loaderFactory: (Transactor[F], HistoricalLoaderConfig, PipelineLogger[F]) => CommitteeHistoryLoader[F],
+    resourceBuilder: AppConfig => Resource[F, LoaderResources[F]],
+    loaderFactory: (LoaderResources[F], AppConfig, PipelineLogger[F]) => CommitteeHistoryLoader[F],
   ): F[ExitCode] =
     for {
       config <- configLoader
       runId  <- PipelineBootstrap.extractRunId[F](args)
       logger <- loggerFactory(PipelineName)
-      exitCode <- transactorFactory(config.database).use { xa =>
-        val loader = loaderFactory(xa, config.historical, logger)
+      exitCode <- resourceBuilder(config).use { resources =>
+        val loader = loaderFactory(resources, config, logger)
         val logCtx = LogContext(runId = runId, stepName = PipelineName)
         for {
-          result <- loader.load(linesFactory(config.historical.filePath), runId.toLongOption.getOrElse(0L))
+          result <- loader.load(runId.toLongOption.getOrElse(0L))
           _ <- logger.info(
             logCtx,
-            s"Historical load complete: rowsRead=${result.rowsRead.toString} " +
-              s"upserted=${result.upserted.toString} skippedNoMember=${result.skippedNoMember.toString} " +
-              s"parseErrors=${result.parseErrors.toString}",
+            s"Pipeline completed: seen=${result.assignmentsSeen.toString} upserted=${result.upserted.toString} " +
+              s"noMember=${result.skippedNoMember.toString} noCommittee=${result.skippedNoCommittee.toString}",
           )
         } yield ExitCode.Success
       }
     } yield exitCode
 
   private[app] def buildLoader[F[_]: Async](
-    xa: Transactor[F],
-    config: HistoricalLoaderConfig,
+    resources: LoaderResources[F],
+    config: AppConfig,
     logger: PipelineLogger[F],
-  ): CommitteeHistoryLoader[F] =
+  ): CommitteeHistoryLoader[F] = {
+    val source = new GovInfoCdirClient[F](resources.httpClient, config.govinfo, logger)
     new CommitteeHistoryLoader[F](
+      source = source,
       committeeRepo = new DoobieCommitteeRepository,
       committeeMemberRepo = new DoobieCommitteeMemberRepository,
-      memberRepo = new DoobieMemberRepository,
-      xa = xa,
-      config = config,
+      memberRepo = new DoobieHistoricalMemberRepository,
+      xa = resources.xa,
+      config = config.historical,
+      stateNames = UsStateNames.all,
       logger = logger,
     )
+  }
 
 }

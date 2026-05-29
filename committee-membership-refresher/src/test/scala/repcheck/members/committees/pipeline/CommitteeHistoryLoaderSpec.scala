@@ -1,29 +1,33 @@
 package repcheck.members.committees.pipeline
 
-import java.time.Instant
-
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
-
-import fs2.Stream
 
 import doobie._
 import doobie.free.connection
 
 import org.mockito.ArgumentCaptor
-import org.mockito.ArgumentMatchers.{any, anyString, eq => eqTo}
-import org.mockito.Mockito.{never, verify, when}
+import org.mockito.ArgumentMatchers.{any, anyInt}
+import org.mockito.Mockito.{times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.members.committees.client.HistoricalAssignmentTsvReader
+import repcheck.members.committees.client.CdirCommitteeSource
 import repcheck.members.committees.config.HistoricalLoaderConfig
-import repcheck.members.committees.model.{CommitteeDO, CommitteeInsert, CommitteeMemberInsert}
-import repcheck.members.committees.persistence.{CommitteeMemberRepository, CommitteeRepository}
-import repcheck.members.common.persistence.MemberRepository
-import repcheck.shared.models.congress.common.{Party, UsState}
-import repcheck.shared.models.congress.dos.member.MemberDO
+import repcheck.members.committees.errors.CommitteeMemberUpsertFailed
+import repcheck.members.committees.model.{
+  CommitteeDO,
+  CommitteeMemberInsert,
+  HistoricalLoadResult,
+  HistoricalMemberRow,
+  UsStateNames,
+}
+import repcheck.members.committees.persistence.{
+  CommitteeMemberRepository,
+  CommitteeRepository,
+  HistoricalMemberRepository,
+}
 
 class CommitteeHistoryLoaderSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -35,7 +39,7 @@ class CommitteeHistoryLoaderSpec extends AnyFlatSpec with Matchers with MockitoS
     logHandler = None,
   )
 
-  private val config = HistoricalLoaderConfig(filePath = "/unused.tsv", parallelism = 1)
+  private val config = HistoricalLoaderConfig(currentCongress = 117, lookbackCongresses = 1)
 
   private val noopLogger: PipelineLogger[IO] = new PipelineLogger[IO] {
     def info(context: LogContext, message: String): IO[Unit]                            = IO.unit
@@ -44,147 +48,101 @@ class CommitteeHistoryLoaderSpec extends AnyFlatSpec with Matchers with MockitoS
     def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
   }
 
-  private def member(memberId: Long, bioguide: String): MemberDO =
-    MemberDO(
-      memberId = memberId,
-      naturalKey = bioguide,
-      firstName = Some("Jane"),
-      lastName = Some("Doe"),
-      directOrderName = Some("Jane Doe"),
-      invertedOrderName = Some("Doe, Jane"),
-      honorificName = None,
-      birthYear = None,
-      currentParty = Some(Party.Democrat),
-      state = Some(UsState.NewYork),
-      district = None,
-      imageUrl = None,
-      imageAttribution = None,
-      officialUrl = None,
-      updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")),
-      createdAt = None,
-      updatedAt = None,
-    )
+  private val agricultureText: String =
+    """STANDING COMMITTEES OF THE HOUSE
+      |Agriculture
+      |1301 Longworth House Office Building, phone 225-2171
+      |David Scott, of Georgia, Chair
+      |Jim Costa, of California.            Glenn Thompson, of Pennsylvania.""".stripMargin
 
-  private def committee(id: Long, code: String, chamber: String): CommitteeDO =
-    CommitteeDO(id, code, code, chamber, Some("Standing"), None, None, None, Some(true), None, None)
+  private val subcommitteeText: String =
+    """STANDING COMMITTEES OF THE HOUSE
+      |Agriculture
+      |David Scott, of Georgia, Chair
+      |Subcommittee on Livestock
+      |Jim Costa, of California.""".stripMargin
 
-  private case class Mocks(
+  private def sourceReturning(texts: List[String]): CdirCommitteeSource[IO] =
+    new CdirCommitteeSource[IO] {
+      def committeeListingTexts(congress: Int, runId: Long): IO[List[String]] = IO.pure(texts)
+    }
+
+  private def committee(id: Long, name: String): CommitteeDO =
+    CommitteeDO(id, "AG00", name, "House", Some("Standing"), None, None, None, Some(true), None, None)
+
+  private def loader(
+    source: CdirCommitteeSource[IO],
     committeeRepo: CommitteeRepository,
     committeeMemberRepo: CommitteeMemberRepository,
-    memberRepo: MemberRepository,
-  ) {
+    memberRepo: HistoricalMemberRepository,
+  ): CommitteeHistoryLoader[IO] =
+    new CommitteeHistoryLoader[IO](
+      source,
+      committeeRepo,
+      committeeMemberRepo,
+      memberRepo,
+      testXa,
+      config,
+      UsStateNames.all,
+      noopLogger,
+    )
 
-    def loader: CommitteeHistoryLoader[IO] =
-      new CommitteeHistoryLoader[IO](committeeRepo, committeeMemberRepo, memberRepo, testXa, config, noopLogger)
-
-  }
-
-  private def mocks(): Mocks = {
+  private def mocks(
+    members: List[HistoricalMemberRow],
+    committees: List[CommitteeDO] = List(committee(7L, "Agriculture Committee")),
+  ): (CommitteeRepository, CommitteeMemberRepository, HistoricalMemberRepository) = {
     val committeeRepo       = mock[CommitteeRepository]
     val committeeMemberRepo = mock[CommitteeMemberRepository]
-    val memberRepo          = mock[MemberRepository]
+    val memberRepo          = mock[HistoricalMemberRepository]
+    val _                   = when(committeeRepo.listAll()).thenReturn(connection.pure(committees))
+    val _                   = when(memberRepo.membersForCongress(anyInt())).thenReturn(connection.pure(members))
     val _ = when(committeeMemberRepo.upsert(any[CommitteeMemberInsert])).thenReturn(connection.pure(()))
-    Mocks(committeeRepo, committeeMemberRepo, memberRepo)
+    (committeeRepo, committeeMemberRepo, memberRepo)
   }
 
-  private val header = HistoricalAssignmentTsvReader.Header
+  "load" should "disambiguate same-surname members by first name and upsert under the target congress" in {
+    val members = List(
+      HistoricalMemberRow(Some("David"), Some("Scott"), Some("Georgia"), 42L),
+      HistoricalMemberRow(Some("Austin"), Some("Scott"), Some("Georgia"), 44L), // same (last,state)
+      HistoricalMemberRow(Some("Jim"), Some("Costa"), Some("California"), 43L),
+    )
+    val (cr, cmr, mr) = mocks(members)
+    val result        = loader(sourceReturning(List(agricultureText)), cr, cmr, mr).load(1L).unsafeRunSync()
 
-  private def tsv(rows: String*): Stream[IO, String] = Stream.emits(header +: rows.toList)
-
-  private def line(
-    congress: Int = 117,
-    chamber: String = "Senate",
-    code: String = "SSJU00",
-    name: String = "Judiciary Committee",
-    cType: String = "Standing",
-    bioguide: String = "B001",
-    role: String = "Chairman",
-    rank: String = "1",
-  ): String =
-    List(congress.toString, chamber, code, name, cType, bioguide, role, rank).mkString("\t")
-
-  "load" should "upsert a membership under the row's own congress when member and committee exist" in {
-    val m = mocks()
-    val _ = when(m.memberRepo.findByBioguideId(eqTo("B001"))).thenReturn(connection.pure(Some(member(42L, "B001"))))
-    val _ = when(m.committeeRepo.findByCode(eqTo("SSJU00")))
-      .thenReturn(connection.pure(Some(committee(7L, "SSJU00", "Senate"))))
-
-    val result = m.loader.load(tsv(line(congress = 114)), 1L).unsafeRunSync()
-
-    val _      = result.rowsRead shouldBe 1
-    val _      = result.upserted shouldBe 1
+    val _      = result.upserted shouldBe 2        // David Scott (disambiguated), Jim Costa
+    val _      = result.skippedNoMember shouldBe 1 // Glenn Thompson not in member set
     val captor = ArgumentCaptor.forClass(classOf[CommitteeMemberInsert])
-    val _      = verify(m.committeeMemberRepo).upsert(captor.capture())
-    val insert = captor.getValue
-    val _      = insert.congress shouldBe 114
-    val _      = insert.committeeId shouldBe 7L
-    val _      = insert.memberId shouldBe 42L
-    insert.role shouldBe Some("Chairman")
+    val _      = verify(cmr, times(2)).upsert(captor.capture())
+    val _      = captor.getAllValues.stream.allMatch(_.congress == 117) shouldBe true
+    captor.getAllValues.stream.anyMatch(_.memberId == 42L) shouldBe true
   }
 
-  it should "skip and count assignments whose member is not in the members table" in {
-    val m = mocks()
-    val _ = when(m.memberRepo.findByBioguideId(anyString())).thenReturn(connection.pure(None))
+  it should "count subcommittee assignments whose committee is not in the DB as skippedNoCommittee" in {
+    val members = List(
+      HistoricalMemberRow(Some("Jim"), Some("Costa"), Some("California"), 43L),
+      HistoricalMemberRow(Some("David"), Some("Scott"), Some("Georgia"), 42L),
+    )
+    val (cr, cmr, mr) = mocks(members)
+    val result        = loader(sourceReturning(List(subcommitteeText)), cr, cmr, mr).load(1L).unsafeRunSync()
 
-    val result = m.loader.load(tsv(line()), 1L).unsafeRunSync()
-
-    val _ = result.skippedNoMember shouldBe 1
-    val _ = result.upserted shouldBe 0
-    verify(m.committeeMemberRepo, never).upsert(any[CommitteeMemberInsert])
+    val _ = result.upserted shouldBe 1 // David Scott on Agriculture
+    result.skippedNoCommittee shouldBe 1 // Jim Costa on "Subcommittee on Livestock" (no DB row)
   }
 
-  it should "count malformed rows as parse errors without aborting" in {
-    val m = mocks()
-    val _ = when(m.memberRepo.findByBioguideId(anyString())).thenReturn(connection.pure(Some(member(42L, "B001"))))
-    val _ =
-      when(m.committeeRepo.findByCode(anyString())).thenReturn(connection.pure(Some(committee(7L, "SSJU00", "Senate"))))
+  it should "raise CommitteeMemberUpsertFailed when the upsert fails" in {
+    val members       = List(HistoricalMemberRow(Some("David"), Some("Scott"), Some("Georgia"), 42L))
+    val (cr, cmr, mr) = mocks(members)
+    val _ = when(cmr.upsert(any[CommitteeMemberInsert]))
+      .thenReturn(connection.raiseError(new RuntimeException("boom")))
 
-    val result = m.loader.load(tsv("117\tSenate\tonly-three-cols", line()), 1L).unsafeRunSync()
-
-    val _ = result.parseErrors shouldBe 1
-    val _ = result.upserted shouldBe 1
-    result.rowsRead shouldBe 2
+    assertThrows[CommitteeMemberUpsertFailed] {
+      loader(sourceReturning(List(agricultureText)), cr, cmr, mr).load(1L).unsafeRunSync()
+    }
   }
 
-  it should "create a committee from the row when the code is unknown and a name is supplied" in {
-    val m = mocks()
-    val _ = when(m.memberRepo.findByBioguideId(anyString())).thenReturn(connection.pure(Some(member(42L, "B001"))))
-    val _ = when(m.committeeRepo.findByCode(anyString())).thenReturn(connection.pure(None))
-    val _ =
-      when(m.committeeRepo.upsert(any[CommitteeInsert])).thenReturn(connection.pure(committee(9L, "SSJU00", "Senate")))
-
-    val result = m.loader.load(tsv(line()), 1L).unsafeRunSync()
-
-    val _      = result.upserted shouldBe 1
-    val captor = ArgumentCaptor.forClass(classOf[CommitteeInsert])
-    val _      = verify(m.committeeRepo).upsert(captor.capture())
-    captor.getValue.naturalKey shouldBe "SSJU00"
-  }
-
-  it should "fall back to a placeholder committee when the code is unknown and no name is supplied" in {
-    val m = mocks()
-    val _ = when(m.memberRepo.findByBioguideId(anyString())).thenReturn(connection.pure(Some(member(42L, "B001"))))
-    val _ = when(m.committeeRepo.findByCode(anyString())).thenReturn(connection.pure(None))
-    val _ = when(m.committeeRepo.upsertPlaceholder(anyString(), anyString()))
-      .thenReturn(connection.pure(committee(9L, "XX00", "House")))
-
-    val result = m.loader.load(tsv(line(name = "", chamber = "House", code = "XX00")), 1L).unsafeRunSync()
-
-    val _ = result.upserted shouldBe 1
-    val _ = verify(m.committeeRepo).upsertPlaceholder(eqTo("XX00"), eqTo("House"))
-    verify(m.committeeRepo, never).upsert(any[CommitteeInsert])
-  }
-
-  it should "skip the header and blank lines" in {
-    val m = mocks()
-    val _ = when(m.memberRepo.findByBioguideId(anyString())).thenReturn(connection.pure(Some(member(42L, "B001"))))
-    val _ =
-      when(m.committeeRepo.findByCode(anyString())).thenReturn(connection.pure(Some(committee(7L, "SSJU00", "Senate"))))
-
-    val withBlanks = Stream.emits(List(header, "", line(), "   "))
-    val result     = m.loader.load(withBlanks, 1L).unsafeRunSync()
-
-    result.rowsRead shouldBe 1
+  it should "return empty when the source yields no text" in {
+    val (cr, cmr, mr) = mocks(Nil)
+    loader(sourceReturning(Nil), cr, cmr, mr).load(1L).unsafeRunSync() shouldBe HistoricalLoadResult.empty
   }
 
 }

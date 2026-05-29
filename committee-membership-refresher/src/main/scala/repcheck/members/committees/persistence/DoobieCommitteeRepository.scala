@@ -57,6 +57,11 @@ class DoobieCommitteeRepository extends CommitteeRepository {
       .query[CommitteeDO]
       .option
 
+  override def listAll(): ConnectionIO[List[CommitteeDO]] =
+    (fr"SELECT" ++ selectColumns ++ fr"FROM" ++ table)
+      .query[CommitteeDO]
+      .to[List]
+
   override def setParent(childCode: String, parentId: Long): ConnectionIO[Unit] =
     sql"""UPDATE $table SET parent_committee_id = $parentId, updated_at = NOW()
           WHERE natural_key = $childCode AND parent_committee_id IS NULL""".update.run.void

@@ -12,6 +12,9 @@ trait CommitteeRepository {
 
   def findByCode(naturalKey: String): ConnectionIO[Option[CommitteeDO]]
 
+  /** All committees (used by the historical loader to drive resolution off the DB's committee universe). */
+  def listAll(): ConnectionIO[List[CommitteeDO]]
+
   def setParent(childCode: String, parentId: Long): ConnectionIO[Unit]
 
   def countCurrent(): ConnectionIO[Int]

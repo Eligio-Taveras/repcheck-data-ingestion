@@ -430,13 +430,12 @@ services:
       COMMITTEE_CURRENT_CONGRESS: ${COMMITTEE_CURRENT_CONGRESS:-119}
     restart: "no"
 
-  # One-time historical committee-membership backfill. NOT part of normal `up` — it's gated behind
-  # the `backfill` profile and runs only on demand:
+  # One-time historical committee-membership backfill from the GovInfo Congressional Directory. NOT part
+  # of normal `up` — gated behind the `backfill` profile, run on demand:
   #   docker compose -f docker-compose.local.yml --profile backfill up committee-history-loader
-  # Requires the canonical TSV at ./data/committee-history/committee-history.tsv (see
-  # HistoricalAssignmentTsvReader for the column layout). Resolves members by bioguide_id, so the
-  # target congresses' member profiles should already be ingested (member-profile-pipeline).
-  # Reuses the refresher image; overrides the entrypoint to the loader main class.
+  # Enumerates committees from the DB, looks each up in the CDIR, and resolves members by name+state for
+  # the target congress — so those congresses' member profiles should already be ingested
+  # (member-profile-pipeline). Reuses the refresher image; overrides the entrypoint to the loader main class.
   committee-history-loader:
     container_name: committee-history-loader
     profiles: ["backfill"]
@@ -456,10 +455,9 @@ services:
       DB_NAME: repcheck
       DB_USERNAME: repcheck
       DB_PASSWORD: repcheck
-      COMMITTEE_HISTORY_FILE_PATH: /data/committee-history.tsv
-      COMMITTEE_HISTORY_PARALLELISM: ${COMMITTEE_HISTORY_PARALLELISM:-2}
-    volumes:
-      - ./data/committee-history:/data:ro
+      GOVINFO_API_KEY: ${GOVINFO_API_KEY}
+      COMMITTEE_HISTORY_CURRENT_CONGRESS: ${COMMITTEE_HISTORY_CURRENT_CONGRESS:-119}
+      COMMITTEE_HISTORY_LOOKBACK_CONGRESSES: ${COMMITTEE_HISTORY_LOOKBACK_CONGRESSES:-5}
     restart: "no"
 
   votes-pipeline:

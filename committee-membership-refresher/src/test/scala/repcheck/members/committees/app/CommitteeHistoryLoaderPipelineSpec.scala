@@ -3,22 +3,29 @@ package repcheck.members.committees.app
 import cats.effect.unsafe.implicits.global
 import cats.effect.{ExitCode, IO, Resource}
 
-import fs2.Stream
+import org.http4s.Response
+import org.http4s.client.Client
 
 import doobie.Transactor
+import doobie.free.connection
 
 import pureconfig.ConfigSource
 
+import org.mockito.ArgumentMatchers.{any, anyInt}
+import org.mockito.Mockito.when
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.members.committees.app.CommitteeHistoryLoaderPipeline.AppConfig
-import repcheck.members.committees.client.HistoricalAssignmentTsvReader
-import repcheck.members.committees.config.HistoricalLoaderConfig
-import repcheck.members.committees.persistence.{CommitteeMemberRepository, CommitteeRepository}
+import repcheck.members.committees.app.CommitteeHistoryLoaderPipeline.{AppConfig, LoaderResources}
+import repcheck.members.committees.client.CdirCommitteeSource
+import repcheck.members.committees.model.{CommitteeMemberInsert, HistoricalMemberRow}
+import repcheck.members.committees.persistence.{
+  CommitteeMemberRepository,
+  CommitteeRepository,
+  HistoricalMemberRepository,
+}
 import repcheck.members.committees.pipeline.CommitteeHistoryLoader
-import repcheck.members.common.persistence.MemberRepository
 
 class CommitteeHistoryLoaderPipelineSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -37,7 +44,8 @@ class CommitteeHistoryLoaderPipelineSpec extends AnyFlatSpec with Matchers with 
     def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
   }
 
-  // Build AppConfig via HOCON so we don't depend on the external DatabaseConfig constructor shape.
+  private val noClient: Client[IO] = Client[IO](_ => Resource.pure(Response[IO]()))
+
   private val appConfig: AppConfig =
     ConfigSource
       .string(
@@ -49,19 +57,32 @@ class CommitteeHistoryLoaderPipelineSpec extends AnyFlatSpec with Matchers with 
           |  password = "repcheck"
           |  max-connections = 5
           |}
-          |historical { file-path = "/unused.tsv", parallelism = 1 }""".stripMargin
+          |historical { current-congress = 119, lookback-congresses = 1 }
+          |govinfo { base-url = "https://api.govinfo.gov", api-key = "k" }""".stripMargin
       )
       .loadOrThrow[AppConfig]
 
-  private def loaderWithMocks(config: HistoricalLoaderConfig): CommitteeHistoryLoader[IO] =
+  private def stubLoader(resources: LoaderResources[IO]): CommitteeHistoryLoader[IO] = {
+    val committeeRepo       = mock[CommitteeRepository]
+    val committeeMemberRepo = mock[CommitteeMemberRepository]
+    val memberRepo          = mock[HistoricalMemberRepository]
+    val _                   = when(committeeRepo.listAll()).thenReturn(connection.pure(Nil))
+    val _ = when(memberRepo.membersForCongress(anyInt())).thenReturn(connection.pure(List.empty[HistoricalMemberRow]))
+    val _ = when(committeeMemberRepo.upsert(any[CommitteeMemberInsert])).thenReturn(connection.pure(()))
+    val source = new CdirCommitteeSource[IO] {
+      def committeeListingTexts(congress: Int, runId: Long): IO[List[String]] = IO.pure(Nil)
+    }
     new CommitteeHistoryLoader[IO](
-      mock[CommitteeRepository],
-      mock[CommitteeMemberRepository],
-      mock[MemberRepository],
-      testXa,
-      config,
+      source,
+      committeeRepo,
+      committeeMemberRepo,
+      memberRepo,
+      resources.xa,
+      appConfig.historical,
+      Set("Georgia"),
       noopLogger,
     )
+  }
 
   "runWithFactories" should "load and exit successfully" in {
     val exit = CommitteeHistoryLoaderPipeline
@@ -69,18 +90,17 @@ class CommitteeHistoryLoaderPipelineSpec extends AnyFlatSpec with Matchers with 
         args = List("cfg-unused", "5"),
         configLoader = IO.pure(appConfig),
         loggerFactory = _ => IO.pure(noopLogger),
-        transactorFactory = _ => Resource.pure[IO, Transactor[IO]](testXa),
-        // Header-only input → no data rows resolved, so the mock repos are never invoked.
-        linesFactory = _ => Stream.emit(HistoricalAssignmentTsvReader.Header),
-        loaderFactory = (_, cfg, _) => loaderWithMocks(cfg),
+        resourceBuilder = _ => Resource.pure[IO, LoaderResources[IO]](LoaderResources(testXa, noClient)),
+        loaderFactory = (resources, _, _) => stubLoader(resources),
       )
       .unsafeRunSync()
 
     exit shouldBe ExitCode.Success
   }
 
-  "buildLoader" should "construct a loader from the wired repositories" in {
-    val loader = CommitteeHistoryLoaderPipeline.buildLoader[IO](testXa, appConfig.historical, noopLogger)
+  "buildLoader" should "construct a loader from the wired resources" in {
+    val loader =
+      CommitteeHistoryLoaderPipeline.buildLoader[IO](LoaderResources(testXa, noClient), appConfig, noopLogger)
     loader shouldBe a[CommitteeHistoryLoader[IO]]
   }
 

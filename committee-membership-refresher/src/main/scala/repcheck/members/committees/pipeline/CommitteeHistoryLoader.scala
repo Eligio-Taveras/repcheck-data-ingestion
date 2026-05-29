@@ -3,123 +3,146 @@ package repcheck.members.committees.pipeline
 import cats.effect.Async
 import cats.syntax.all._
 
-import fs2.Stream
-
 import doobie.implicits._
 import doobie.util.transactor.Transactor
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.members.committees.client.HistoricalAssignmentTsvReader
+import repcheck.members.committees.client.{CdirCommitteeListingParser, CdirCommitteeSource}
 import repcheck.members.committees.config.HistoricalLoaderConfig
 import repcheck.members.committees.errors.CommitteeMemberUpsertFailed
 import repcheck.members.committees.model.{
-  CommitteeInsert,
+  CdirAssignment,
   CommitteeMemberInsert,
-  HistoricalAssignmentRow,
   HistoricalLoadResult,
+  HistoricalMemberRow,
 }
-import repcheck.members.committees.persistence.{CommitteeMemberRepository, CommitteeRepository}
-import repcheck.members.common.persistence.MemberRepository
+import repcheck.members.committees.persistence.{
+  CommitteeMemberRepository,
+  CommitteeRepository,
+  HistoricalMemberRepository,
+}
 
 /**
- * One-time loader for historical committee membership. Reads the canonical TSV (one row per member/committee/congress),
- * resolves each member by bioguide_id, maps the committee code to an existing `committees` row (creating it when the
- * source references a committee Phase 1's Congress.gov metadata never had), and upserts `committee_members` under the
- * row's OWN congress — unlike the live refresher, which writes everything under the current congress.
- *
- * Member resolution is bioguide-only: assignments for members not yet in the `members` table are skipped and counted,
- * not guessed. Backfill member profiles for the target congresses first.
+ * Backfills historical committee membership from the GovInfo Congressional Directory. The committee universe is driven
+ * off the DB (per the design): we enumerate `committees`, use their names to anchor the CDIR parser, and map parsed
+ * assignments back to committee ids by normalized name. Members are resolved by (last name, state) within the target
+ * congress, disambiguated by first name; the row's OWN congress is written. Unresolved committees/members are counted,
+ * not guessed.
  */
 class CommitteeHistoryLoader[F[_]: Async](
+  source: CdirCommitteeSource[F],
   committeeRepo: CommitteeRepository,
   committeeMemberRepo: CommitteeMemberRepository,
-  memberRepo: MemberRepository,
+  memberRepo: HistoricalMemberRepository,
   xa: Transactor[F],
   config: HistoricalLoaderConfig,
+  stateNames: Set[String],
   logger: PipelineLogger[F],
 ) {
 
   private val StepName = "committee-history-loader"
 
-  def load(lines: Stream[F, String], runId: Long): F[HistoricalLoadResult] = {
+  private type MemberIndex = Map[(String, String), List[(String, Long)]]
+
+  def load(runId: Long): F[HistoricalLoadResult] = {
     val logCtx = LogContext(runId = runId.toString, stepName = StepName)
-    lines
-      .filter(line => line.trim.nonEmpty && !HistoricalAssignmentTsvReader.isHeader(line))
-      .parEvalMap(config.parallelism)(line => processLine(line, logCtx))
-      .compile
-      .fold(HistoricalLoadResult.empty)(_.combine(_))
+    for {
+      committees <- committeeRepo.listAll().transact(xa)
+      knownNames     = committees.map(_.name).toSet
+      committeeIndex = committees.map(c => CdirCommitteeListingParser.normalizeCommittee(c.name) -> c.id).toMap
+      _ <- logger.info(
+        logCtx,
+        s"Loaded ${committees.size.toString} committees; backfilling congresses " +
+          config.targetCongresses.mkString(", "),
+      )
+      result <- config.targetCongresses.foldLeftM(HistoricalLoadResult.empty) { (acc, congress) =>
+        loadCongress(congress, knownNames, committeeIndex, runId).map(acc.combine)
+      }
+      _ <- logger.info(
+        logCtx,
+        s"Historical load complete: seen=${result.assignmentsSeen.toString} upserted=${result.upserted.toString} " +
+          s"noMember=${result.skippedNoMember.toString} noCommittee=${result.skippedNoCommittee.toString}",
+      )
+    } yield result
   }
 
-  private def processLine(line: String, logCtx: LogContext): F[HistoricalLoadResult] =
-    HistoricalAssignmentTsvReader.parseLine(line) match {
-      case Left(err) =>
-        logger
-          .warn(logCtx, s"Skipping malformed row: $err")
-          .as(HistoricalLoadResult(rowsRead = 1, upserted = 0, skippedNoMember = 0, parseErrors = 1))
-      case Right(row) =>
-        upsertAssignment(row, logCtx)
-    }
+  private def loadCongress(
+    congress: Int,
+    knownNames: Set[String],
+    committeeIndex: Map[String, Long],
+    runId: Long,
+  ): F[HistoricalLoadResult] =
+    for {
+      members <- memberRepo.membersForCongress(congress).transact(xa)
+      memberIndex = buildMemberIndex(members)
+      texts <- source.committeeListingTexts(congress, runId)
+      assignments = texts.flatMap(t => CdirCommitteeListingParser.parse(t, knownNames, stateNames))
+      result <- assignments.foldLeftM(HistoricalLoadResult.empty) { (acc, a) =>
+        upsertAssignment(a, congress, committeeIndex, memberIndex).map(acc.combine)
+      }
+    } yield result
 
-  private def upsertAssignment(row: HistoricalAssignmentRow, logCtx: LogContext): F[HistoricalLoadResult] =
-    memberRepo.findByBioguideId(row.bioguideId).transact(xa).flatMap {
-      case None =>
-        logger
-          .debug(
-            logCtx,
-            s"Skipping ${row.bioguideId} / ${row.committeeCode} / congress ${row.congress.toString} — " +
-              "member not in members table",
-          )
-          .as(HistoricalLoadResult(rowsRead = 1, upserted = 0, skippedNoMember = 1, parseErrors = 0))
-      case Some(member) =>
-        for {
-          committeeId <- resolveCommitteeId(row)
-          insert = CommitteeMemberInsert(
-            committeeId = committeeId,
-            memberId = member.memberId,
-            role = CommitteeMemberInsert.normalizeRole(row.role),
-            side = None,
-            rank = row.rank,
-            congress = row.congress,
-          )
-          _ <- committeeMemberRepo.upsert(insert).transact(xa).handleErrorWith { error =>
+  private def upsertAssignment(
+    a: CdirAssignment,
+    congress: Int,
+    committeeIndex: Map[String, Long],
+    memberIndex: MemberIndex,
+  ): F[HistoricalLoadResult] = {
+    val committeeId = committeeIndex.get(CdirCommitteeListingParser.normalizeCommittee(a.committeeName))
+    val memberId    = resolveMember(a, memberIndex)
+    (committeeId, memberId) match {
+      case (None, _) =>
+        Async[F].pure(HistoricalLoadResult.single(upserted = false, noMember = false, noCommittee = true))
+      case (_, None) =>
+        Async[F].pure(HistoricalLoadResult.single(upserted = false, noMember = true, noCommittee = false))
+      case (Some(cid), Some(mid)) =>
+        val insert = CommitteeMemberInsert(
+          committeeId = cid,
+          memberId = mid,
+          role = CommitteeMemberInsert.normalizeRole(a.role),
+          side = None,
+          rank = None,
+          congress = congress,
+        )
+        committeeMemberRepo
+          .upsert(insert)
+          .transact(xa)
+          .handleErrorWith { error =>
             Async[F].raiseError(
               CommitteeMemberUpsertFailed(
-                row.committeeCode,
-                member.memberId,
+                a.committeeName,
+                mid,
                 Option(error.getMessage).getOrElse("unknown"),
                 Some(error),
               )
             )
           }
-        } yield HistoricalLoadResult(rowsRead = 1, upserted = 1, skippedNoMember = 0, parseErrors = 0)
+          .as(HistoricalLoadResult.single(upserted = true, noMember = false, noCommittee = false))
     }
+  }
 
-  /**
-   * Map the source committee code to a `committees.id`. Prefers an existing row (preserving Phase 1's Congress.gov
-   * metadata); otherwise creates one from the TSV's name/type, or a bare placeholder when no name is supplied.
-   */
-  private def resolveCommitteeId(row: HistoricalAssignmentRow): F[Long] =
-    committeeRepo.findByCode(row.committeeCode).transact(xa).flatMap {
-      case Some(existing) => Async[F].pure(existing.id)
-      case None =>
-        val create = row.committeeName match {
-          case Some(name) =>
-            committeeRepo.upsert(
-              CommitteeInsert(
-                naturalKey = row.committeeCode,
-                name = name,
-                chamber = row.chamber,
-                committeeType = row.committeeType,
-                parentCommitteeId = None,
-                url = None,
-                updateDate = None,
-                isCurrent = None,
-              )
-            )
-          case None =>
-            committeeRepo.upsertPlaceholder(row.committeeCode, row.chamber)
-        }
-        create.transact(xa).map(_.id)
+  private def buildMemberIndex(members: List[HistoricalMemberRow]): MemberIndex =
+    members
+      .flatMap { m =>
+        for {
+          last  <- m.lastName
+          state <- m.stateName
+        } yield (norm(last), norm(state)) -> (m.firstName.map(norm).getOrElse(""), m.memberId)
+      }
+      .groupMap(_._1)(_._2)
+
+  private def resolveMember(a: CdirAssignment, memberIndex: MemberIndex): Option[Long] = {
+    val first = norm(a.firstName)
+    memberIndex.get((norm(a.lastName), norm(a.state))).flatMap {
+      case (_, id) :: Nil => Some(id)
+      case candidates =>
+        candidates
+          .find { case (f, _) => f == first }
+          .orElse(candidates.find { case (f, _) => first.nonEmpty && f.startsWith(first.substring(0, 1)) })
+          .map { case (_, id) => id }
     }
+  }
+
+  private def norm(s: String): String = s.toLowerCase.trim
 
 }
