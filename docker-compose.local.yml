@@ -293,11 +293,11 @@ services:
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       PUBSUB_PROJECT_ID: repcheck-local
       PUBSUB_TOPIC_NAME: bill-text-available
-      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
-      # WARNING: 50ms page-delay = ~20 req/sec ceiling, well above the published Congress.gov
-      # rate budget of 5000 req/hour (≈1.39/sec). Used here to drain the local backfill queue
-      # quickly; expect 429s if sustained beyond ~5 minutes. Override per-run via env if needed.
-      CONGRESS_API_PAGE_DELAY: ${CONGRESS_API_PAGE_DELAY:-50ms}
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-2}
+      # Inherit the application.conf page-delay default (750ms). The shared Congress.gov key has a
+      # ~5000 req/hour (≈1.39/sec) budget across all pipelines, so the previous 50ms (~20 req/sec)
+      # override caused 429 storms when several pipelines ran at once. Override per-run if needed.
+      CONGRESS_API_PAGE_DELAY: ${CONGRESS_API_PAGE_DELAY:-750ms}
     restart: "no"
 
   bill-text-pipeline:
@@ -379,7 +379,7 @@ services:
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       PUBSUB_PROJECT_ID: repcheck-local
       MEMBER_UPDATED_TOPIC: member-updated
-      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-2}
       # Optional comma-separated congress list (e.g. "117,118,119"). When unset, the pipeline
       # falls back to `SELECT DISTINCT congress FROM bills` so it naturally tracks whatever
       # congresses bill-metadata-pipeline has covered. Override for targeted backfill / dev runs.
@@ -533,7 +533,7 @@ services:
       # 10-year lookback for local backfill — matches the cross-pipeline policy
       # used by bill-summary-pipeline. Override to 30 for steady-state cron runs.
       AMENDMENTS_LOOKBACK_DAYS: ${AMENDMENTS_LOOKBACK_DAYS:-3650}
-      AMENDMENTS_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      AMENDMENTS_PARALLELISM: ${PIPELINE_PARALLELISM:-2}
       AMENDMENTS_MAX_RECURSION_DEPTH: ${AMENDMENTS_MAX_RECURSION_DEPTH:-10}
     restart: "no"
 
@@ -567,7 +567,7 @@ services:
       # inserted rows qualify regardless. 4h matches the cron cadence —
       # nothing checked within the last cron tick gets re-checked.
       AMENDMENT_TEXT_CHECK_STALE_AFTER: ${AMENDMENT_TEXT_CHECK_STALE_AFTER:-4h}
-      AMENDMENT_TEXT_CHECK_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      AMENDMENT_TEXT_CHECK_PARALLELISM: ${PIPELINE_PARALLELISM:-2}
       # Pub/Sub — publishes AmendmentTextAvailableEvent on the
       # `amendment-text-available` topic (created by pubsub-init.sh).
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
