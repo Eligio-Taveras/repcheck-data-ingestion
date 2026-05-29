@@ -157,6 +157,22 @@ class AmendmentProcessor[F[_]: Async](
               Async[F].pure[ProcessingResult](ProcessingResult.Failed(naturalKey, e.getMessage))
           }
       }
+      // Per-item failures are already caught above. This guards the LIST-pagination path (fetchAll):
+      // a list page that exhausts its retries on a 429 would otherwise propagate and abort the whole
+      // backfill. Instead, log and end the stream gracefully so the run exits 0 with a partial result
+      // and the next idempotent re-run resumes — rather than crashing every run mid-stream.
+      .handleErrorWith { e =>
+        Stream
+          .eval(
+            logger.error(
+              runCtx,
+              "streamAll terminated early (likely Congress.gov rate limit) — partial run; the next " +
+                s"idempotent re-run will resume: ${e.getMessage}",
+              Some(e),
+            )
+          )
+          .drain
+      }
   }
 
   /**
