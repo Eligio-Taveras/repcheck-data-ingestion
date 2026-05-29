@@ -10,7 +10,7 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.members.committees.client.{SenateCommitteeMembershipXmlClient, SenateIdentityXmlClient}
 import repcheck.members.committees.config.CommitteeMembershipConfig
 import repcheck.members.committees.errors.CommitteeMemberUpsertFailed
-import repcheck.members.committees.model.{CommitteeMemberInsert, SenateCommitteeMemberXmlDTO}
+import repcheck.members.committees.model.{CommitteeMemberInsert, SenateCommitteeMemberXmlDTO, SenatorIdentityXmlDTO}
 import repcheck.members.committees.persistence.{CommitteeMemberRepository, CommitteeRepository}
 import repcheck.members.common.persistence.MemberRepository
 
@@ -28,10 +28,14 @@ private[pipeline] class Phase3SenateProcessor[F[_]: Async](
   def process(runId: Long, logCtx: LogContext): F[Unit] =
     for {
       _           <- logger.info(logCtx, "Phase 3: Processing Senate committee membership")
-      identityMap <- buildSenateIdentityMap(runId, logCtx)
-      parentCodes <- committeeRepo.findAllSenateParentCodes().transact(xa)
-      _           <- logger.info(logCtx, s"Found ${parentCodes.size.toString} Senate parent committees to process")
-      _ <- parentCodes.traverse_ { code =>
+      identities  <- senateIdentityClient.fetchIdentities(runId).compile.toList
+      identityMap <- buildSenateIdentityMap(identities, logCtx)
+      // The set of committees that actually exist this Congress is the distinct set referenced by
+      // current senators in cvc_member_data.xml — not the DB's committee metadata, which retains
+      // defunct committees and omits the joint committees senators sit on.
+      committeeCodes = identities.flatMap(_.committeeCodes).distinct.sorted
+      _ <- logger.info(logCtx, s"Found ${committeeCodes.size.toString} current Senate committees to process")
+      _ <- committeeCodes.traverse_ { code =>
         senateCommitteeClient
           .fetchCommitteeMembers(code, runId)
           .evalMap(senMember => resolveSenateCommitteeMember(senMember, identityMap, logCtx))
@@ -42,27 +46,23 @@ private[pipeline] class Phase3SenateProcessor[F[_]: Async](
     } yield ()
 
   private[pipeline] def buildSenateIdentityMap(
-    runId: Long,
+    identities: List[SenatorIdentityXmlDTO],
     logCtx: LogContext,
   ): F[Map[(String, String, String), (String, Long)]] =
     for {
       ref <- Ref.of[F, Map[(String, String, String), (String, Long)]](Map.empty)
-      _ <- senateIdentityClient
-        .fetchIdentities(runId)
-        .evalMap { identity =>
-          memberRepo.findByBioguideId(identity.bioguideId).transact(xa).flatMap {
-            case Some(member) =>
-              val key = (identity.firstName.toLowerCase, identity.lastName.toLowerCase, identity.state.toUpperCase)
-              ref.update(_.updated(key, (identity.bioguideId, member.memberId)))
-            case None =>
-              logger.debug(
-                logCtx,
-                s"Senate identity ${identity.bioguideId} not in members table, skipping identity map entry",
-              )
-          }
+      _ <- identities.traverse_ { identity =>
+        memberRepo.findByBioguideId(identity.bioguideId).transact(xa).flatMap {
+          case Some(member) =>
+            val key = (identity.firstName.toLowerCase, identity.lastName.toLowerCase, identity.state.toUpperCase)
+            ref.update(_.updated(key, (identity.bioguideId, member.memberId)))
+          case None =>
+            logger.debug(
+              logCtx,
+              s"Senate identity ${identity.bioguideId} not in members table, skipping identity map entry",
+            )
         }
-        .compile
-        .drain
+      }
       result <- ref.get
       _      <- logger.info(logCtx, s"Built Senate identity map with ${result.size.toString} entries")
     } yield result

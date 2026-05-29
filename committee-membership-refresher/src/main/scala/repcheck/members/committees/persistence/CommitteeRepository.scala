@@ -12,8 +12,6 @@ trait CommitteeRepository {
 
   def findByCode(naturalKey: String): ConnectionIO[Option[CommitteeDO]]
 
-  def findAllSenateParentCodes(): ConnectionIO[List[String]]
-
   def setParent(childCode: String, parentId: Long): ConnectionIO[Unit]
 
   def countCurrent(): ConnectionIO[Int]

@@ -55,7 +55,7 @@ lazy val commonSettings = Seq(
   libraryDependencies ++= Seq(
     "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.26",
     "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.28",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.38" % Test,
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.39" % Test,
     "com.repcheck" %% "repchecksharedmodels"          % "0.1.49",
   ),
   semanticdbEnabled := true,
@@ -154,7 +154,7 @@ lazy val commonTesting = (project in file("common-testing"))
     name := "common-testing",
     libraryDependencies ++= catsEffect ++ doobie ++ Seq(
       "org.scalatest" %% "scalatest"                     % "3.2.18",
-      "com.repcheck"  %% "repcheck-db-migrations-runner" % "0.1.36",
+      "com.repcheck"  %% "repcheck-db-migrations-runner" % "0.1.39",
     ),
   )
 

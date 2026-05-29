@@ -29,8 +29,9 @@ class SenateCommitteeMembershipXmlClient[F[_]: Async](
     committeeCode: String,
     runId: Long,
   ): Stream[F, SenateCommitteeMemberXmlDTO] = {
-    val logCtx = LogContext(runId = runId.toString, stepName = StepName, entityId = Some(committeeCode))
-    val url    = s"${config.senateCommitteeBaseUrl}/$committeeCode.xml"
+    val logCtx  = LogContext(runId = runId.toString, stepName = StepName, entityId = Some(committeeCode))
+    val urlCode = if (committeeCode.endsWith("00")) committeeCode.dropRight(2) else committeeCode
+    val url     = s"${config.senateCommitteeBaseUrl}/committee_memberships_$urlCode.xml"
 
     Stream
       .eval(
@@ -72,8 +73,9 @@ private[client] object SenateCommitteeMemberXmlParser {
     parentCommitteeCode: String,
     isSubcommittee: Boolean,
   ): List[SenateCommitteeMemberXmlDTO] = {
-    // Use direct child navigation (\ not \\) to avoid picking up subcommittee members
-    val directMembers = (elem \ "members" \ "member").toList
+    // Navigate through <committee_membership><committees><members> or <members> directly
+    val directMembers = (elem \ "committees" \ "members" \ "member").toList ++
+      (elem \ "members" \ "member").toList
     directMembers.flatMap(parseMember(_, parentCommitteeCode, isSubcommittee))
   }
 
@@ -83,6 +85,7 @@ private[client] object SenateCommitteeMemberXmlParser {
   ): List[SenateCommitteeMemberXmlDTO] =
     (elem \\ "subcommittee").toList.flatMap { subNode =>
       val subCode = textOption(subNode \@ "code")
+        .orElse(textOption(subNode \ "committee_code"))
         .map(CommitteeCodeNormalizer.fromSenateXml)
         .getOrElse(parentCommitteeCode)
       (subNode \ "members" \ "member").toList.flatMap(parseMember(_, subCode, isSubcommittee = true))
@@ -93,13 +96,17 @@ private[client] object SenateCommitteeMemberXmlParser {
     committeeCode: String,
     isSubcommittee: Boolean,
   ): Option[SenateCommitteeMemberXmlDTO] = {
-    val firstName = textOption(node \ "first_name").orElse(textOption(node \ "firstname"))
-    val lastName  = textOption(node \ "last_name").orElse(textOption(node \ "lastname"))
-    val state     = textOption(node \ "state")
-    val party     = textOption(node \ "party")
-    val position  = textOption(node \ "position")
-    val rank      = textOption(node \ "rank").flatMap(r => Try(r.toInt).toOption)
-    val bioguide  = textOption(node \ "bioguide_id").orElse(textOption(node \ "bioguideId"))
+    val firstName = textOption(node \ "name" \ "first")
+      .orElse(textOption(node \ "first_name"))
+      .orElse(textOption(node \ "firstname"))
+    val lastName = textOption(node \ "name" \ "last")
+      .orElse(textOption(node \ "last_name"))
+      .orElse(textOption(node \ "lastname"))
+    val state    = textOption(node \ "state")
+    val party    = textOption(node \ "party")
+    val position = textOption(node \ "position")
+    val rank     = textOption(node \ "rank").flatMap(r => Try(r.toInt).toOption)
+    val bioguide = textOption(node \ "bioguide_id").orElse(textOption(node \ "bioguideId"))
 
     for {
       fn <- firstName

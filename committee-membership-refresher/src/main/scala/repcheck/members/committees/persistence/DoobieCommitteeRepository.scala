@@ -57,12 +57,6 @@ class DoobieCommitteeRepository extends CommitteeRepository {
       .query[CommitteeDO]
       .option
 
-  override def findAllSenateParentCodes(): ConnectionIO[List[String]] =
-    (fr"SELECT natural_key FROM" ++ table ++
-      fr"WHERE chamber = 'Senate' AND parent_committee_id IS NULL AND committee_type != 'Subcommittee'")
-      .query[String]
-      .to[List]
-
   override def setParent(childCode: String, parentId: Long): ConnectionIO[Unit] =
     sql"""UPDATE $table SET parent_committee_id = $parentId, updated_at = NOW()
           WHERE natural_key = $childCode AND parent_committee_id IS NULL""".update.run.void

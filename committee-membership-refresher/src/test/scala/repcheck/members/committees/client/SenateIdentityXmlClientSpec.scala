@@ -164,4 +164,31 @@ class SenateIdentityXmlClientSpec extends AnyFlatSpec with Matchers with BeforeA
     }
   }
 
+  // Real senate.gov format: lis_member_id is an attribute, names nested under <name>,
+  // committee assignments embedded as <committees><committee code="...">.
+  it should "parse real format with nested names, attribute lis id, and committee codes" in {
+    val realSenator =
+      """<senator lis_member_id="S428">
+        |  <name><first>Angela D.</first><last>Alsobrooks</last></name>
+        |  <party>D</party>
+        |  <state>MD</state>
+        |  <bioguideId>A000382</bioguideId>
+        |  <committees>
+        |    <committee code="SSEV00">Environment and Public Works</committee>
+        |    <committee code="SSBK00">Banking</committee>
+        |  </committees>
+        |</senator>""".stripMargin
+    stubXml("/cvc_member_data.xml", document(Seq(realSenator)))
+
+    val result = makeClient(baseConfig).fetchIdentities(1L).compile.toList.unsafeRunSync()
+    val _      = result.size shouldBe 1
+    result.headOption.foreach { s =>
+      val _ = s.bioguideId shouldBe "A000382"
+      val _ = s.lisMemberId shouldBe "S428"
+      val _ = s.firstName shouldBe "Angela D."
+      val _ = s.lastName shouldBe "Alsobrooks"
+      s.committeeCodes should contain theSameElementsAs List("SSEV00", "SSBK00")
+    }
+  }
+
 }

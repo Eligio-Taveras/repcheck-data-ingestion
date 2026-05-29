@@ -8,4 +8,5 @@ final case class SenatorIdentityXmlDTO(
   lastName: String,
   party: String,
   state: String,
+  committeeCodes: List[String] = List.empty,
 )
