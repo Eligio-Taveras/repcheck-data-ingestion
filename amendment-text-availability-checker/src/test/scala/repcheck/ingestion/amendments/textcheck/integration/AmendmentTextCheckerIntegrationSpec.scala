@@ -145,6 +145,8 @@ class AmendmentTextCheckerIntegrationSpec
       description = None,
       purpose = None,
       sponsorMemberId = None,
+      sponsorCommitteeId = None,
+      sponsorType = None,
       submittedDate = None,
       proposedDate = None,
       latestActionDate = None,

@@ -15,7 +15,7 @@ import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.amendments.errors.InvalidAmendmentNaturalKey
 import repcheck.ingestion.amendments.testing.TransactorFixture
 import repcheck.members.common.testing.DockerRequired
-import repcheck.shared.models.congress.amendment.AmendmentType
+import repcheck.shared.models.congress.amendment.{AmendmentType, SponsorType}
 import repcheck.shared.models.congress.common.Chamber
 import repcheck.shared.models.congress.dos.amendment.AmendmentDO
 
@@ -38,6 +38,8 @@ class DoobieAmendmentRepositorySpec extends AnyFlatSpec with Matchers with Trans
     chamber: Chamber = Chamber.Senate,
     billId: Option[Long] = None,
     sponsorMemberId: Option[Long] = None,
+    sponsorCommitteeId: Option[Long] = None,
+    sponsorType: Option[SponsorType] = None,
     parentAmendmentId: Option[Long] = None,
     description: Option[String] = Some("In the nature of a substitute."),
     purpose: Option[String] = Some("Strike all after the enacting clause and insert"),
@@ -60,6 +62,8 @@ class DoobieAmendmentRepositorySpec extends AnyFlatSpec with Matchers with Trans
     description = description,
     purpose = purpose,
     sponsorMemberId = sponsorMemberId,
+    sponsorCommitteeId = sponsorCommitteeId,
+    sponsorType = sponsorType,
     submittedDate = submittedDate,
     proposedDate = proposedDate,
     latestActionDate = latestActionDate,

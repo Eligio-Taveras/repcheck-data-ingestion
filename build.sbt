@@ -55,8 +55,8 @@ lazy val commonSettings = Seq(
   libraryDependencies ++= Seq(
     "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.26",
     "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.28",
-    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.37" % Test,
-    "com.repcheck" %% "repchecksharedmodels"          % "0.1.47",
+    "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.38" % Test,
+    "com.repcheck" %% "repchecksharedmodels"          % "0.1.49",
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
