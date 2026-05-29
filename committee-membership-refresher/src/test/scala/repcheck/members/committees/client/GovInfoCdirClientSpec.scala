@@ -82,7 +82,36 @@ class GovInfoCdirClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     val _ = texts.size shouldBe 2
     // HTML tags stripped
     val _ = texts.exists(_.contains("STANDING COMMITTEES OF THE HOUSE")) shouldBe true
-    texts.exists(_.contains("<pre>")) shouldBe false
+    val _ = texts.exists(_.contains("<pre>")) shouldBe false
+    // GovInfo's JSON endpoints 406 without this Accept header — assert we send it
+    wireMock.verify(
+      getRequestedFor(urlPathEqualTo("/collections/CDIR/2000-01-01T00:00:00Z"))
+        .withHeader("Accept", containing("application/json"))
+    )
+  }
+
+  it should "fall back to an older edition when the newest package has no committee granules" in {
+    stub(
+      "/collections/CDIR/2000-01-01T00:00:00Z",
+      """{"packages":[
+        |{"packageId":"CDIR-2022-10-26","dateIssued":"2022-10-26"},
+        |{"packageId":"CDIR-2021-01-15","dateIssued":"2021-01-15"}]}""".stripMargin,
+    )
+    // newest (2022-10-26) has no committee granules — partial edition
+    stub("/packages/CDIR-2022-10-26/granules", """{"granules":[{"granuleId":"CDIR-2022-10-26-FRONTMATTER"}]}""")
+    stub(
+      "/packages/CDIR-2021-01-15/granules",
+      """{"granules":[{"granuleId":"CDIR-2021-01-15-HOUSECOMMITTEES"}]}""",
+    )
+    val txtUrl = s"http://localhost:${wireMock.port().toString}/content"
+    stub(
+      "/packages/CDIR-2021-01-15/granules/CDIR-2021-01-15-HOUSECOMMITTEES/summary",
+      s"""{"download":{"txtLink":"$txtUrl/house"}}""",
+    )
+    stub("/content/house", "STANDING COMMITTEES OF THE HOUSE")
+
+    val texts = client.committeeListingTexts(117, 1L).unsafeRunSync()
+    texts.exists(_.contains("STANDING COMMITTEES OF THE HOUSE")) shouldBe true
   }
 
   it should "return empty when no package falls in the congress's years" in {

@@ -7,7 +7,8 @@ import io.circe.Json
 import io.circe.parser.parse
 
 import org.http4s.client.Client
-import org.http4s.{Method, Request, Uri}
+import org.http4s.headers.Accept
+import org.http4s.{Headers, MediaRange, MediaType, Method, Request, Uri}
 
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.members.committees.client.CdirPackageSelector.CdirPackageRef
@@ -26,21 +27,32 @@ class GovInfoCdirClient[F[_]: Async](
 
   private val StepName = "committee-history-cdir"
 
+  private val JsonAccept: Accept = Accept(MediaType.application.json)
+  private val AnyAccept: Accept  = Accept(MediaRange.`*/*`)
+
   override def committeeListingTexts(congress: Int, runId: Long): F[List[String]] = {
     val logCtx = LogContext(runId = runId.toString, stepName = StepName, entityId = Some(s"congress-$congress"))
-    listPackages.flatMap { packages =>
-      CdirPackageSelector.selectForCongress(packages, congress) match {
-        case None =>
-          logger.warn(logCtx, s"No CDIR package found for congress $congress").as(List.empty[String])
-        case Some(pkg) =>
-          for {
-            _          <- logger.info(logCtx, s"Using CDIR package $pkg for congress $congress")
-            granuleIds <- committeeGranuleIds(pkg)
-            texts      <- granuleIds.traverse(g => fetchGranuleText(pkg, g))
-          } yield texts.filter(_.nonEmpty)
-      }
-    }
+    listPackages.flatMap(packages =>
+      firstWithCommittees(CdirPackageSelector.candidatesForCongress(packages, congress), congress, logCtx)
+    )
   }
+
+  /**
+   * Try the congress's editions newest-first until one actually has committee-listing granules. Some editions (e.g. a
+   * mid-term partial directory) carry none, so the latest package isn't always the right one.
+   */
+  private def firstWithCommittees(candidates: List[String], congress: Int, logCtx: LogContext): F[List[String]] =
+    candidates match {
+      case Nil =>
+        logger.warn(logCtx, s"No CDIR package with committee listings for congress $congress").as(List.empty[String])
+      case pkg :: rest =>
+        committeeGranuleIds(pkg).flatMap {
+          case Nil => firstWithCommittees(rest, congress, logCtx)
+          case ids =>
+            logger.info(logCtx, s"Using CDIR package $pkg for congress $congress") *>
+              ids.traverse(g => fetchGranuleText(pkg, g)).map(_.filter(_.nonEmpty))
+        }
+    }
 
   private def listPackages: F[List[CdirPackageRef]] =
     getJson(s"${config.baseUrl}/collections/CDIR/2000-01-01T00:00:00Z?offset=0&pageSize=500").map { json =>
@@ -62,7 +74,7 @@ class GovInfoCdirClient[F[_]: Async](
   private def fetchGranuleText(pkg: String, granuleId: String): F[String] =
     getJson(s"${config.baseUrl}/packages/$pkg/granules/$granuleId/summary").flatMap { summary =>
       summary.hcursor.downField("download").get[String]("txtLink").toOption match {
-        case Some(link) => getText(appendKey(link)).map(stripHtml)
+        case Some(link) => get(appendKey(link), AnyAccept).map(stripHtml)
         case None       => Async[F].pure("")
       }
     }
@@ -70,13 +82,15 @@ class GovInfoCdirClient[F[_]: Async](
   private def jsonArray(json: Json, field: String): List[Json] =
     json.hcursor.downField(field).as[List[Json]].getOrElse(Nil)
 
+  // GovInfo's JSON endpoints return 406 unless Accept is application/json (the default text/* from
+  // expect[String] is rejected); content renditions are served as text/html, so request */* there.
   private def getJson(url: String): F[Json] =
-    getText(appendKey(url)).flatMap(s => Async[F].fromEither(parse(s)))
+    get(appendKey(url), JsonAccept).flatMap(s => Async[F].fromEither(parse(s)))
 
-  private def getText(url: String): F[String] =
-    Async[F]
-      .fromEither(Uri.fromString(url))
-      .flatMap(uri => client.expect[String](Request[F](Method.GET, uri)))
+  private def get(url: String, accept: Accept): F[String] =
+    Async[F].fromEither(Uri.fromString(url)).flatMap { uri =>
+      client.run(Request[F](Method.GET, uri, headers = Headers(accept))).use(_.bodyText.compile.string)
+    }
 
   private def appendKey(url: String): String =
     if (url.contains("?")) s"$url&api_key=${config.apiKey}" else s"$url?api_key=${config.apiKey}"

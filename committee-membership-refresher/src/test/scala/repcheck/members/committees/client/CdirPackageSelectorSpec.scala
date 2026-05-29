@@ -25,4 +25,13 @@ class CdirPackageSelectorSpec extends AnyFlatSpec with Matchers {
     CdirPackageSelector.selectForCongress(packages, 117) shouldBe None
   }
 
+  "candidatesForCongress" should "list all in-range packages newest first" in {
+    val packages = List(
+      CdirPackageRef("CDIR-2021-07-13", "2021-07-13"),
+      CdirPackageRef("CDIR-2022-10-26", "2022-10-26"),
+      CdirPackageRef("CDIR-2019-09-30", "2019-09-30"),
+    )
+    CdirPackageSelector.candidatesForCongress(packages, 117) shouldBe List("CDIR-2022-10-26", "CDIR-2021-07-13")
+  }
+
 }
