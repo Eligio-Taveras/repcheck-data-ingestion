@@ -328,6 +328,9 @@ class CrossAmendmentEmbedder[F[_]: Async] private[embedding] (
                 totalChars <- amendmentTextChunkRepository.sumContentLengthByVersionId(versionId)
                 clamped = math.min(totalChars, Int.MaxValue.toLong).toInt
                 _ <- amendmentTextVersionRepository.markFetched(versionId, now, clamped)
+                // Back-link the amendment to this now-complete version (atomic with markFetched) so downstream
+                // consumers can navigate amendments.latest_text_version_id rather than re-deriving the latest version.
+                _ <- amendmentTextVersionRepository.linkLatestTextVersion(progress.ctx.amendmentId, versionId)
               } yield ()
             }
           }
