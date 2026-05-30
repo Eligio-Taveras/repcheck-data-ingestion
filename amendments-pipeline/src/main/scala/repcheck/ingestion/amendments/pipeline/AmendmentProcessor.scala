@@ -16,7 +16,7 @@ import repcheck.ingestion.amendments.api.AmendmentsApiClient
 import repcheck.ingestion.amendments.config.AmendmentsConfig
 import repcheck.ingestion.amendments.errors.{AmendmentProcessingFailed, AmendmentRecursionTooDeep}
 import repcheck.ingestion.amendments.observability.AmendmentMetrics
-import repcheck.ingestion.amendments.persistence.AmendmentRepository
+import repcheck.ingestion.amendments.persistence.{AmendmentRepository, CommitteeLookupRepository}
 import repcheck.ingestion.bills.common.persistence.BillRepository
 import repcheck.ingestion.common.api.FetchParams
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
@@ -71,6 +71,7 @@ class AmendmentProcessor[F[_]: Async](
   memberRepository: MemberRepository,
   memberEntityRepo: EntityRepository[F, MemberDO],
   billRepository: BillRepository[doobie.ConnectionIO],
+  committeeRepository: CommitteeLookupRepository[doobie.ConnectionIO],
   xa: Transactor[F],
   config: AmendmentsConfig,
   logger: PipelineLogger[F],
@@ -235,9 +236,10 @@ class AmendmentProcessor[F[_]: Async](
       detail <- apiClient.fetchDetail(detailUrl, correlationId)
       _      <- logger.debug(ctx, s"fetchDetail.done")
 
-      sponsorMemberId  <- resolveSponsorMemberId(detail, ctx)
-      directBillId     <- resolveBillId(detail, ctx)
-      parentResolution <- resolveParent(detail, depth, correlationId, ctx)
+      sponsorMemberId    <- resolveSponsorMemberId(detail, ctx)
+      sponsorCommitteeId <- resolveSponsorCommitteeId(detail, ctx)
+      directBillId       <- resolveBillId(detail, ctx)
+      parentResolution   <- resolveParent(detail, depth, correlationId, ctx)
       (parentAmendmentId, parentBillId) = parentResolution
 
       effectiveBillId = directBillId.orElse(parentBillId)
@@ -251,6 +253,7 @@ class AmendmentProcessor[F[_]: Async](
       result <- detail.toDO(
         billId = effectiveBillId,
         sponsorMemberId = sponsorMemberId,
+        sponsorCommitteeId = sponsorCommitteeId,
         parentAmendmentId = parentAmendmentId,
       ) match {
         case Left(reason) =>
@@ -267,7 +270,8 @@ class AmendmentProcessor[F[_]: Async](
               ctx,
               s"Amendment $naturalKey upserted bill_id=${effectiveBillId.fold("none")(_.toString)} " +
                 s"parent=${parentAmendmentId.fold("none")(_.toString)} " +
-                s"sponsor=${sponsorMemberId.fold("none")(_.toString)}",
+                s"sponsor=${sponsorMemberId.fold("none")(_.toString)} " +
+                s"sponsorCommittee=${sponsorCommitteeId.fold("none")(_.toString)}",
             )
           } yield ProcessingResult.Succeeded(naturalKey): ProcessingResult
       }
@@ -296,6 +300,43 @@ class AmendmentProcessor[F[_]: Async](
 
       case None =>
         logger.debug(ctx, s"resolveSponsor.skip (no sponsor)") *>
+          Async[F].pure(Option.empty[Long])
+    }
+
+  /**
+   * Committee-sponsor companion to [[resolveSponsorMemberId]] for amendments whose sponsor is a committee
+   * (`sponsor_type = committee`). The sponsor payload carries a committee URL whose final path segment is the
+   * Congress.gov systemCode (`hsru00`); we parse it and resolve it to a `committees.id` via
+   * [[CommitteeLookupRepository]]. Unlike the member path there is NO placeholder insert — committees are owned by the
+   * committee pipeline, so an unmatched systemCode yields `None` (NULL FK) and the run continues rather than
+   * fabricating a committee row. The head sponsor is either a member or a committee, never both, so this and
+   * [[resolveSponsorMemberId]] never both return `Some` for the same amendment (`toDO` rejects that pairing).
+   */
+  private[pipeline] def resolveSponsorCommitteeId(
+    detail: AmendmentDetailDTO,
+    ctx: LogContext,
+  ): F[Option[Long]] =
+    detail.sponsors.flatMap(_.headOption).collect { case c: SponsorDTO.CommitteeSponsorDTO => c.url } match {
+      case Some(url) =>
+        CommitteeSponsorSystemCode.fromUrl(url) match {
+          case Some(systemCode) =>
+            for {
+              _           <- logger.debug(ctx, s"resolveSponsorCommittee.start systemCode=$systemCode")
+              committeeId <- committeeRepository.findIdBySystemCode(systemCode).transact(xa)
+              _ <- logger.debug(
+                ctx,
+                s"resolveSponsorCommittee.done systemCode=$systemCode " +
+                  s"committeeId=${committeeId.fold("none")(_.toString)}",
+              )
+            } yield committeeId
+
+          case None =>
+            logger.warn(ctx, s"resolveSponsorCommittee.skip (unparseable committee url: $url)") *>
+              Async[F].pure(Option.empty[Long])
+        }
+
+      case None =>
+        logger.debug(ctx, s"resolveSponsorCommittee.skip (no committee sponsor)") *>
           Async[F].pure(Option.empty[Long])
     }
 
