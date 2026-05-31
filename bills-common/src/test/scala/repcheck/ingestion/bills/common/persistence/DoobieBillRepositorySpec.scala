@@ -100,7 +100,9 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     // Simulate the bill-text and bill-summary pipelines writing the columns they own.
     val _ = sql"""UPDATE bills
                   SET text_version_type = 'EH'::text_version_code_type, summary_text = 'CRS summary body'
-                  WHERE natural_key = '118-HR-9100'""".update.run.transact(xa).unsafeRunSync()
+                  WHERE congress = 118 AND bill_type = 'hr'::bill_type_enum AND number = 9100""".update.run
+      .transact(xa)
+      .unsafeRunSync()
 
     // The metadata pipeline re-upserts the same bill; its DTO carries None for both (the bill detail API has neither).
     // After the ownership-boundary fix the UPDATE SET no longer lists those columns, so they must survive.
