@@ -14,7 +14,7 @@ import doobie.util.transactor.Transactor
 
 import pureconfig.ConfigSource
 
-import repcheck.ingestion.bills.common.persistence.DoobieBillRepository
+import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillSummaryRepository}
 import repcheck.ingestion.bills.summary.api.BillSummariesApiClient
 import repcheck.ingestion.bills.summary.config.BillSummaryConfig
 import repcheck.ingestion.bills.summary.errors.StepRunIdInvalid
@@ -60,13 +60,15 @@ private[app] object BillSummaryPipeline {
         case (xa, httpClient) =>
           for {
             congresses <- resolveCongresses[F](config, xa, logger, sys.env.get)
-            billRepo     = new DoobieBillRepository
-            workflowRepo = new DoobieWorkflowRunStepsRepository
-            retryWrapper = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
-            apiClient    = BillSummariesApiClient[F](config.congressApi, httpClient, retryWrapper)
+            billRepo        = new DoobieBillRepository
+            billSummaryRepo = new DoobieBillSummaryRepository
+            workflowRepo    = new DoobieWorkflowRunStepsRepository
+            retryWrapper    = new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit)
+            apiClient       = BillSummariesApiClient[F](config.congressApi, httpClient, retryWrapper)
             processor = new BillSummaryProcessor[F](
               apiClient = apiClient,
               billRepo = billRepo,
+              billSummaryRepo = billSummaryRepo,
               workflowRepo = workflowRepo,
               xa = xa,
               config = config.pipeline,

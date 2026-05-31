@@ -42,6 +42,15 @@ trait AmendmentTextVersionRepository[F[_]] {
   /** Mark the supplied version row complete by setting `fetched_at = $timestamp` and `text_length = $textLength`. */
   def markFetched(versionId: Long, timestamp: Instant, textLength: Int): F[Unit]
 
+  /**
+   * Point `amendments.latest_text_version_id` at `versionId` for the owning amendment — the back-link mirror of bills'
+   * `DoobieBillTextVersionRepository.storeAndUpdateBill`. Called at completion (alongside [[markFetched]]) so the FK
+   * always references a fully-fetched version. Guarded: the pointer only advances when `versionId`'s `version_date` is
+   * at least as new as the current pointer's, so out-of-order completion across the parallel text consumers can't
+   * regress an amendment to an older version. A NULL current pointer always advances.
+   */
+  def linkLatestTextVersion(amendmentId: Long, versionId: Long): F[Unit]
+
   /** Read accessor used by analysis consumers (out of §7 scope but part of the repository contract). */
   def findCompletedByAmendmentId(amendmentId: Long): F[List[AmendmentTextVersionDO]]
 

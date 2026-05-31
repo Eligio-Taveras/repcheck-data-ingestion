@@ -27,7 +27,8 @@ import repcheck.shared.models.congress.dos.amendment.AmendmentTextVersionDO
  */
 class DoobieAmendmentTextVersionRepository extends AmendmentTextVersionRepository[ConnectionIO] {
 
-  private val table: Fragment = Fragment.const(Tables.AmendmentTextVersions)
+  private val table: Fragment           = Fragment.const(Tables.AmendmentTextVersions)
+  private val amendmentsTable: Fragment = Fragment.const(Tables.Amendments)
 
   // Explicit column list — never SELECT *. Order matches the AmendmentTextVersionDO constructor.
   private val selectColumns: Fragment = fr"""
@@ -111,6 +112,28 @@ class DoobieAmendmentTextVersionRepository extends AmendmentTextVersionRepositor
   override def markFetched(versionId: Long, timestamp: Instant, textLength: Int): ConnectionIO[Unit] =
     sql"""
       UPDATE $table SET fetched_at = $timestamp, text_length = $textLength WHERE id = $versionId
+    """.update.run.map(_ => ())
+
+  /**
+   * Guarded back-link UPDATE. Joins the amendment to the newly-completed version (`nv`) and advances
+   * `latest_text_version_id` only when there is no current pointer OR the new version's `version_date` is >= the
+   * current pointer's. The `>=` (rather than `>`) lets a same-date format sibling (HTML/PDF of the same logical
+   * version) take the pointer on a later completion, while still blocking a strictly-older version from regressing it.
+   * `version_date` is never NULL in practice (the processor defaults it to EPOCH), so the comparison is total.
+   */
+  override def linkLatestTextVersion(amendmentId: Long, versionId: Long): ConnectionIO[Unit] =
+    sql"""
+      UPDATE $amendmentsTable AS a
+      SET latest_text_version_id = $versionId, updated_at = NOW()
+      FROM $table AS nv
+      WHERE a.id = $amendmentId
+        AND nv.id = $versionId
+        AND (
+          a.latest_text_version_id IS NULL
+          OR nv.version_date >= (
+            SELECT cur.version_date FROM $table AS cur WHERE cur.id = a.latest_text_version_id
+          )
+        )
     """.update.run.map(_ => ())
 
   override def findCompletedByAmendmentId(amendmentId: Long): ConnectionIO[List[AmendmentTextVersionDO]] =
