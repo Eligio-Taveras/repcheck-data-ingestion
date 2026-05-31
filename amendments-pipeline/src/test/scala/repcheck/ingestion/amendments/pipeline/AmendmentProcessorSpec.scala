@@ -867,6 +867,26 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     batchCalls.headOption.map(_.toSet) shouldBe Some(items.map(AmendmentNaturalKeys.fromListItem).toSet)
   }
 
+  it should "not abort the run when list pagination fails (e.g. exhausted 429 retries)" in {
+    val failingCalls = new AtomicReference[List[ApiCall]](Nil)
+    val failingApi = new TestApiClient(Map.empty, Nil, failingCalls) {
+      override def fetchPage(params: FetchParams): IO[PagedResponse[AmendmentListItemDTO]] =
+        IO.raiseError[PagedResponse[AmendmentListItemDTO]](new RuntimeException("429 exhausted"))
+    }
+    val processor =
+      buildProcessor(
+        failingApi,
+        new StubAmendmentRepo(Map.empty),
+        new StubBillRepo,
+        new StubMemberRepo,
+        new StubPlaceholderCreator,
+      )
+
+    // The stream-level handler must swallow the list-pagination failure: the run completes (empty),
+    // it does NOT raise — so the next idempotent re-run can resume instead of every run crashing.
+    processor.streamAll("run-rate-limit").compile.toList.unsafeRunSync() shouldBe empty
+  }
+
   it should "process partially-stored pages — items not in DB are processed as new, items unchanged are skipped" in {
     val items = List(
       listItem(number = "100", updateDate = Some("2024-06-02T12:00:00Z")),
