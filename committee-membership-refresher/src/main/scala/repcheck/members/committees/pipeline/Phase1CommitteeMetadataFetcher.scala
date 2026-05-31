@@ -48,9 +48,11 @@ private[pipeline] class Phase1CommitteeMetadataFetcher[F[_]: Async](
           val committeeCode = CommitteeCodeNormalizer.fromCongressGov(item.systemCode, chamber)
           val parentCode =
             item.parent.flatMap(_.systemCode).map(pc => CommitteeCodeNormalizer.fromCongressGov(pc, chamber))
-          val committeeType = item.committeeTypeCode.getOrElse(
+          val knownTypes = Set("Standing", "Special", "Select", "Joint", "Subcommittee", "Task Force")
+          val rawType = item.committeeTypeCode.getOrElse(
             if (parentCode.isDefined) "Subcommittee" else "Standing"
           )
+          val committeeType = if (knownTypes.contains(rawType)) rawType else "Standing"
 
           val resolveParentId: F[Option[Long]] = parentCode match {
             case Some(pc) =>
@@ -67,7 +69,8 @@ private[pipeline] class Phase1CommitteeMetadataFetcher[F[_]: Async](
               committeeType = Some(committeeType),
               parentCommitteeId = parentId,
               url = item.url,
-              updateDate = item.updateDate.map(d => Instant.parse(s"${d}T00:00:00Z")),
+              updateDate =
+                item.updateDate.map(d => if (d.contains("T")) Instant.parse(d) else Instant.parse(s"${d}T00:00:00Z")),
               isCurrent = Some(true),
             )
             _ <- committeeRepo

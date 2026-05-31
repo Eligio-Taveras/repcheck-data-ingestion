@@ -148,7 +148,6 @@ class CommitteeMembershipProcessorSpec extends AnyFlatSpec with Matchers with Mo
 
   private def stubPhase3Empty(f: TestFixture): Unit = {
     val _ = when(f.senateIdentityClient.fetchIdentities(anyLong())).thenReturn(fs2.Stream.empty)
-    val _ = when(f.committeeRepo.findAllSenateParentCodes()).thenReturn(connection.pure(List.empty[String]))
   }
 
   private def stubCountMethods(f: TestFixture, committees: Int, memberships: Int, distinctMembers: Int): Unit = {

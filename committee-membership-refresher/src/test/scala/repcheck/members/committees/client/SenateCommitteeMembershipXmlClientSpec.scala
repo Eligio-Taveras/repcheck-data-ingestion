@@ -95,43 +95,64 @@ class SenateCommitteeMembershipXmlClientSpec
     )
   }
 
+  // Real senate.gov format: <committee_membership><committees> root, names nested under <name>,
+  // subcommittee code in a <committee_code> child element, no bioguide_id or rank fields.
   private val sampleCommitteeXml: String =
-    """<committee code="SSFI00" name="Finance">
-      |  <members>
-      |    <member>
-      |      <bioguide_id>B001</bioguide_id>
-      |      <first_name>Ron</first_name>
-      |      <last_name>Wyden</last_name>
-      |      <state>OR</state>
-      |      <party>D</party>
-      |      <position>Chairman</position>
-      |      <rank>1</rank>
-      |    </member>
-      |    <member>
-      |      <first_name>Mike</first_name>
-      |      <last_name>Crapo</last_name>
-      |      <state>ID</state>
-      |      <party>R</party>
-      |      <position>Ranking</position>
-      |      <rank>1</rank>
-      |    </member>
-      |  </members>
-      |  <subcommittee code="SSFI01">
+    """<committee_membership>
+      |  <committees>
+      |    <majority_party>R</majority_party>
+      |    <committee_name>Committee on Finance</committee_name>
+      |    <committee_code>SSFI00</committee_code>
       |    <members>
       |      <member>
-      |        <bioguide_id>B002</bioguide_id>
-      |        <first_name>Debbie</first_name>
-      |        <last_name>Stabenow</last_name>
-      |        <state>MI</state>
+      |        <name><first>Ron</first><last>Wyden</last></name>
+      |        <state>OR</state>
       |        <party>D</party>
       |        <position>Chairman</position>
       |      </member>
+      |      <member>
+      |        <name><first>Mike</first><last>Crapo</last></name>
+      |        <state>ID</state>
+      |        <party>R</party>
+      |        <position>Ranking</position>
+      |      </member>
       |    </members>
-      |  </subcommittee>
-      |</committee>""".stripMargin
+      |    <subcommittee>
+      |      <subcommittee_name>Subcommittee on Health Care</subcommittee_name>
+      |      <committee_code>SSFI01</committee_code>
+      |      <members>
+      |        <member>
+      |          <name><first>Debbie</first><last>Stabenow</last></name>
+      |          <state>MI</state>
+      |          <party>D</party>
+      |          <position>Chairman</position>
+      |        </member>
+      |      </members>
+      |    </subcommittee>
+      |  </committees>
+      |</committee_membership>""".stripMargin
+
+  // Backward-compat fixture: flat structure with bioguide_id and rank, proving the parser's
+  // fallback field extraction still works if senate.gov ever includes them.
+  private val sampleWithBioguideAndRank: String =
+    """<committee_membership>
+      |  <committees>
+      |    <committee_code>SSFI00</committee_code>
+      |    <members>
+      |      <member>
+      |        <name><first>Ron</first><last>Wyden</last></name>
+      |        <state>OR</state>
+      |        <party>D</party>
+      |        <position>Chairman</position>
+      |        <rank>1</rank>
+      |        <bioguide_id>B001</bioguide_id>
+      |      </member>
+      |    </members>
+      |  </committees>
+      |</committee_membership>""".stripMargin
 
   "fetchCommitteeMembers" should "parse parent committee members and subcommittee members" in {
-    stubXml("/senate/SSFI00.xml", sampleCommitteeXml)
+    stubXml("/senate/committee_memberships_SSFI.xml", sampleCommitteeXml)
 
     val result = makeClient(baseConfig).fetchCommitteeMembers("SSFI00", 1L).compile.toList.unsafeRunSync()
     val _      = result.size shouldBe 3
@@ -147,40 +168,38 @@ class SenateCommitteeMembershipXmlClientSpec
     }
   }
 
-  it should "extract bioguide_id when present" in {
-    stubXml("/senate/SSFI00.xml", sampleCommitteeXml)
+  it should "extract bioguide_id and rank when present" in {
+    stubXml("/senate/committee_memberships_SSFI.xml", sampleWithBioguideAndRank)
 
-    val result  = makeClient(baseConfig).fetchCommitteeMembers("SSFI00", 1L).compile.toList.unsafeRunSync()
-    val withBio = result.filter(_.bioguideId.isDefined)
-    val _       = withBio.size shouldBe 2
-    withBio.flatMap(_.bioguideId) should contain theSameElementsAs List("B001", "B002")
+    val result = makeClient(baseConfig).fetchCommitteeMembers("SSFI00", 1L).compile.toList.unsafeRunSync()
+    val member = result.headOption
+    val _      = member.flatMap(_.bioguideId) shouldBe Some("B001")
+    member.flatMap(_.rank) shouldBe Some(1)
   }
 
   it should "handle soft-404 HTML response gracefully" in {
     val htmlResponse = "<html><body>Page Not Found</body></html>"
-    stubXml("/senate/SSXX00.xml", htmlResponse)
+    stubXml("/senate/committee_memberships_SSXX.xml", htmlResponse)
 
     val result = makeClient(baseConfig).fetchCommitteeMembers("SSXX00", 1L).compile.toList.unsafeRunSync()
     result shouldBe empty
   }
 
   it should "emit empty stream for empty committee roster" in {
-    val emptyCommittee = """<committee code="SSFI00" name="Finance"><members/></committee>"""
-    stubXml("/senate/SSFI00.xml", emptyCommittee)
+    val emptyCommittee =
+      """<committee_membership><committees><committee_code>SSFI00</committee_code><members/></committees></committee_membership>"""
+    stubXml("/senate/committee_memberships_SSFI.xml", emptyCommittee)
 
     val result = makeClient(baseConfig).fetchCommitteeMembers("SSFI00", 1L).compile.toList.unsafeRunSync()
     result shouldBe empty
   }
 
-  it should "parse position and rank fields" in {
-    stubXml("/senate/SSFI00.xml", sampleCommitteeXml)
+  it should "parse position field" in {
+    stubXml("/senate/committee_memberships_SSFI.xml", sampleCommitteeXml)
 
     val result   = makeClient(baseConfig).fetchCommitteeMembers("SSFI00", 1L).compile.toList.unsafeRunSync()
     val chairman = result.find(_.firstName == "Ron")
-    chairman.foreach { m =>
-      val _ = m.position shouldBe Some("Chairman")
-      m.rank shouldBe Some(1)
-    }
+    chairman.foreach(m => m.position shouldBe Some("Chairman"))
   }
 
 }

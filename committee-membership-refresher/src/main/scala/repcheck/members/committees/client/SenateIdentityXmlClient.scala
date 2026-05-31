@@ -48,12 +48,24 @@ private[client] object SenateIdentityXmlParser {
     (elem \\ "senator").toList.flatMap(parseSenator)
 
   private[client] def parseSenator(node: Node): Option[SenatorIdentityXmlDTO] = {
-    val bioguide    = textOption(node \ "bioguide_id").orElse(textOption(node \ "bioguideId"))
-    val lisMemberId = textOption(node \ "lis_member_id").orElse(textOption(node \ "lisMemberId"))
-    val firstName   = textOption(node \ "first_name").orElse(textOption(node \ "firstname"))
-    val lastName    = textOption(node \ "last_name").orElse(textOption(node \ "lastname"))
-    val party       = textOption(node \ "party")
-    val state       = textOption(node \ "state")
+    val bioguide = textOption(node \ "bioguide_id")
+      .orElse(textOption(node \ "bioguideId"))
+    val lisMemberId = attrOption(node, "lis_member_id")
+      .orElse(textOption(node \ "lis_member_id"))
+      .orElse(textOption(node \ "lisMemberId"))
+    val firstName = textOption(node \ "name" \ "first")
+      .orElse(textOption(node \ "first_name"))
+      .orElse(textOption(node \ "firstname"))
+    val lastName = textOption(node \ "name" \ "last")
+      .orElse(textOption(node \ "last_name"))
+      .orElse(textOption(node \ "lastname"))
+    val party = textOption(node \ "party")
+    val state = textOption(node \ "state")
+
+    val committeeCodes = (node \ "committees" \ "committee").toList.flatMap { c =>
+      val code = (c \ "@code").text.trim
+      if (code.isEmpty) None else Some(code)
+    }
 
     for {
       bio <- bioguide
@@ -69,11 +81,17 @@ private[client] object SenateIdentityXmlParser {
       lastName = ln,
       party = p,
       state = st,
+      committeeCodes = committeeCodes,
     )
   }
 
   private def textOption(ns: NodeSeq): Option[String] = {
     val raw = ns.text.trim
+    if (raw.isEmpty) None else Some(raw)
+  }
+
+  private def attrOption(node: Node, attr: String): Option[String] = {
+    val raw = (node \ s"@$attr").text.trim
     if (raw.isEmpty) None else Some(raw)
   }
 

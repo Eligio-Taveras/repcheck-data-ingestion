@@ -44,11 +44,12 @@
 #   3. bill-text-pipeline             — subscribes to Pub/Sub → downloads text → DB
 #   4. member-profile-pipeline        — fetches member profiles from Congress.gov → DB → member-updated events
 #   5. lis-mapping-refresher          — fetches senate.gov XML → maps LIS IDs → DB → member-updated events
-#   6. votes-pipeline                 — fetches House + Senate votes → DB → vote-events events
+#   6. committee-membership-refresher — fetches committee metadata + memberships → DB
+#   7. votes-pipeline                 — fetches House + Senate votes → DB → vote-events events
 #                                       (runs AFTER lis-mapping-refresher so LIS→bioguide map is fresh)
-#   7. amendments-pipeline            — fetches Congressional amendments → DB (placeholders + chain hydration)
-#   8. amendment-text-availability-checker — scans DB for amendments needing text → Pub/Sub
-#   9. amendment-text-pipeline        — subscribes to Pub/Sub → downloads CREC text via GovInfo → DB
+#   8. amendments-pipeline            — fetches Congressional amendments → DB (placeholders + chain hydration)
+#   9. amendment-text-availability-checker — scans DB for amendments needing text → Pub/Sub
+#  10. amendment-text-pipeline        — subscribes to Pub/Sub → downloads CREC text via GovInfo → DB
 #                                       (amendments triplet runs on a separate 4-hour cadence per
 #                                        IMPLEMENTATION_PLAN §6.3 L10: 30/50 offset gives amendments-
 #                                        pipeline time to complete before the checker scans)
@@ -72,6 +73,7 @@ services:
 
   alloydb:
     image: google/alloydbomni:16.8.0
+    command: postgres -c max_connections=1000
     ports:
       - "5432:5432"
     environment:
@@ -291,11 +293,11 @@ services:
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       PUBSUB_PROJECT_ID: repcheck-local
       PUBSUB_TOPIC_NAME: bill-text-available
-      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
-      # WARNING: 50ms page-delay = ~20 req/sec ceiling, well above the published Congress.gov
-      # rate budget of 5000 req/hour (≈1.39/sec). Used here to drain the local backfill queue
-      # quickly; expect 429s if sustained beyond ~5 minutes. Override per-run via env if needed.
-      CONGRESS_API_PAGE_DELAY: ${CONGRESS_API_PAGE_DELAY:-50ms}
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-2}
+      # Inherit the application.conf page-delay default (750ms). The shared Congress.gov key has a
+      # ~5000 req/hour (≈1.39/sec) budget across all pipelines, so the previous 50ms (~20 req/sec)
+      # override caused 429 storms when several pipelines ran at once. Override per-run if needed.
+      CONGRESS_API_PAGE_DELAY: ${CONGRESS_API_PAGE_DELAY:-750ms}
     restart: "no"
 
   bill-text-pipeline:
@@ -377,7 +379,7 @@ services:
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       PUBSUB_PROJECT_ID: repcheck-local
       MEMBER_UPDATED_TOPIC: member-updated
-      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-2}
       # Optional comma-separated congress list (e.g. "117,118,119"). When unset, the pipeline
       # falls back to `SELECT DISTINCT congress FROM bills` so it naturally tracks whatever
       # congresses bill-metadata-pipeline has covered. Override for targeted backfill / dev runs.
@@ -404,6 +406,28 @@ services:
       PUBSUB_PROJECT_ID: repcheck-local
       MEMBER_UPDATED_TOPIC: member-updated
       PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
+    restart: "no"
+
+  committee-membership-refresher:
+    container_name: committee-membership-refresher
+    build:
+      context: .
+      dockerfile: committee-membership-refresher/Dockerfile
+    # Launcher contract: args(0) = config (unused), args(1) = runId.
+    # PipelineBootstrap.extractRunId parses args(1).
+    command: ["cfg-unused", "local-committee-run"]
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      CONGRESS_GOV_API_KEY: ${CONGRESS_GOV_API_KEY}
+      PIPELINE_PARALLELISM: ${PIPELINE_PARALLELISM:-1}
+      COMMITTEE_CURRENT_CONGRESS: ${COMMITTEE_CURRENT_CONGRESS:-119}
     restart: "no"
 
   votes-pipeline:
@@ -506,11 +530,10 @@ services:
       # → 45. AmendmentsPipelineResources.validatePoolSizing fails boot if undersized.
       AMENDMENTS_CONGRESSES_MIN: ${AMENDMENTS_CONGRESSES_MIN:-102}
       AMENDMENTS_CONGRESSES_MAX: ${AMENDMENTS_CONGRESSES_MAX:-119}
-      # 30-day lookback for steady-state cron runs — wide enough to catch
-      # late-arriving updateDate revisions in the 4-hour cycle. Override to
-      # 999999 for full-history backfill (per IMPLEMENTATION_PLAN §7.2).
-      AMENDMENTS_LOOKBACK_DAYS: ${AMENDMENTS_LOOKBACK_DAYS:-30}
-      AMENDMENTS_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      # 10-year lookback for local backfill — matches the cross-pipeline policy
+      # used by bill-summary-pipeline. Override to 30 for steady-state cron runs.
+      AMENDMENTS_LOOKBACK_DAYS: ${AMENDMENTS_LOOKBACK_DAYS:-3650}
+      AMENDMENTS_PARALLELISM: ${PIPELINE_PARALLELISM:-2}
       AMENDMENTS_MAX_RECURSION_DEPTH: ${AMENDMENTS_MAX_RECURSION_DEPTH:-10}
     restart: "no"
 
@@ -544,7 +567,7 @@ services:
       # inserted rows qualify regardless. 4h matches the cron cadence —
       # nothing checked within the last cron tick gets re-checked.
       AMENDMENT_TEXT_CHECK_STALE_AFTER: ${AMENDMENT_TEXT_CHECK_STALE_AFTER:-4h}
-      AMENDMENT_TEXT_CHECK_PARALLELISM: ${PIPELINE_PARALLELISM:-4}
+      AMENDMENT_TEXT_CHECK_PARALLELISM: ${PIPELINE_PARALLELISM:-2}
       # Pub/Sub — publishes AmendmentTextAvailableEvent on the
       # `amendment-text-available` topic (created by pubsub-init.sh).
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
