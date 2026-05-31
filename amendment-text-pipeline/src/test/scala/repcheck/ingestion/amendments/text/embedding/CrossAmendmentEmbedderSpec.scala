@@ -149,6 +149,7 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
   private class RecordingVersionRepo(markFetchedFailure: Option[Throwable] = None)
       extends AmendmentTextVersionRepository[ConnectionIO] {
     private val markFetchedCalls = new AtomicReference[Vector[(Long, Instant, Int)]](Vector.empty)
+    private val linkLatestCalls  = new AtomicReference[Vector[(Long, Long)]](Vector.empty)
 
     override def upsert(version: AmendmentTextVersionDO): ConnectionIO[(Long, Boolean, Boolean)] =
       doobie.free.connection.pure((0L, true, false))
@@ -163,10 +164,17 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
           }
       }
 
+    override def linkLatestTextVersion(amendmentId: Long, versionId: Long): ConnectionIO[Unit] =
+      doobie.free.connection.delay {
+        val _ = linkLatestCalls.updateAndGet(prev => prev :+ ((amendmentId, versionId)))
+        ()
+      }
+
     override def findCompletedByAmendmentId(amendmentId: Long): ConnectionIO[List[AmendmentTextVersionDO]] =
       doobie.free.connection.pure(List.empty)
 
     def markFetchedSeen: Vector[(Long, Instant, Int)] = markFetchedCalls.get()
+    def linkLatestSeen: Vector[(Long, Long)]          = linkLatestCalls.get()
   }
 
   private val testCtx  = AmendmentEmbedCtx(amendmentId = 42L, versionId = 7L, naturalKey = "117-SAMDT-2137")
@@ -229,7 +237,9 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
     val _ = chunkRepo.rows.flatten.size shouldBe 3
     val _ = chunkRepo.trimCalls shouldBe Vector((7L, 3))
     val _ = versionRepo.markFetchedSeen.size shouldBe 1
-    versionRepo.markFetchedSeen.headOption.map(_._1) shouldBe Some(7L)
+    val _ = versionRepo.markFetchedSeen.headOption.map(_._1) shouldBe Some(7L)
+    // Completion back-links amendments.latest_text_version_id (amendmentId 42, versionId 7 from testCtx).
+    versionRepo.linkLatestSeen shouldBe Vector((42L, 7L))
   }
 
   it should "preserve chunk_index, amendmentId, and versionId on persisted rows" in {
@@ -425,9 +435,11 @@ class CrossAmendmentEmbedderSpec extends AnyFlatSpec with Matchers {
     val _ = counters1.nacks.get() shouldBe 0
     val _ = counters2.acks.get() shouldBe 1
     val _ = counters2.nacks.get() shouldBe 0
-    // Both submissions ran their writes; trim called twice with the same (versionId, count=1). markFetched called
-    // twice — idempotent, harmless (per Q2).
-    val _ = chunkRepo.rows.flatten.size shouldBe 2
+    // Persisted-row count is timing-dependent and BOTH outcomes are correct: if the two fibers' chunks land in one
+    // shared flush, the LWW dedup on (versionId, chunkIndex) (both are version 7 / index 0) collapses them to a single
+    // row; if they flush separately, two rows are recorded. Attribution uses the full batch either way, so each ackId
+    // still completes — markFetched + trim fire twice regardless of which flush interleaving won the race.
+    val _ = chunkRepo.rows.flatten.size should (be(1) or be(2))
     val _ = versionRepo.markFetchedSeen.size shouldBe 2
     chunkRepo.trimCalls shouldBe Vector((7L, 1), (7L, 1))
   }

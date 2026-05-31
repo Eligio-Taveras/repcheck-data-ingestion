@@ -41,6 +41,11 @@ class DoobieAmendmentTextVersionRepositoryUnitSpec extends AnyFlatSpec with Matc
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
+  "linkLatestTextVersion" should "produce a ConnectionIO" in {
+    val cio = repo.linkLatestTextVersion(42L, 7L)
+    cio shouldBe a[doobie.ConnectionIO[?]]
+  }
+
   "findCompletedByAmendmentId" should "produce a ConnectionIO returning a list" in {
     val cio = repo.findCompletedByAmendmentId(42L)
     cio shouldBe a[doobie.ConnectionIO[?]]
