@@ -89,15 +89,12 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         latest_action_text = EXCLUDED.latest_action_text,
         constitutional_authority_text = EXCLUDED.constitutional_authority_text,
         sponsor_member_id = EXCLUDED.sponsor_member_id,
-        text_url = EXCLUDED.text_url,
-        text_format = EXCLUDED.text_format,
-        text_version_type = EXCLUDED.text_version_type,
-        text_date = EXCLUDED.text_date,
-        text_content = EXCLUDED.text_content,
-
-        summary_text = EXCLUDED.summary_text,
-        summary_action_desc = EXCLUDED.summary_action_desc,
-        summary_action_date = EXCLUDED.summary_action_date,
+        -- Ownership boundary: the metadata pipeline does NOT own the text_* or summary_* columns. The bill detail
+        -- endpoint carries neither the resolved text version nor the CRS summary, so EXCLUDED is always NULL for these;
+        -- including them here clobbered the bill-text-pipeline's text_version_type (→ the availability checker re-emitted
+        -- text events for ~108K bills it already had text for) and would do the same to bill-summary-pipeline's
+        -- summary_text. They're owned by storeAndUpdateBill / updateExpectedVersion / updateSummary respectively and are
+        -- intentionally excluded here — mirroring latest_text_version_id, which was already left out for the same reason.
         update_date = EXCLUDED.update_date,
         update_date_including_text = EXCLUDED.update_date_including_text,
         legislation_url = EXCLUDED.legislation_url,

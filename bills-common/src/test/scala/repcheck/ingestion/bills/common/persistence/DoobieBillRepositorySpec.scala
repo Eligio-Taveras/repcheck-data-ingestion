@@ -93,6 +93,28 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     }
   }
 
+  it should "preserve text_version_type and summary_text on a metadata re-upsert (ownership boundary)" taggedAs DockerRequired in {
+    val bill = makeBill(number = "9100")
+    val _    = repo.upsert(bill).transact(xa).unsafeRunSync()
+
+    // Simulate the bill-text and bill-summary pipelines writing the columns they own.
+    val _ = sql"""UPDATE bills
+                  SET text_version_type = 'EH'::text_version_code_type, summary_text = 'CRS summary body'
+                  WHERE natural_key = '118-HR-9100'""".update.run.transact(xa).unsafeRunSync()
+
+    // The metadata pipeline re-upserts the same bill; its DTO carries None for both (the bill detail API has neither).
+    // After the ownership-boundary fix the UPDATE SET no longer lists those columns, so they must survive.
+    val _ = repo.upsert(bill.copy(title = "Updated Title")).transact(xa).unsafeRunSync()
+
+    repo.findByBillId("118-HR-9100").transact(xa).unsafeRunSync() match {
+      case Some(b) =>
+        val _ = b.title shouldBe "Updated Title"          // metadata-owned column DID update
+        val _ = b.textVersionType.isDefined shouldBe true // text-owned column NOT clobbered to NULL
+        b.summaryText shouldBe Some("CRS summary body") // summary-owned column NOT clobbered to NULL
+      case None => fail("Expected bill to be present")
+    }
+  }
+
   it should "return the generated bill id" taggedAs DockerRequired in {
     val bill       = makeBill()
     val returnedId = repo.upsert(bill).transact(xa).unsafeRunSync()
