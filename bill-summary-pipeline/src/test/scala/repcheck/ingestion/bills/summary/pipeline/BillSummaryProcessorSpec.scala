@@ -12,7 +12,7 @@ import org.mockito.Mockito.{never, times, verify, when}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
-import repcheck.ingestion.bills.common.persistence.BillRepository
+import repcheck.ingestion.bills.common.persistence.{BillRepository, BillSummaryRepository}
 import repcheck.ingestion.bills.summary.api.BillSummariesApiClient
 import repcheck.ingestion.bills.summary.config.BillSummaryConfig
 import repcheck.ingestion.bills.summary.persistence.WorkflowRunStepsRepository
@@ -55,9 +55,18 @@ class BillSummaryProcessorSpec extends AnyFlatSpec with Matchers with MockitoSug
   private def makeProcessor(
     apiClient: BillSummariesApiClient[IO] = mock[BillSummariesApiClient[IO]],
     billRepo: BillRepository[ConnectionIO] = mock[BillRepository[ConnectionIO]],
+    billSummaryRepo: BillSummaryRepository[ConnectionIO] = stubbedSummaryRepo(),
     workflowRepo: WorkflowRunStepsRepository[ConnectionIO] = mock[WorkflowRunStepsRepository[ConnectionIO]],
   ): BillSummaryProcessor[IO] =
-    new BillSummaryProcessor[IO](apiClient, billRepo, workflowRepo, testXa, testConfig, makeLogger)
+    new BillSummaryProcessor[IO](apiClient, billRepo, billSummaryRepo, workflowRepo, testXa, testConfig, makeLogger)
+
+  /** Default summary repo whose `upsert` returns a runnable `ConnectionIO` (Mockito would otherwise return null). */
+  private def stubbedSummaryRepo(): BillSummaryRepository[ConnectionIO] = {
+    val m = mock[BillSummaryRepository[ConnectionIO]]
+    when(m.upsert(anyString(), any[TextVersionCode], anyString(), any, any))
+      .thenReturn(doobie.free.connection.unit)
+    m
+  }
 
   private def makeSummary(
     congress: Int,
@@ -193,6 +202,42 @@ class BillSummaryProcessorSpec extends AnyFlatSpec with Matchers with MockitoSug
     }
     val _ = verify(billRepo, times(1)).upsertPlaceholder(eqTo("118-HR-1"))
     verify(billRepo, times(1)).updateExpectedVersion(eqTo("118-HR-1"), eqTo(TextVersionCode.EAH))
+  }
+
+  it should "write the stage's summary to bill_summaries (scrubbed text + parsed date)" in {
+    val billRepo    = stubBillRepoFor("118-HR-1", findResult = None)
+    val summaryRepo = stubbedSummaryRepo()
+    val processor   = makeProcessor(billRepo = billRepo, billSummaryRepo = summaryRepo)
+    val triple = (
+      BillReferenceDTO(118, "HR", 1L),
+      makeSummary(118, "HR", 1, Some("36")), // text="body", actionDesc="test", actionDate="2024-01-15"
+      TextVersionCode.EAH,
+    )
+
+    val _ = processor.processOneBill("118-HR-1", triple, LogContext(runId = "0", stepName = "test")).unsafeRunSync()
+
+    verify(summaryRepo, times(1)).upsert(
+      eqTo("118-HR-1"),
+      eqTo(TextVersionCode.EAH),
+      eqTo("body"),
+      eqTo(Some("test")),
+      eqTo(Some(java.time.LocalDate.parse("2024-01-15"))),
+    )
+  }
+
+  it should "not write to bill_summaries when the summary carries no text" in {
+    val billRepo    = stubBillRepoFor("118-HR-1", findResult = None)
+    val summaryRepo = stubbedSummaryRepo()
+    val processor   = makeProcessor(billRepo = billRepo, billSummaryRepo = summaryRepo)
+    val triple = (
+      BillReferenceDTO(118, "HR", 1L),
+      makeSummary(118, "HR", 1, Some("36")).copy(text = None),
+      TextVersionCode.EAH,
+    )
+
+    val _ = processor.processOneBill("118-HR-1", triple, LogContext(runId = "0", stepName = "test")).unsafeRunSync()
+
+    verify(summaryRepo, never).upsert(anyString(), any[TextVersionCode], anyString(), any, any)
   }
 
   it should "skip the write when existing stage is at-or-past the new stage (regression guard)" in {

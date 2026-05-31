@@ -1,7 +1,7 @@
 package repcheck.ingestion.bills.summary.pipeline
 
-import java.time.Instant
 import java.time.temporal.ChronoUnit
+import java.time.{Instant, LocalDate}
 
 import cats.effect.Async
 import cats.syntax.all._
@@ -10,7 +10,7 @@ import fs2.Stream
 
 import doobie._
 
-import repcheck.ingestion.bills.common.persistence.{BillRepository, TransactionRunner}
+import repcheck.ingestion.bills.common.persistence.{BillRepository, BillSummaryRepository, TransactionRunner}
 import repcheck.ingestion.bills.summary.api.BillSummariesApiClient
 import repcheck.ingestion.bills.summary.config.BillSummaryConfig
 import repcheck.ingestion.bills.summary.errors.BillSummariesApiErrorClassifier
@@ -39,6 +39,7 @@ import repcheck.shared.models.congress.dto.bill.{BillReferenceDTO, BillSummaryDT
 class BillSummaryProcessor[F[_]: Async](
   apiClient: BillSummariesApiClient[F],
   billRepo: BillRepository[ConnectionIO],
+  billSummaryRepo: BillSummaryRepository[ConnectionIO],
   workflowRepo: WorkflowRunStepsRepository[ConnectionIO],
   xa: Transactor[F],
   config: BillSummaryConfig,
@@ -178,9 +179,10 @@ class BillSummaryProcessor[F[_]: Async](
     triple: (BillReferenceDTO, BillSummaryDTO, TextVersionCode),
     logCtx: LogContext,
   ): F[ProcessingResult] = {
-    val (_, _, newStage) = triple
+    val (_, summaryDto, newStage) = triple
     val txn: ConnectionIO[ProcessingResult] = for {
       _        <- billRepo.upsertPlaceholder(naturalKey)
+      _        <- writeSummary(naturalKey, summaryDto, newStage)
       existing <- billRepo.findExpectedVersion(naturalKey)
       shouldWrite = existing match {
         case None          => true
@@ -219,6 +221,35 @@ class BillSummaryProcessor[F[_]: Async](
           .as(ProcessingResult.Failed(naturalKey, error.getMessage, classifyError(error)))
       }
   }
+
+  /**
+   * Persist this stage's summary into `bill_summaries` (keyed `(bill_id, version_code)`), in the same transaction as
+   * the placeholder + expected-version write. Skips when the summary carries no text — `bill_summaries.text` is NOT
+   * NULL, and a text-less CRS entry is a stage marker with nothing to store. Defensive scrubs: strip NUL bytes
+   * (Postgres `text` rejects code point 0, which a JSON ` ` escape decodes to) and parse `actionDate` tolerantly (empty
+   * / non-ISO → None, rather than failing the row on a `::date` cast).
+   */
+  private[pipeline] def writeSummary(
+    naturalKey: String,
+    dto: BillSummaryDTO,
+    versionCode: TextVersionCode,
+  ): ConnectionIO[Unit] =
+    dto.text.map(stripNullBytes).filter(_.nonEmpty) match {
+      case Some(text) =>
+        billSummaryRepo.upsert(
+          naturalKey = naturalKey,
+          versionCode = versionCode,
+          text = text,
+          actionDesc = dto.actionDesc.map(stripNullBytes),
+          actionDate = dto.actionDate.flatMap(parseIsoDate),
+        )
+      case None => doobie.free.connection.unit
+    }
+
+  private[pipeline] def stripNullBytes(s: String): String = s.filter(_.toInt != 0)
+
+  private[pipeline] def parseIsoDate(s: String): Option[LocalDate] =
+    scala.util.Try(LocalDate.parse(s.trim)).toOption
 
   /**
    * Map `Throwable` → ErrorClass label string for `ProcessingResult.Failed`. Defers to
