@@ -8,7 +8,7 @@ import fs2.Stream
 import repcheck.ingestion.amendments.config.AmendmentsConfig
 import repcheck.ingestion.amendments.errors.PoolSizingTooSmall
 import repcheck.ingestion.amendments.observability.AmendmentMetrics
-import repcheck.ingestion.amendments.pipeline.AmendmentProcessor
+import repcheck.ingestion.amendments.pipeline.{AmendmentProcessor, VoteAmendmentLinker}
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.execution.{PipelineBootstrap, WorkflowStateUpdater}
@@ -64,6 +64,7 @@ private[app] object AmendmentsPipeline {
     ) => AmendmentProcessor[F],
     streamFactory: (AmendmentProcessor[F], String) => Stream[F, ProcessingResult],
     stepRecorderFactory: AmendmentsPipelineResources.Resources[F] => WorkflowStateUpdater[F],
+    linkerFactory: (AmendmentsPipelineResources.Resources[F], PipelineLogger[F]) => VoteAmendmentLinker[F],
   ): F[ExitCode] =
     for {
       config <- configLoader
@@ -84,13 +85,16 @@ private[app] object AmendmentsPipeline {
       exitCode <- resourceBuilder(config, retryWrapper).use { resources =>
         val processor    = processorFactory(config, resources, logger, metrics)
         val stepRecorder = stepRecorderFactory(resources)
+        val linker       = linkerFactory(resources, logger)
         val stream       = streamFactory(processor, runId)
         for {
           _    <- stepRecorder.recordStepStarted(runId, PipelineName)
           code <- PipelineExecutor.execute[F](stream, processor, logger, PipelineName, runId, metrics)
           _ <-
             if (code == ExitCode.Success) {
-              stepRecorder.recordStepCompleted(runId, PipelineName)
+              // Reconcile votes↔amendments from the freshly-upserted action text, then record completion. The link
+              // pass is best-effort: a failure here is logged but does not fail an otherwise-successful run.
+              runLinker[F](linker, runId, logger) *> stepRecorder.recordStepCompleted(runId, PipelineName)
             } else {
               stepRecorder.recordStepFailed(runId, PipelineName, "pipeline reported one or more failures")
             }
@@ -108,6 +112,23 @@ private[app] object AmendmentsPipeline {
       case Some(message) => Async[F].raiseError[Unit](PoolSizingTooSmall(message))
       case None          => Async[F].unit
     }
+
+  /**
+   * Run the vote↔amendment reconciliation as a non-fatal post-pass. The amendments run has already succeeded by the
+   * time this fires; a linker failure (e.g. a transient DB hiccup) is logged and swallowed so it can't flip an
+   * otherwise-green run to failed. The link statement is idempotent, so the next run reconciles whatever this pass
+   * missed.
+   */
+  private[app] def runLinker[F[_]: Async](
+    linker: VoteAmendmentLinker[F],
+    runId: String,
+    logger: PipelineLogger[F],
+  ): F[Unit] = {
+    val ctx = LogContext(runId, PipelineName)
+    linker.linkAll(ctx).void.handleErrorWith { err =>
+      logger.error(ctx, s"vote-amendment-linker failed (non-fatal): ${err.getMessage}", Some(err))
+    }
+  }
 
   /**
    * Build a `RetryWrapper[F]` whose log callback funnels every retry attempt into the pipeline's structured logger as a

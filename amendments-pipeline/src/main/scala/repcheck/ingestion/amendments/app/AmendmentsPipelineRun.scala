@@ -10,6 +10,7 @@ import fs2.io.net.Network
 
 import pureconfig.ConfigSource
 
+import repcheck.ingestion.amendments.pipeline.DoobieVoteAmendmentLinker
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.execution.{PipelineFailureHandlerConfig, WorkflowStateUpdater}
 import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
@@ -49,6 +50,8 @@ private[app] object AmendmentsPipelineRun {
       streamFactory = (processor, runId) => processor.streamAll(runId),
       stepRecorderFactory = (resources: AmendmentsPipelineResources.Resources[F]) =>
         new WorkflowStateUpdater[F](resources.xa, PipelineFailureHandlerConfig(maxRetries = 3)),
+      linkerFactory = (resources: AmendmentsPipelineResources.Resources[F], logger: PipelineLogger[F]) =>
+        new DoobieVoteAmendmentLinker[F](resources.xa, logger),
     )
 
 }
