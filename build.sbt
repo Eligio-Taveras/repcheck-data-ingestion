@@ -283,7 +283,7 @@ lazy val committeeMembershipRefresher = (project in file("committee-membership-r
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig
       ++ catsEffect ++ doobie ++ xml ++ fs2 ++ logging ++ testDeps,
     libraryDependencies += "com.h2database" % "h2" % "2.2.224" % Test,
-    coverageExcludedFiles                  := ".*CommitteeMembershipRefresherApp",
+    coverageExcludedFiles                  := ".*CommitteeMembershipRefresherApp;.*CommitteeHistoryLoaderApp",
     Test / parallelExecution               := false,
     assembly / mainClass                   := Some("repcheck.members.committees.app.CommitteeMembershipRefresherApp"),
     assembly / assemblyJarName             := "committee-membership-refresher.jar",

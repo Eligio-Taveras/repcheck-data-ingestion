@@ -430,6 +430,36 @@ services:
       COMMITTEE_CURRENT_CONGRESS: ${COMMITTEE_CURRENT_CONGRESS:-119}
     restart: "no"
 
+  # One-time historical committee-membership backfill from the GovInfo Congressional Directory. NOT part
+  # of normal `up` — gated behind the `backfill` profile, run on demand:
+  #   docker compose -f docker-compose.local.yml --profile backfill up committee-history-loader
+  # Enumerates committees from the DB, looks each up in the CDIR, and resolves members by name+state for
+  # the target congress — so those congresses' member profiles should already be ingested
+  # (member-profile-pipeline). Reuses the refresher image; overrides the entrypoint to the loader main class.
+  committee-history-loader:
+    container_name: committee-history-loader
+    profiles: ["backfill"]
+    build:
+      context: .
+      dockerfile: committee-membership-refresher/Dockerfile
+    entrypoint:
+      ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "app.jar", "repcheck.members.committees.app.CommitteeHistoryLoaderApp"]
+    # Launcher contract: args(0) = config (unused), args(1) = runId.
+    command: ["cfg-unused", "history-backfill-run"]
+    depends_on:
+      db-migrations:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: alloydb
+      DB_PORT: "5432"
+      DB_NAME: repcheck
+      DB_USERNAME: repcheck
+      DB_PASSWORD: repcheck
+      GOVINFO_API_KEY: ${GOVINFO_API_KEY}
+      COMMITTEE_HISTORY_CURRENT_CONGRESS: ${COMMITTEE_HISTORY_CURRENT_CONGRESS:-119}
+      COMMITTEE_HISTORY_LOOKBACK_CONGRESSES: ${COMMITTEE_HISTORY_LOOKBACK_CONGRESSES:-5}
+    restart: "no"
+
   votes-pipeline:
     container_name: votes-pipeline
     build:
