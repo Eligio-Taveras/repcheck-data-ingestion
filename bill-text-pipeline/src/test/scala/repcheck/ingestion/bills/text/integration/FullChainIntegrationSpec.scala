@@ -326,7 +326,7 @@ class FullChainIntegrationSpec
   }
 
   it should "propagate previousVersionCode through the full chain" taggedAs DockerRequired in {
-    val dbBillId = seedBill("118-HR-51", number = "51")
+    val _ = seedBill("118-HR-51", number = "51")
 
     // First, insert a text version so the bill has existing text.
     //
@@ -337,42 +337,16 @@ class FullChainIntegrationSpec
     //   * text_version_type = IH (the bill is currently stored at the IH stage)
     //   * expected_text_version_code = RH (CRS / bill-summary-pipeline has advanced the expected
     //     stage to RH because that's what the API now reports as available)
-    // After this PR's seedBill change, `dbBillId` was upserted with expected = IH; we override to
-    // RH below so the DISTINCT-FROM check fires and the checker picks the bill up. The simulated
-    // state here is the steady state right after bill-summary advances expected from IH → RH but
-    // before bill-text-pipeline downloads the RH formatted text and updates text_version_type.
-    val billWithText = BillDO(
-      billId = dbBillId,
-      naturalKey = "118-HR-51",
-      congress = 118,
-      billType = BillType.HR,
-      number = "51",
-      title = "Full Chain Test Bill",
-      originChamber = Some(Chamber.House),
-      originChamberCode = Some("H"),
-      introducedDate = None,
-      policyArea = None,
-      latestActionDate = None,
-      latestActionText = None,
-      constitutionalAuthorityText = None,
-      sponsorMemberId = None,
-      textUrl = None,
-      textFormat = None,
-      textVersionType = Some(TextVersionCode.IH),
-      textDate = None,
-      textContent = None,
-      summaryText = None,
-      summaryActionDesc = None,
-      summaryActionDate = None,
-      updateDate = None,
-      updateDateIncludingText = None,
-      legislationUrl = None,
-      apiUrl = None,
-      createdAt = None,
-      updatedAt = None,
-      latestTextVersionId = None,
-    )
-    val _ = billRepo.upsert(billWithText).transact(xa).unsafeRunSync()
+    // seedBill defaults expected to IH; we override to RH below so the DISTINCT-FROM check fires and
+    // the checker picks the bill up. The simulated state here is the steady state right after
+    // bill-summary advances expected from IH → RH but before bill-text-pipeline downloads the RH
+    // formatted text and updates text_version_type.
+    // Seed text_version_type = IH directly. It is a text-owned column; the bill-metadata upsert no
+    // longer writes it (ownership boundary), so we set it via SQL rather than billRepo.upsert.
+    val _ = sql"""UPDATE bills SET text_version_type = 'IH'::text_version_code_type
+                  WHERE congress = 118 AND bill_type = 'hr'::bill_type_enum AND number = 51""".update.run
+      .transact(xa)
+      .unsafeRunSync()
     // Override the expected_text_version_code that seedBill defaulted to IH so the sweep filter
     // fires (text_version_type = IH != expected = RH).
     val _ = billRepo.updateExpectedVersion("118-HR-51", TextVersionCode.RH).transact(xa).unsafeRunSync()
