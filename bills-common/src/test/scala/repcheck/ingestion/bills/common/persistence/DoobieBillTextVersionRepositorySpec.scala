@@ -35,14 +35,7 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
       latestActionText = None,
       constitutionalAuthorityText = None,
       sponsorMemberId = None,
-      textUrl = None,
-      textFormat = None,
       textVersionType = None,
-      textDate = None,
-      textContent = None,
-      summaryText = None,
-      summaryActionDesc = None,
-      summaryActionDate = None,
       updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")),
       updateDateIncludingText = None,
       legislationUrl = None,
@@ -190,8 +183,6 @@ class DoobieBillTextVersionRepositorySpec extends AnyFlatSpec with Matchers with
 
     billRepo.findByBillId("118-HR-400").transact(xa).unsafeRunSync() match {
       case Some(bill) =>
-        val _ = bill.textUrl shouldBe Some("https://congress.gov/text/ENR")
-        val _ = bill.textFormat shouldBe Some(FormatType.FormattedText)
         bill.textVersionType shouldBe Some(TextVersionCode.ENR)
       case None => fail("Expected bill to be present")
     }

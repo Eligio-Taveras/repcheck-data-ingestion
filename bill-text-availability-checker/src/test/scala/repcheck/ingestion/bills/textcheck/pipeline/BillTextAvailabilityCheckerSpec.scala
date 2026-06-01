@@ -85,7 +85,6 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
     congress: Int = 118,
     billType: BillType = BillType.HR,
     number: String = "1",
-    textUrl: Option[String] = None,
     textVersionType: Option[TextVersionCode] = None,
   ): BillDO =
     BillDO(
@@ -103,14 +102,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
       latestActionText = None,
       constitutionalAuthorityText = None,
       sponsorMemberId = None,
-      textUrl = textUrl,
-      textFormat = None,
       textVersionType = textVersionType,
-      textDate = None,
-      textContent = None,
-      summaryText = None,
-      summaryActionDesc = None,
-      summaryActionDate = None,
       updateDate = None,
       updateDateIncludingText = None,
       legislationUrl = None,
@@ -134,7 +126,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
 
   "checkBill" should "emit event and return Succeeded for bill with no prior text" in {
     val f        = createFixture()
-    val bill     = makeBill(textVersionType = None, textUrl = None)
+    val bill     = makeBill(textVersionType = None)
     val versions = List(makeTextVersion())
 
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
@@ -151,8 +143,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
   it should "emit event with previousVersionCode when version changes" in {
     val f = createFixture()
     val bill = makeBill(
-      textVersionType = Some(TextVersionCode.IH),
-      textUrl = Some("https://old-url.com"),
+      textVersionType = Some(TextVersionCode.IH)
     )
     val versions = List(makeTextVersion(versionType = Some("Engrossed in House"), url = "https://new-url.com"))
 
@@ -173,7 +164,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
 
   it should "return Failed when selected version has no versionType" in {
     val f        = createFixture()
-    val bill     = makeBill(textVersionType = None, textUrl = None)
+    val bill     = makeBill(textVersionType = None)
     val versions = List(makeTextVersion(versionType = None))
 
     when(f.textApiClient.fetchTextVersions(anyInt(), anyString(), anyString(), any[UUID]))
@@ -192,8 +183,7 @@ class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with Moc
   it should "return Skipped when text version is unchanged" in {
     val f = createFixture()
     val bill = makeBill(
-      textVersionType = Some(TextVersionCode.IH),
-      textUrl = Some("https://example.com/text"),
+      textVersionType = Some(TextVersionCode.IH)
     )
     val versions = List(makeTextVersion(versionType = Some("Introduced in House")))
 

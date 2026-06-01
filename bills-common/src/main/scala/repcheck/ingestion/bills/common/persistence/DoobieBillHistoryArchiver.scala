@@ -60,16 +60,14 @@ class DoobieBillHistoryArchiver extends BillHistoryArchiver[ConnectionIO] {
         bill_id, congress, bill_type, number, title,
         origin_chamber, origin_chamber_code, introduced_date, policy_area,
         latest_action_date, latest_action_text, constitutional_authority_text,
-        sponsor_member_id, text_url, text_format, text_version_type, text_date,
-        summary_text, summary_action_desc, summary_action_date,
+        sponsor_member_id,
         update_date, update_date_including_text, legislation_url, api_url
       )
       SELECT
         id, congress, bill_type, number, title,
         origin_chamber, origin_chamber_code, introduced_date, policy_area,
         latest_action_date, latest_action_text, constitutional_authority_text,
-        sponsor_member_id, text_url, text_format, text_version_type, text_date,
-        summary_text, summary_action_desc, summary_action_date,
+        sponsor_member_id,
         update_date, update_date_including_text, legislation_url, api_url
       FROM ${f.billsTable}
       WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int

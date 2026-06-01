@@ -127,7 +127,6 @@ class MetadataToCheckerIntegrationSpec
     congress: Int = 118,
     billType: BillType = BillType.HR,
     number: String,
-    textUrl: Option[String] = None,
     textVersionType: Option[TextVersionCode] = None,
     expectedVersion: TextVersionCode = TextVersionCode.IH,
   ): Long = {
@@ -146,14 +145,7 @@ class MetadataToCheckerIntegrationSpec
       latestActionText = None,
       constitutionalAuthorityText = None,
       sponsorMemberId = None,
-      textUrl = textUrl,
-      textFormat = None,
       textVersionType = textVersionType,
-      textDate = None,
-      textContent = None,
-      summaryText = None,
-      summaryActionDesc = None,
-      summaryActionDate = None,
       updateDate = None,
       updateDateIncludingText = None,
       legislationUrl = None,
@@ -275,7 +267,6 @@ class MetadataToCheckerIntegrationSpec
     val _ = seedBill(
       naturalKey = "118-HR-2",
       number = "2",
-      textUrl = None,
       textVersionType = Some(TextVersionCode.IH),
       expectedVersion = TextVersionCode.RH,
     )
@@ -298,7 +289,6 @@ class MetadataToCheckerIntegrationSpec
     val _ = seedBill(
       naturalKey = "118-HR-3",
       number = "3",
-      textUrl = None,
       textVersionType = Some(TextVersionCode.IH),
       expectedVersion = TextVersionCode.RH,
     )

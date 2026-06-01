@@ -29,14 +29,7 @@ class DoobieBillRepositoryUnitSpec extends AnyFlatSpec with Matchers {
     latestActionText = None,
     constitutionalAuthorityText = None,
     sponsorMemberId = None,
-    textUrl = None,
-    textFormat = None,
     textVersionType = None,
-    textDate = None,
-    textContent = None,
-    summaryText = None,
-    summaryActionDesc = None,
-    summaryActionDate = None,
     updateDate = Some(Instant.parse("2024-01-01T00:00:00Z")),
     updateDateIncludingText = None,
     legislationUrl = None,
@@ -79,7 +72,7 @@ class DoobieBillRepositoryUnitSpec extends AnyFlatSpec with Matchers {
   }
 
   "updateTextFields" should "produce a ConnectionIO for the update" in {
-    val cio = repo.updateTextFields("118-HR-100", "http://example.com", "XML", "IH", "2024-01-01T00:00:00Z", 1L)
+    val cio = repo.updateTextFields("118-HR-100", "IH", 1L)
     cio shouldBe a[doobie.ConnectionIO[?]]
   }
 
