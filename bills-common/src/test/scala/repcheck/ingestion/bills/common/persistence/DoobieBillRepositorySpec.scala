@@ -64,14 +64,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     latestActionText = Some("Referred to committee"),
     constitutionalAuthorityText = Some("Article I"),
     sponsorMemberId = None,
-    textUrl = None,
-    textFormat = None,
     textVersionType = None,
-    textDate = None,
-    textContent = None,
-    summaryText = None,
-    summaryActionDesc = None,
-    summaryActionDate = None,
     updateDate = updateDate,
     updateDateIncludingText = None,
     legislationUrl = Some("https://congress.gov/bill/118th-congress/house-bill/1234"),
@@ -114,10 +107,18 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
 
     val _ = repo.findByBillId("118-HR-9100").transact(xa).unsafeRunSync() match {
       case Some(b) =>
-        val _ = b.title shouldBe "Updated Title" // metadata-owned column DID update
-        b.summaryText shouldBe Some("CRS summary body") // summary-owned column NOT clobbered to NULL
+        b.title shouldBe "Updated Title" // metadata-owned column DID update
       case None => fail("Expected bill to be present")
     }
+    // summary_text is summary-owned and no longer mapped onto BillDO; assert on the raw column that it
+    // survived the metadata re-upsert (NOT clobbered to NULL).
+    val storedSummary = sql"""SELECT summary_text FROM bills
+                              WHERE congress = 118 AND bill_type = 'hr'::bill_type_enum AND number = 9100"""
+      .query[Option[String]]
+      .unique
+      .transact(xa)
+      .unsafeRunSync()
+    val _ = storedSummary shouldBe Some("CRS summary body")
     // Assert text_version_type on the raw column: Phase 2c sources BillDO.textVersionType from
     // bill_text_versions, but this test verifies the bills column itself survived the metadata re-upsert.
     val storedVersion = sql"""SELECT text_version_type::text FROM bills
@@ -237,7 +238,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
 
     val _ = repo.updateExpectedVersion("118-HR-20", TextVersionCode.IH).transact(xa).unsafeRunSync()
     val _ = repo
-      .updateTextFields("118-HR-20", "http://text", "Formatted Text", "IH", "2024-01-15T00:00:00Z", versionId)
+      .updateTextFields("118-HR-20", "IH", versionId)
       .transact(xa)
       .unsafeRunSync()
 
@@ -256,7 +257,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
 
     val _ = repo.updateExpectedVersion("118-HR-30", TextVersionCode.RH).transact(xa).unsafeRunSync()
     val _ = repo
-      .updateTextFields("118-HR-30", "http://text", "Formatted Text", "IH", "2024-01-15T00:00:00Z", versionId)
+      .updateTextFields("118-HR-30", "IH", versionId)
       .transact(xa)
       .unsafeRunSync()
 
@@ -273,7 +274,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
 
     val _ = repo.updateExpectedVersion("118-HR-40", TextVersionCode.PL).transact(xa).unsafeRunSync()
     val _ = repo
-      .updateTextFields("118-HR-40", "http://text", "Formatted Text", "PL", "2024-06-01T00:00:00Z", versionId)
+      .updateTextFields("118-HR-40", "PL", versionId)
       .transact(xa)
       .unsafeRunSync()
 
@@ -344,7 +345,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     val versionId = insertTextVersion(billId, "RH")
 
     repo
-      .updateTextFields("118-HR-1234", "http://text.xml", "Formatted XML", "RH", "2024-02-01T00:00:00Z", versionId)
+      .updateTextFields("118-HR-1234", "RH", versionId)
       .transact(xa)
       .unsafeRunSync()
 
@@ -352,8 +353,6 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     found match {
       case Some(bill) =>
         val _ = bill.title shouldBe "Test Bill"
-        val _ = bill.textUrl shouldBe Some("http://text.xml")
-        val _ = bill.textFormat shouldBe Some(FormatType.FormattedXml)
         val _ = bill.textVersionType shouldBe Some(TextVersionCode.RH)
         bill.latestTextVersionId shouldBe Some(versionId)
       case None => fail("Expected bill to be present")

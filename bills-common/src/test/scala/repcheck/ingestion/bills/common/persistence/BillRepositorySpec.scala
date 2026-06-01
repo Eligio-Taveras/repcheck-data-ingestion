@@ -23,10 +23,7 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
 
     override def updateTextFields(
       billId: String,
-      textUrl: String,
-      textFormat: String,
       textVersionType: String,
-      textDate: String,
       latestTextVersionId: Long,
     ): IO[Unit] = IO.unit
 
@@ -57,14 +54,7 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
       latestActionText = None,
       constitutionalAuthorityText = None,
       sponsorMemberId = None,
-      textUrl = None,
-      textFormat = None,
       textVersionType = None,
-      textDate = None,
-      textContent = None,
-      summaryText = None,
-      summaryActionDesc = None,
-      summaryActionDate = None,
       updateDate = None,
       updateDateIncludingText = None,
       legislationUrl = None,
@@ -90,7 +80,7 @@ class BillRepositorySpec extends AnyFlatSpec with Matchers {
 
   it should "return Unit from updateTextFields for a stub" in {
     stubRepo
-      .updateTextFields("118-HR-1", "https://example.com", "xml", "Introduced", "2024-01-01", 1L)
+      .updateTextFields("118-HR-1", "Introduced", 1L)
       .unsafeRunSync() shouldBe (())
   }
 

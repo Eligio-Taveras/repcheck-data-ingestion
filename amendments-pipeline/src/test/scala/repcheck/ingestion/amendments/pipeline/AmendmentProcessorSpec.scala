@@ -259,10 +259,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
 
     override def updateTextFields(
       billId: String,
-      textUrl: String,
-      textFormat: String,
       textVersionType: String,
-      textDate: String,
       latestTextVersionId: Long,
     ): ConnectionIO[Unit] = doobie.free.connection.pure(())
 
@@ -294,14 +291,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
         latestActionText = None,
         constitutionalAuthorityText = None,
         sponsorMemberId = None,
-        textUrl = None,
-        textFormat = None,
         textVersionType = None,
-        textDate = None,
-        textContent = None,
-        summaryText = None,
-        summaryActionDesc = None,
-        summaryActionDate = None,
         updateDate = None,
         updateDateIncludingText = None,
         legislationUrl = None,

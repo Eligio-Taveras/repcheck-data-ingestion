@@ -19,12 +19,15 @@ trait BillRepository[F[_]] {
    */
   def findBillsNeedingTextCheck(congresses: List[Int]): F[List[BillDO]]
 
+  /**
+   * Link the bill to the bill_text_versions row for its current text stage and keep `expected_text_version_code` in
+   * sync. Post-Phase-2c the text body/url/format/date and version code live in bill_text_versions; bills only stores
+   * `latest_text_version_id`. `textVersionType` is the downloaded stage (used for the cooperative expected-stage bump),
+   * not written to bills.
+   */
   def updateTextFields(
     billId: String,
-    textUrl: String,
-    textFormat: String,
     textVersionType: String,
-    textDate: String,
     latestTextVersionId: Long,
   ): F[Unit]
 

@@ -49,14 +49,7 @@ class BillPlaceholderSpec extends AnyFlatSpec with Matchers {
 
   it should "return false when text/summary fields are still None on an otherwise hydrated row" in {
     val onlyMetadataHydrated = hydratedBase.copy(
-      textUrl = None,
-      textFormat = None,
-      textVersionType = None,
-      textDate = None,
-      textContent = None,
-      summaryText = None,
-      summaryActionDesc = None,
-      summaryActionDate = None,
+      textVersionType = None
     )
     BillPlaceholder.isPlaceholder(onlyMetadataHydrated) shouldBe false
   }

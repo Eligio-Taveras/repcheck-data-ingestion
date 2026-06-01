@@ -35,17 +35,11 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     latest_action_text,
     constitutional_authority_text,
     sponsor_member_id,
-    text_url,
-    text_format,
-    -- Phase 2c: BillDO.textVersionType is sourced from bill_text_versions (the authoritative store)
-    -- via latest_text_version_id, not the bills.text_version_type column (which is being retired).
-    -- NULL when no text version is linked yet — identical contract to the old column.
+    -- BillDO.textVersionType is sourced from bill_text_versions (the authoritative store) via
+    -- latest_text_version_id. The bills.text_version_type column (and the other text_*/summary_*
+    -- columns) were dropped in Phase 2c; text lives in bill_text_versions, summaries in bill_summaries.
+    -- NULL when no text version is linked yet.
     (SELECT btv.version_code FROM bill_text_versions btv WHERE btv.id = latest_text_version_id),
-    text_date::date,
-    text_content,
-    summary_text,
-    summary_action_desc,
-    summary_action_date,
     update_date,
     update_date_including_text,
     legislation_url,
@@ -63,9 +57,6 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         introduced_date, policy_area,
         latest_action_date, latest_action_text,
         constitutional_authority_text, sponsor_member_id,
-        text_url, text_format, text_version_type, text_date,
-        text_content,
-        summary_text, summary_action_desc, summary_action_date,
         update_date, update_date_including_text,
         legislation_url, api_url
       ) VALUES (
@@ -74,11 +65,6 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         ${bill.introducedDate}, ${bill.policyArea},
         ${bill.latestActionDate}, ${bill.latestActionText},
         ${bill.constitutionalAuthorityText}, ${bill.sponsorMemberId},
-        ${bill.textUrl}, ${bill.textFormat}, ${bill.textVersionType},
-        ${bill.textDate},
-        ${bill.textContent},
-        ${bill.summaryText}, ${bill.summaryActionDesc},
-        ${bill.summaryActionDate},
         ${bill.updateDate}, ${bill.updateDateIncludingText},
         ${bill.legislationUrl}, ${bill.apiUrl}
       )
@@ -92,12 +78,10 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
         latest_action_text = EXCLUDED.latest_action_text,
         constitutional_authority_text = EXCLUDED.constitutional_authority_text,
         sponsor_member_id = EXCLUDED.sponsor_member_id,
-        -- Ownership boundary: the metadata pipeline does NOT own the text_* or summary_* columns. The bill detail
-        -- endpoint carries neither the resolved text version nor the CRS summary, so EXCLUDED is always NULL for these;
-        -- including them here clobbered the bill-text-pipeline's text_version_type (→ the availability checker re-emitted
-        -- text events for ~108K bills it already had text for) and would do the same to bill-summary-pipeline's
-        -- summary_text. They're owned by storeAndUpdateBill / updateExpectedVersion / updateSummary respectively and are
-        -- intentionally excluded here — mirroring latest_text_version_id, which was already left out for the same reason.
+        -- The metadata pipeline owns identity/metadata only. Text lives in bill_text_versions, summaries
+        -- in bill_summaries, and the stored stage is tracked via latest_text_version_id — none of which
+        -- the bill detail endpoint carries, so none are written here (the old text_*/summary_* columns
+        -- were dropped in Phase 2c).
         update_date = EXCLUDED.update_date,
         update_date_including_text = EXCLUDED.update_date_including_text,
         legislation_url = EXCLUDED.legislation_url,
@@ -162,19 +146,14 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
 
   override def updateTextFields(
     billId: String,
-    textUrl: String,
-    textFormat: String,
     textVersionType: String,
-    textDate: String,
     latestTextVersionId: Long,
   ): ConnectionIO[Unit] = {
     val (congress, billType, number) = parseNaturalKey(billId)
+    // Post-Phase-2c the bill's text (url/format/date/body) and version code live in bill_text_versions.
+    // bills only keeps the pointer to the current version row; the stored stage is read back through it.
     val updateText: ConnectionIO[Unit] = sql"""
       UPDATE $table SET
-        text_url = $textUrl,
-        text_format = $textFormat::format_type_enum,
-        text_version_type = $textVersionType::text_version_code_type,
-        text_date = $textDate::timestamptz,
         latest_text_version_id = $latestTextVersionId,
         updated_at = NOW()
       WHERE congress = $congress AND bill_type::text = $billType AND number = $number::int
