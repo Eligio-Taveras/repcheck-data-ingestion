@@ -20,7 +20,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.amendments.config.AmendmentsConfig
 import repcheck.ingestion.amendments.errors.PoolSizingTooSmall
-import repcheck.ingestion.amendments.pipeline.{AmendmentProcessor, PipelineRunSummary}
+import repcheck.ingestion.amendments.pipeline.{AmendmentProcessor, PipelineRunSummary, VoteAmendmentLinker}
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.errors.RunIdMissing
@@ -133,6 +133,16 @@ class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoS
 
   }
 
+  /** Records into the shared trace when invoked; optional failure injection for the non-fatal path. */
+  private class TraceLinker(events: AtomicReference[List[String]], failure: Option[Throwable] = None)
+      extends VoteAmendmentLinker[IO] {
+
+    override def linkAll(ctx: LogContext): IO[Int] = IO {
+      val _ = events.updateAndGet(_ :+ "linker")
+    } *> failure.fold(IO.pure(0))(IO.raiseError[Int])
+
+  }
+
   // --------------------------------------------------------------------------------------------
   // Specs
   // --------------------------------------------------------------------------------------------
@@ -167,6 +177,7 @@ class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoS
           Stream.empty
         },
         stepRecorderFactory = _ => new TraceWorkflowUpdater(trace),
+        linkerFactory = (_, _) => new TraceLinker(trace),
       )
       .unsafeRunSync()
 
@@ -191,10 +202,58 @@ class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoS
         processorFactory = (_, _, _, _) => stubProcessor(),
         streamFactory = (_, _) => Stream.emit(ProcessingResult.Succeeded("a-1")),
         stepRecorderFactory = _ => new TraceWorkflowUpdater(trace),
+        linkerFactory = (_, _) => new TraceLinker(trace),
       )
       .unsafeRunSync()
 
-    val _ = trace.get() should contain(s"started:$runId:amendments-pipeline")
+    val _      = trace.get() should contain(s"started:$runId:amendments-pipeline")
+    val _      = trace.get() should contain(s"completed:$runId:amendments-pipeline")
+    val events = trace.get()
+    // The vote↔amendment linker runs on the success path, before completion is recorded.
+    val _ = events should contain("linker")
+    events.indexOf("linker") should be < events.indexOf(s"completed:$runId:amendments-pipeline")
+  }
+
+  it should "skip the vote↔amendment linker when the run failed" in {
+    val trace = new AtomicReference[List[String]](List.empty)
+
+    val _ = AmendmentsPipeline
+      .runWithFactories[IO](
+        args = validArgs,
+        configLoader = IO.pure(appConfig()),
+        loggerFactory = IO.pure(silentLogger()),
+        retryWrapperFactory = (_: PipelineLogger[IO]) => new RetryWrapper[IO]((_, _, _, _, _, _) => IO.unit),
+        resourceBuilder = (_, _) => Resource.pure[IO, AmendmentsPipelineResources.Resources[IO]](stubResources()),
+        processorFactory = (_, _, _, _) => stubProcessor(),
+        streamFactory = (_, _) => Stream.emit(ProcessingResult.Failed("a-1", "boom")),
+        stepRecorderFactory = _ => new TraceWorkflowUpdater(trace),
+        linkerFactory = (_, _) => new TraceLinker(trace),
+      )
+      .unsafeRunSync()
+
+    trace.get() should not contain "linker"
+  }
+
+  it should "treat a linker failure as non-fatal (run still completes successfully)" in {
+    val trace = new AtomicReference[List[String]](List.empty)
+
+    val exit = AmendmentsPipeline
+      .runWithFactories[IO](
+        args = validArgs,
+        configLoader = IO.pure(appConfig()),
+        loggerFactory = IO.pure(silentLogger()),
+        retryWrapperFactory = (_: PipelineLogger[IO]) => new RetryWrapper[IO]((_, _, _, _, _, _) => IO.unit),
+        resourceBuilder = (_, _) => Resource.pure[IO, AmendmentsPipelineResources.Resources[IO]](stubResources()),
+        processorFactory = (_, _, _, _) => stubProcessor(),
+        streamFactory = (_, _) => Stream.emit(ProcessingResult.Succeeded("a-1")),
+        stepRecorderFactory = _ => new TraceWorkflowUpdater(trace),
+        linkerFactory = (_, _) => new TraceLinker(trace, failure = Some(new RuntimeException("link boom"))),
+      )
+      .unsafeRunSync()
+
+    // Linker raised, but the run is still a success and completion is recorded.
+    val _ = exit.code shouldBe 0
+    val _ = trace.get() should contain("linker")
     trace.get() should contain(s"completed:$runId:amendments-pipeline")
   }
 
@@ -211,6 +270,7 @@ class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoS
         processorFactory = (_, _, _, _) => stubProcessor(),
         streamFactory = (_, _) => Stream.emit(ProcessingResult.Failed("a-1", "boom")),
         stepRecorderFactory = _ => new TraceWorkflowUpdater(trace),
+        linkerFactory = (_, _) => new TraceLinker(trace),
       )
       .unsafeRunSync()
 
@@ -231,6 +291,7 @@ class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoS
         processorFactory = (_, _, _, _) => stubProcessor(),
         streamFactory = (_, _) => Stream.empty,
         stepRecorderFactory = _ => new TraceWorkflowUpdater(new AtomicReference(List.empty)),
+        linkerFactory = (_, _) => new TraceLinker(new AtomicReference(List.empty)),
       )
       .attempt
       .unsafeRunSync()
@@ -252,6 +313,7 @@ class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoS
         processorFactory = (_, _, _, _) => stubProcessor(),
         streamFactory = (_, _) => Stream.empty,
         stepRecorderFactory = _ => new TraceWorkflowUpdater(new AtomicReference(List.empty)),
+        linkerFactory = (_, _) => new TraceLinker(new AtomicReference(List.empty)),
       )
       .attempt
       .unsafeRunSync()
