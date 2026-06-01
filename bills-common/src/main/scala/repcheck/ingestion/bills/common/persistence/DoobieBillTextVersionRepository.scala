@@ -66,12 +66,11 @@ class DoobieBillTextVersionRepository extends BillTextVersionRepository[Connecti
     generatedId: Long,
   ): ConnectionIO[Int] = {
     val billsTable = Fragment.const(Tables.Bills)
+    // Post-Phase-2c: the bill's text url/format/date and version code live in the bill_text_versions
+    // row just inserted (id = generatedId). bills only stores the pointer to the current version;
+    // the stored stage is read back via that pointer (the retired text_*/summary_* columns are gone).
     sql"""
       UPDATE $billsTable SET
-        text_url = ${version.url},
-        text_format = ${version.formatType},
-        text_version_type = ${version.versionCode}::text_version_code_type,
-        text_date = ${version.versionDate},
         latest_text_version_id = $generatedId,
         updated_at = NOW()
       WHERE id = ${version.billId}
