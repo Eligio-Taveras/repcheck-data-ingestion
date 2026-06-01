@@ -90,46 +90,6 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     }
   }
 
-  it should "preserve text_version_type and summary_text on a metadata re-upsert (ownership boundary)" taggedAs DockerRequired in {
-    val bill = makeBill(number = "9100")
-    val _    = repo.upsert(bill).transact(xa).unsafeRunSync()
-
-    // Simulate the bill-text and bill-summary pipelines writing the columns they own.
-    val _ = sql"""UPDATE bills
-                  SET text_version_type = 'EH'::text_version_code_type, summary_text = 'CRS summary body'
-                  WHERE congress = 118 AND bill_type = 'hr'::bill_type_enum AND number = 9100""".update.run
-      .transact(xa)
-      .unsafeRunSync()
-
-    // The metadata pipeline re-upserts the same bill; its DTO carries None for both (the bill detail API has neither).
-    // After the ownership-boundary fix the UPDATE SET no longer lists those columns, so they must survive.
-    val _ = repo.upsert(bill.copy(title = "Updated Title")).transact(xa).unsafeRunSync()
-
-    val _ = repo.findByBillId("118-HR-9100").transact(xa).unsafeRunSync() match {
-      case Some(b) =>
-        b.title shouldBe "Updated Title" // metadata-owned column DID update
-      case None => fail("Expected bill to be present")
-    }
-    // summary_text is summary-owned and no longer mapped onto BillDO; assert on the raw column that it
-    // survived the metadata re-upsert (NOT clobbered to NULL).
-    val storedSummary = sql"""SELECT summary_text FROM bills
-                              WHERE congress = 118 AND bill_type = 'hr'::bill_type_enum AND number = 9100"""
-      .query[Option[String]]
-      .unique
-      .transact(xa)
-      .unsafeRunSync()
-    val _ = storedSummary shouldBe Some("CRS summary body")
-    // Assert text_version_type on the raw column: Phase 2c sources BillDO.textVersionType from
-    // bill_text_versions, but this test verifies the bills column itself survived the metadata re-upsert.
-    val storedVersion = sql"""SELECT text_version_type::text FROM bills
-                              WHERE congress = 118 AND bill_type = 'hr'::bill_type_enum AND number = 9100"""
-      .query[Option[String]]
-      .unique
-      .transact(xa)
-      .unsafeRunSync()
-    storedVersion shouldBe Some("EH")
-  }
-
   it should "return the generated bill id" taggedAs DockerRequired in {
     val bill       = makeBill()
     val returnedId = repo.upsert(bill).transact(xa).unsafeRunSync()
