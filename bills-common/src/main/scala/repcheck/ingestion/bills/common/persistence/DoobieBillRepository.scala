@@ -37,7 +37,10 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     sponsor_member_id,
     text_url,
     text_format,
-    text_version_type,
+    -- Phase 2c: BillDO.textVersionType is sourced from bill_text_versions (the authoritative store)
+    -- via latest_text_version_id, not the bills.text_version_type column (which is being retired).
+    -- NULL when no text version is linked yet — identical contract to the old column.
+    (SELECT btv.version_code FROM bill_text_versions btv WHERE btv.id = latest_text_version_id),
     text_date::date,
     text_content,
     summary_text,
@@ -149,7 +152,8 @@ class DoobieBillRepository extends BillRepository[ConnectionIO] {
     }
     (fr"SELECT" ++ selectColumns ++ fr"FROM $table" ++
       fr"WHERE expected_text_version_code IS NOT NULL" ++
-      fr"AND text_version_type IS DISTINCT FROM expected_text_version_code" ++
+      fr"AND (SELECT btv.version_code FROM bill_text_versions btv WHERE btv.id = latest_text_version_id)" ++
+      fr"  IS DISTINCT FROM expected_text_version_code" ++
       congressFilter ++
       fr"ORDER BY (latest_text_version_id IS NULL) DESC, congress DESC, id ASC")
       .query[BillDO]
