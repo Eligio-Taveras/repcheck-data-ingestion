@@ -326,29 +326,26 @@ class FullChainIntegrationSpec
   }
 
   it should "propagate previousVersionCode through the full chain" taggedAs DockerRequired in {
-    val _ = seedBill("118-HR-51", number = "51")
+    val dbBillId = seedBill("118-HR-51", number = "51")
 
-    // First, insert a text version so the bill has existing text.
-    //
-    // Post-#77 the bill-text-availability-checker filter is the stage-aware
+    // The bill is stored at the IH stage. Post-#77 the bill-text-availability-checker filter is
+    // stage-aware:
     //   WHERE expected_text_version_code IS NOT NULL
-    //     AND text_version_type IS DISTINCT FROM expected_text_version_code
+    //     AND <stored stage> IS DISTINCT FROM expected_text_version_code
     // We need:
-    //   * text_version_type = IH (the bill is currently stored at the IH stage)
-    //   * expected_text_version_code = RH (CRS / bill-summary-pipeline has advanced the expected
-    //     stage to RH because that's what the API now reports as available)
-    // seedBill defaults expected to IH; we override to RH below so the DISTINCT-FROM check fires and
-    // the checker picks the bill up. The simulated state here is the steady state right after
-    // bill-summary advances expected from IH → RH but before bill-text-pipeline downloads the RH
-    // formatted text and updates text_version_type.
-    // Seed text_version_type = IH directly. It is a text-owned column; the bill-metadata upsert no
-    // longer writes it (ownership boundary), so we set it via SQL rather than billRepo.upsert.
-    val _ = sql"""UPDATE bills SET text_version_type = 'IH'::text_version_code_type
-                  WHERE congress = 118 AND bill_type = 'hr'::bill_type_enum AND number = 51""".update.run
+    //   * stored stage = IH (the bill currently has IH text)
+    //   * expected_text_version_code = RH (CRS / bill-summary-pipeline advanced expected to RH)
+    // Phase 2c: the stored stage is read from bill_text_versions via latest_text_version_id, not the
+    // bills.text_version_type column. Materialize the IH text version and link it.
+    val ihVersionId =
+      sql"""INSERT INTO bill_text_versions (bill_id, version_code, version_type, fetched_at, created_at)
+            VALUES ($dbBillId, 'IH'::text_version_code_type, 'IH version', NOW(), NOW())
+            RETURNING id""".query[Long].unique.transact(xa).unsafeRunSync()
+    val _ = sql"UPDATE bills SET latest_text_version_id = $ihVersionId WHERE id = $dbBillId".update.run
       .transact(xa)
       .unsafeRunSync()
-    // Override the expected_text_version_code that seedBill defaulted to IH so the sweep filter
-    // fires (text_version_type = IH != expected = RH).
+    // Override the expected_text_version_code that seedBill defaulted to IH so the sweep filter fires
+    // (stored IH != expected RH).
     val _ = billRepo.updateExpectedVersion("118-HR-51", TextVersionCode.RH).transact(xa).unsafeRunSync()
 
     val textUrl = s"http://127.0.0.1:${wireMock.port().toString}/text/118/hr/51/rh"

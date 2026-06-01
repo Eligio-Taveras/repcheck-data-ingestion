@@ -164,8 +164,21 @@ class MetadataToCheckerIntegrationSpec
     )
     import doobie.implicits._
     val billId = billRepo.upsert(bill).transact(xa).unsafeRunSync()
+    // Phase 2c: the stored stage is read from bill_text_versions (via latest_text_version_id), not the
+    // bills.text_version_type column. When a test pre-stages a stored version, materialize it as a
+    // bill_text_versions row and link it so the sweep filter and previousVersionCode resolve to it.
+    textVersionType.foreach { vc =>
+      val versionId =
+        sql"""INSERT INTO bill_text_versions (bill_id, version_code, version_type, fetched_at, created_at)
+              VALUES ($billId, ${vc.toString}::text_version_code_type, ${s"${vc.toString} version"}, NOW(), NOW())
+              RETURNING id""".query[Long].unique.transact(xa).unsafeRunSync()
+      val _ =
+        sql"UPDATE bills SET latest_text_version_id = $versionId WHERE id = $billId".update.run
+          .transact(xa)
+          .unsafeRunSync()
+    }
     // Post-#77 the sweep filter requires `expected_text_version_code IS NOT NULL AND
-    // text_version_type IS DISTINCT FROM expected_text_version_code`. Default expected to IH (the
+    // <stored stage> IS DISTINCT FROM expected_text_version_code`. Default expected to IH (the
     // House-introduced floor that bill-metadata-pipeline writes for every new bill in production)
     // so bills with no stored text enter the sweep. Tests that pre-stage a textVersionType = IH
     // need an `expectedVersion = RH` override to bring the bill into the sweep (stored IH ≠ RH).

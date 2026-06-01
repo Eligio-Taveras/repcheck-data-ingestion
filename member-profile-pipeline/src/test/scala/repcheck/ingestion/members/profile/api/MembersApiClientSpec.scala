@@ -27,9 +27,13 @@ class MembersApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
       .dynamicPort()
   )
 
+  // 30s (not 5s): this is the test client's total request timeout against local WireMock. Under sbt
+  // compile/test load the stubbed response can slip past a tight 5s header-receive deadline, flaking
+  // the gate with "Timed Out on EmberClient Header Receive Timeout". 30s is generous headroom and still
+  // bounded. Production timeouts live in CongressGovClientConfig and are unaffected.
   private lazy val (httpClient, httpShutdown) = EmberClientBuilder
     .default[IO]
-    .withTimeout(5.seconds)
+    .withTimeout(30.seconds)
     .build
     .allocated
     .unsafeRunSync()

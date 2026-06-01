@@ -20,15 +20,19 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
   private lazy val repo            = new DoobieBillRepository
   private lazy val textVersionRepo = new DoobieBillTextVersionRepository
 
-  /** Insert a text version row and return its auto-generated id for FK-safe updateTextFields tests. */
-  private def insertTextVersion(billId: Long): Long =
+  /**
+   * Insert a text version row and return its auto-generated id. `versionCode` must match the stage the caller then
+   * writes via updateTextFields — Phase 2c reads the stored stage from this row (via latest_text_version_id), not the
+   * bills.text_version_type column.
+   */
+  private def insertTextVersion(billId: Long, versionCode: String = "IH"): Long =
     textVersionRepo
       .insertVersion(
         BillTextVersionDO(
           id = 0L,
           billId = billId,
-          versionCode = "IH",
-          versionType = "IH version",
+          versionCode = versionCode,
+          versionType = s"$versionCode version",
           versionDate = Some(LocalDate.parse("2024-01-15")),
           formatType = Some(FormatType.FormattedText),
           url = Some("https://congress.gov/text/IH"),
@@ -108,13 +112,21 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     // After the ownership-boundary fix the UPDATE SET no longer lists those columns, so they must survive.
     val _ = repo.upsert(bill.copy(title = "Updated Title")).transact(xa).unsafeRunSync()
 
-    repo.findByBillId("118-HR-9100").transact(xa).unsafeRunSync() match {
+    val _ = repo.findByBillId("118-HR-9100").transact(xa).unsafeRunSync() match {
       case Some(b) =>
-        val _ = b.title shouldBe "Updated Title"          // metadata-owned column DID update
-        val _ = b.textVersionType.isDefined shouldBe true // text-owned column NOT clobbered to NULL
+        val _ = b.title shouldBe "Updated Title" // metadata-owned column DID update
         b.summaryText shouldBe Some("CRS summary body") // summary-owned column NOT clobbered to NULL
       case None => fail("Expected bill to be present")
     }
+    // Assert text_version_type on the raw column: Phase 2c sources BillDO.textVersionType from
+    // bill_text_versions, but this test verifies the bills column itself survived the metadata re-upsert.
+    val storedVersion = sql"""SELECT text_version_type::text FROM bills
+                              WHERE congress = 118 AND bill_type = 'hr'::bill_type_enum AND number = 9100"""
+      .query[Option[String]]
+      .unique
+      .transact(xa)
+      .unsafeRunSync()
+    storedVersion shouldBe Some("EH")
   }
 
   it should "return the generated bill id" taggedAs DockerRequired in {
@@ -257,7 +269,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     val _ = repo.upsert(makeBill(number = "40")).transact(xa).unsafeRunSync()
     val billId =
       repo.findByBillId("118-HR-40").transact(xa).unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
-    val versionId = insertTextVersion(billId)
+    val versionId = insertTextVersion(billId, "PL")
 
     val _ = repo.updateExpectedVersion("118-HR-40", TextVersionCode.PL).transact(xa).unsafeRunSync()
     val _ = repo
@@ -329,7 +341,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
     val _ = repo.upsert(makeBill()).transact(xa).unsafeRunSync()
     val billId =
       repo.findByBillId("118-HR-1234").transact(xa).unsafeRunSync().map(_.billId).getOrElse(sys.error("missing"))
-    val versionId = insertTextVersion(billId)
+    val versionId = insertTextVersion(billId, "RH")
 
     repo
       .updateTextFields("118-HR-1234", "http://text.xml", "Formatted XML", "RH", "2024-02-01T00:00:00Z", versionId)
