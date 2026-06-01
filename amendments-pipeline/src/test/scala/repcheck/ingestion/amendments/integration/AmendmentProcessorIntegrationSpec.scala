@@ -18,7 +18,7 @@ import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.amendments.api.AmendmentsApiClient
 import repcheck.ingestion.amendments.config.AmendmentsConfig
 import repcheck.ingestion.amendments.observability.AmendmentMetrics
-import repcheck.ingestion.amendments.persistence.DoobieAmendmentRepository
+import repcheck.ingestion.amendments.persistence.{DoobieAmendmentRepository, DoobieCommitteeLookupRepository}
 import repcheck.ingestion.amendments.pipeline.AmendmentProcessor
 import repcheck.ingestion.amendments.testing.TransactorFixture
 import repcheck.ingestion.bills.common.persistence.DoobieBillRepository
@@ -105,6 +105,7 @@ class AmendmentProcessorIntegrationSpec
     val apiClient        = AmendmentsApiClient[IO](apiConfig, httpClient, retryWrapper)
     val amendmentRepo    = new DoobieAmendmentRepository
     val billRepo         = new DoobieBillRepository
+    val committeeRepo    = new DoobieCommitteeLookupRepository
     val memberRepo       = new DoobieMemberRepository
     val placeholder      = new DefaultPlaceholderCreator[IO]
     val memberEntityRepo = new DoobieEntityRepository[IO, MemberDO](xa, MemberInsertSql.value)
@@ -116,6 +117,7 @@ class AmendmentProcessorIntegrationSpec
       memberRepository = memberRepo,
       memberEntityRepo = memberEntityRepo,
       billRepository = billRepo,
+      committeeRepository = committeeRepo,
       xa = xa,
       config = config,
       logger = silentLogger(),

@@ -18,7 +18,7 @@ import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.amendments.api.AmendmentsApiClient
 import repcheck.ingestion.amendments.config.AmendmentsConfig
 import repcheck.ingestion.amendments.observability.AmendmentMetrics
-import repcheck.ingestion.amendments.persistence.AmendmentRepository
+import repcheck.ingestion.amendments.persistence.{AmendmentRepository, CommitteeLookupRepository}
 import repcheck.ingestion.bills.common.persistence.BillRepository
 import repcheck.ingestion.common.api.{FetchParams, PagedResponse}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
@@ -88,6 +88,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     amendmentType: String = "SAMDT",
     number: String = "100",
     sponsorBioguide: Option[String] = Some("S001217"),
+    committeeSponsorUrl: Option[String] = None,
     amendedBill: Option[AmendedBillDTO] = None,
     amendedAmendment: Option[AmendedAmendmentDTO] = None,
     chamber: Option[String] = Some("Senate"),
@@ -102,22 +103,24 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       chamber = chamber,
       description = Some("Test"),
       purpose = Some("Test purpose"),
-      sponsors = sponsorBioguide.map { id =>
-        List(
-          SponsorDTO.MemberSponsorDTO(
-            bioguideId = id,
-            firstName = Some("Test"),
-            lastName = Some("Senator"),
-            fullName = Some("Test Senator"),
-            middleName = None,
-            isByRequest = None,
-            party = Some("D"),
-            state = Some("NY"),
-            district = None,
-            url = None,
+      sponsors = committeeSponsorUrl
+        .map(u => List(SponsorDTO.CommitteeSponsorDTO(name = "Test Committee", url = u)))
+        .orElse(sponsorBioguide.map { id =>
+          List(
+            SponsorDTO.MemberSponsorDTO(
+              bioguideId = id,
+              firstName = Some("Test"),
+              lastName = Some("Senator"),
+              fullName = Some("Test Senator"),
+              middleName = None,
+              isByRequest = None,
+              party = Some("D"),
+              state = Some("NY"),
+              district = None,
+              url = None,
+            )
           )
-        )
-      },
+        }),
       submittedDate = Some("2021-08-01"),
       proposedDate = Some("2021-08-02"),
       latestAction = Some(
@@ -310,6 +313,18 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
 
   }
 
+  private class StubCommitteeLookupRepo extends CommitteeLookupRepository[ConnectionIO] {
+
+    val storeRef                                    = new AtomicReference[Map[String, Long]](Map.empty)
+    val findCallsRef: AtomicReference[List[String]] = new AtomicReference(List.empty)
+
+    override def findIdBySystemCode(systemCode: String): ConnectionIO[Option[Long]] = {
+      val _ = findCallsRef.updateAndGet(_ :+ systemCode)
+      doobie.free.connection.pure(storeRef.get().get(systemCode))
+    }
+
+  }
+
   private class StubMemberRepo extends MemberRepository {
 
     val storeRef                                    = new AtomicReference[Map[String, Long]](Map.empty)
@@ -437,6 +452,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
     placeholderCreator: StubPlaceholderCreator,
     config: AmendmentsConfig = baseConfig,
     metrics: AmendmentMetrics = AmendmentMetrics.make(),
+    committeeRepo: StubCommitteeLookupRepo = new StubCommitteeLookupRepo,
   ): AmendmentProcessor[IO] =
     new AmendmentProcessor[IO](
       apiClient = api,
@@ -445,6 +461,7 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
       memberRepository = memberRepo,
       memberEntityRepo = new StubMemberEntityRepo,
       billRepository = billRepo,
+      committeeRepository = committeeRepo,
       xa = noopXa,
       config = config,
       logger = silentLogger(),
@@ -588,6 +605,113 @@ class AmendmentProcessorSpec extends AnyFlatSpec with Matchers with MockitoSugar
 
     val _ = placeholder.callsRef.get() shouldBe Nil
     mRepo.findCallsRef.get() shouldBe Nil
+  }
+
+  it should "resolve sponsorCommitteeId from a committee-sponsor URL's systemCode" in {
+    val d        = detail(committeeSponsorUrl = Some("https://api.congress.gov/v3/committee/house/hsru00?format=json"))
+    val (api, _) = mockApi(Map("117-SAMDT-100" -> d))
+    val aRepo    = new StubAmendmentRepo(Map.empty)
+    val bRepo    = new StubBillRepo
+    val mRepo    = new StubMemberRepo
+    val cRepo    = new StubCommitteeLookupRepo
+    cRepo.storeRef.set(Map("hsru00" -> 221L))
+    val placeholder = new StubPlaceholderCreator
+    val processor   = buildProcessor(api, aRepo, bRepo, mRepo, placeholder, committeeRepo = cRepo)
+
+    val _ = processor
+      .processAmendment(
+        naturalKey = "117-SAMDT-100",
+        listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
+        storedOpt = None,
+        depth = 0,
+        correlationId = testCorrelationId,
+      )
+      .unsafeRunSync()
+
+    val _      = cRepo.findCallsRef.get() shouldBe List("hsru00")
+    val _      = mRepo.findCallsRef.get() shouldBe Nil // committee sponsor → member path skipped
+    val stored = aRepo.upsertCallsRef.get().headOption
+    val _      = stored.flatMap(_.sponsorCommitteeId) shouldBe Some(221L)
+    val _      = stored.flatMap(_.sponsorMemberId) shouldBe None
+    stored.flatMap(_.sponsorType.map(_.toString)) shouldBe Some("Committee")
+  }
+
+  it should "leave sponsorCommitteeId None when the committee systemCode has no matching row" in {
+    val d        = detail(committeeSponsorUrl = Some("https://api.congress.gov/v3/committee/house/hsxx99?format=json"))
+    val (api, _) = mockApi(Map("117-SAMDT-100" -> d))
+    val aRepo    = new StubAmendmentRepo(Map.empty)
+    val bRepo    = new StubBillRepo
+    val mRepo    = new StubMemberRepo
+    val cRepo    = new StubCommitteeLookupRepo // empty store → miss
+    val placeholder = new StubPlaceholderCreator
+    val processor   = buildProcessor(api, aRepo, bRepo, mRepo, placeholder, committeeRepo = cRepo)
+
+    val _ = processor
+      .processAmendment(
+        naturalKey = "117-SAMDT-100",
+        listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
+        storedOpt = None,
+        depth = 0,
+        correlationId = testCorrelationId,
+      )
+      .unsafeRunSync()
+
+    val _      = cRepo.findCallsRef.get() shouldBe List("hsxx99")
+    val stored = aRepo.upsertCallsRef.get().headOption
+    val _      = stored.flatMap(_.sponsorCommitteeId) shouldBe None
+    // sponsorType still derives from the DTO's committee sponsor even though the FK is unresolved.
+    stored.flatMap(_.sponsorType.map(_.toString)) shouldBe Some("Committee")
+  }
+
+  it should "leave sponsorCommitteeId None and not query the repo when the committee URL is unparseable" in {
+    val d           = detail(committeeSponsorUrl = Some("https://api.congress.gov/v3/garbage"))
+    val (api, _)    = mockApi(Map("117-SAMDT-100" -> d))
+    val aRepo       = new StubAmendmentRepo(Map.empty)
+    val bRepo       = new StubBillRepo
+    val mRepo       = new StubMemberRepo
+    val cRepo       = new StubCommitteeLookupRepo
+    val placeholder = new StubPlaceholderCreator
+    val processor   = buildProcessor(api, aRepo, bRepo, mRepo, placeholder, committeeRepo = cRepo)
+
+    val _ = processor
+      .processAmendment(
+        naturalKey = "117-SAMDT-100",
+        listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
+        storedOpt = None,
+        depth = 0,
+        correlationId = testCorrelationId,
+      )
+      .unsafeRunSync()
+
+    val _ = cRepo.findCallsRef.get() shouldBe Nil
+    aRepo.upsertCallsRef.get().headOption.flatMap(_.sponsorCommitteeId) shouldBe None
+  }
+
+  it should "not query the committee repo when the sponsor is a member" in {
+    val d           = detail(sponsorBioguide = Some("S001217"))
+    val (api, _)    = mockApi(Map("117-SAMDT-100" -> d))
+    val aRepo       = new StubAmendmentRepo(Map.empty)
+    val bRepo       = new StubBillRepo
+    val mRepo       = new StubMemberRepo
+    val cRepo       = new StubCommitteeLookupRepo
+    val placeholder = new StubPlaceholderCreator
+    val processor   = buildProcessor(api, aRepo, bRepo, mRepo, placeholder, committeeRepo = cRepo)
+
+    val _ = processor
+      .processAmendment(
+        naturalKey = "117-SAMDT-100",
+        listItemOpt = Some(listItem()),
+        detailUrlOpt = None,
+        storedOpt = None,
+        depth = 0,
+        correlationId = testCorrelationId,
+      )
+      .unsafeRunSync()
+
+    cRepo.findCallsRef.get() shouldBe Nil
   }
 
   it should "call BillRepository.upsertPlaceholder + findByBillId when DTO references a bill" in {
