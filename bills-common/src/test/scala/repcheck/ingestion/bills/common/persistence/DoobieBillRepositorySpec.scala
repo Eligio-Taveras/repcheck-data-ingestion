@@ -21,9 +21,9 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
   private lazy val textVersionRepo = new DoobieBillTextVersionRepository
 
   /**
-   * Insert a text version row and return its auto-generated id. `versionCode` must match the stage the
-   * caller then writes via updateTextFields — Phase 2c reads the stored stage from this row (via
-   * latest_text_version_id), not the bills.text_version_type column.
+   * Insert a text version row and return its auto-generated id. `versionCode` must match the stage the caller then
+   * writes via updateTextFields — Phase 2c reads the stored stage from this row (via latest_text_version_id), not the
+   * bills.text_version_type column.
    */
   private def insertTextVersion(billId: Long, versionCode: String = "IH"): Long =
     textVersionRepo
@@ -114,7 +114,7 @@ class DoobieBillRepositorySpec extends AnyFlatSpec with Matchers with Transactor
 
     val _ = repo.findByBillId("118-HR-9100").transact(xa).unsafeRunSync() match {
       case Some(b) =>
-        val _ = b.title shouldBe "Updated Title"        // metadata-owned column DID update
+        val _ = b.title shouldBe "Updated Title" // metadata-owned column DID update
         b.summaryText shouldBe Some("CRS summary body") // summary-owned column NOT clobbered to NULL
       case None => fail("Expected bill to be present")
     }
