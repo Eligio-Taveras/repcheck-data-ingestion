@@ -4,7 +4,7 @@ import cats.effect.{Async, Temporal}
 
 import repcheck.ingestion.amendments.api.AmendmentsApiClient
 import repcheck.ingestion.amendments.observability.AmendmentMetrics
-import repcheck.ingestion.amendments.persistence.DoobieAmendmentRepository
+import repcheck.ingestion.amendments.persistence.{DoobieAmendmentRepository, DoobieCommitteeLookupRepository}
 import repcheck.ingestion.amendments.pipeline.AmendmentProcessor
 import repcheck.ingestion.bills.common.persistence.DoobieBillRepository
 import repcheck.ingestion.common.logging.PipelineLogger
@@ -33,6 +33,7 @@ private[app] object AmendmentsProcessorFactory {
 
     val amendmentRepo = new DoobieAmendmentRepository
     val billRepo      = new DoobieBillRepository
+    val committeeRepo = new DoobieCommitteeLookupRepository
     val memberRepo    = new DoobieMemberRepository
 
     val placeholderCreator = new DefaultPlaceholderCreator[F]
@@ -52,6 +53,7 @@ private[app] object AmendmentsProcessorFactory {
       memberRepository = memberRepo,
       memberEntityRepo = memberEntityRepo,
       billRepository = billRepo,
+      committeeRepository = committeeRepo,
       xa = resources.xa,
       config = config.pipeline,
       logger = logger,
