@@ -26,8 +26,9 @@ import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.errors.RunIdMissing
 import repcheck.ingestion.common.execution.WorkflowStateUpdater
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.{ErrorClass, ErrorClassifier, RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.metadata.ProcessingResult
+
+import com.repcheck.utils.errors.{ErrorClass, ErrorClassifier, RetryConfig, RetryWrapper}
 
 class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 

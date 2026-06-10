@@ -33,11 +33,12 @@ import repcheck.ingestion.text.embedding.{
   NoOpEmbeddingService,
   OllamaEmbeddingService,
 }
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.BillDO
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * Integration tests for the Bill Text Pipeline. Uses real AlloyDB Omni (Docker), Pub/Sub emulator, and WireMock for

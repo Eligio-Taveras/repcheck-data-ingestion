@@ -17,7 +17,6 @@ import org.http4s.{MediaType, Uri}
 
 import repcheck.ingestion.common.api.{CongressGovClientConfig, CongressGovPaginatedClient, FetchParams, PagedResponse}
 import repcheck.ingestion.members.profile.errors.{MemberFetchFailed, MembersApiErrorClassifier, MembersApiHttpError}
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.common.PaginationInfoDTO
 import repcheck.shared.models.congress.dto.member.{
   MemberDepictionDTO,
@@ -25,6 +24,8 @@ import repcheck.shared.models.congress.dto.member.{
   MemberListItemDTO,
   MemberTermSummaryDTO,
 }
+
+import com.repcheck.utils.errors.RetryWrapper
 
 class MembersApiClient[F[_]](
   config: CongressGovClientConfig,

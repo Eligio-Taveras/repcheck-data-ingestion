@@ -18,7 +18,8 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.votes.config.{HouseVotesConfig, SenateVoteXmlConfig, VotesPipelineConfig}
-import repcheck.pipeline.models.errors.RetryConfig
+
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * Unit spec for [[VotesPipelineResources]]. Exercises `build` end-to-end with mocked low-level factories so the whole
@@ -177,7 +178,7 @@ class VotesPipelineResourcesSpec extends AnyFlatSpec with Matchers with MockitoS
 
   "noOpRetryWrapper" should "successfully retry a recoverable operation, firing the no-op retry logger on the way" in {
     import java.util.UUID
-    import repcheck.pipeline.models.errors.{ErrorClass, ErrorClassifier, RetryConfig}
+    import com.repcheck.utils.errors.{ErrorClass, ErrorClassifier, RetryConfig}
 
     val wrapper  = VotesPipelineResources.noOpRetryWrapper[IO]
     val attempts = new java.util.concurrent.atomic.AtomicInteger(0)

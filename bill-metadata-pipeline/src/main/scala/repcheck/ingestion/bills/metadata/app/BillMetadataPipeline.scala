@@ -29,8 +29,9 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLoggerFactory}
 import repcheck.ingestion.common.placeholders.{DefaultPlaceholderCreator, DoobieEntityRepository}
 import repcheck.members.common.MemberInsertSql
 import repcheck.members.common.persistence.{DoobieMemberRepository, MemberWriteInstances}
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dos.member.MemberDO
+
+import com.repcheck.utils.errors.RetryWrapper
 
 private[app] object BillMetadataPipeline {
 

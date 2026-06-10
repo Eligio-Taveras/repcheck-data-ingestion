@@ -25,8 +25,9 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.{ErrorClass, RetryConfig}
 import repcheck.pipeline.models.metadata.ProcessingResult
+
+import com.repcheck.utils.errors.{ErrorClass, RetryConfig}
 
 class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 

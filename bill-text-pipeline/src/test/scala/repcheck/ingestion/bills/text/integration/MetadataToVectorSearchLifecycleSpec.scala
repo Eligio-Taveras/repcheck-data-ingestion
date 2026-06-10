@@ -43,10 +43,11 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
 import repcheck.ingestion.text.embedding.{EmbeddingConfig, NoOpEmbeddingService, OllamaEmbeddingService}
 import repcheck.members.common.persistence.DoobieMemberRepository
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
 import repcheck.shared.models.congress.dos.member.MemberDO
 import repcheck.shared.models.placeholder.HasPlaceholder
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * Full lifecycle integration test: metadata ingestion → DB storage → text availability check → Pub/Sub event → text

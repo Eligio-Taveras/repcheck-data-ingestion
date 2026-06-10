@@ -46,6 +46,7 @@ lazy val commonSettings = Seq(
     "GitHub Packages - shared-models" at "https://maven.pkg.github.com/Eligio-Taveras/repcheck-shared-models",
     "GitHub Packages - pipeline-models" at "https://maven.pkg.github.com/Eligio-Taveras/repcheck-pipeline-models",
     "GitHub Packages - ingestion-common" at "https://maven.pkg.github.com/Eligio-Taveras/repcheck-ingestion-common",
+    "GitHub Packages - repcheck-utils" at "https://maven.pkg.github.com/Eligio-Taveras/repcheck-utils",
     "GitHub Packages - db-migrations" at "https://maven.pkg.github.com/Eligio-Taveras/repcheck-db-migrations",
   ),
   libraryDependencies ++= Seq(
@@ -53,10 +54,11 @@ lazy val commonSettings = Seq(
   ),
   // Shared RepCheck dependencies consumed by all sub-projects
   libraryDependencies ++= Seq(
-    "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.27",
-    "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.28",
+    "com.repcheck" %% "repcheck-pipeline-models"      % "0.1.28",
+    "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.29",
     "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.41" % Test,
-    "com.repcheck" %% "repchecksharedmodels"          % "0.1.51",
+    "com.repcheck" %% "repchecksharedmodels"          % "0.1.56",
+    "com.repcheck" %% "repcheck-utils"                 % "0.1.1",
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,

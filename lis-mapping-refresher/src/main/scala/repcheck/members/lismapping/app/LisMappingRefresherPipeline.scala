@@ -21,7 +21,8 @@ import repcheck.members.common.persistence.{
 import repcheck.members.lismapping.client.SenatorLookupXmlClient
 import repcheck.members.lismapping.config.LisMappingConfig
 import repcheck.members.lismapping.pipeline.LisMappingProcessor
-import repcheck.pipeline.models.errors.{ErrorClass, RetryConfig, RetryWrapper}
+
+import com.repcheck.utils.errors.{ErrorClass, RetryConfig, RetryWrapper}
 
 /**
  * Testable wiring for the LIS mapping refresher. All resource acquisition and object construction is extracted from

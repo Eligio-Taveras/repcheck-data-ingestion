@@ -2,7 +2,8 @@ package repcheck.ingestion.members.profile.errors
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.pipeline.models.errors.ErrorClass
+
+import com.repcheck.utils.errors.ErrorClass
 
 class MembersApiErrorClassifierSpec extends AnyFlatSpec with Matchers {
 

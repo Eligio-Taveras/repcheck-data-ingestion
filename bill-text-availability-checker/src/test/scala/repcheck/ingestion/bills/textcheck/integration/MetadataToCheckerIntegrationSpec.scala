@@ -23,10 +23,11 @@ import repcheck.ingestion.bills.textcheck.pipeline.BillTextAvailabilityChecker
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, GooglePubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.BillDO
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * Integration tests for the Bill Text Availability Checker. Uses real AlloyDB Omni (Docker), Pub/Sub emulator, and

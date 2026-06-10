@@ -21,8 +21,9 @@ import fs2.Stream
 import repcheck.ingestion.common.api.{CongressGovClientConfig, FetchParams, PagedResponse}
 import repcheck.ingestion.votes.config.HouseVotesConfig
 import repcheck.ingestion.votes.errors.{HouseVoteApiErrorClassifier, HouseVoteApiHttpError, HouseVoteFetchFailed}
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.vote.{VoteListItemDTO, VoteMembersDTO, VoteResultDTO}
+
+import com.repcheck.utils.errors.RetryWrapper
 
 /**
  * Congress.gov beta `/house-vote` API client.

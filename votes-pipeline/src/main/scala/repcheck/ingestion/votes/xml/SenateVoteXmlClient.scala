@@ -20,8 +20,9 @@ import repcheck.ingestion.votes.errors.{
   SenateVoteXmlErrorClassifier,
   SenateVoteXmlHttpError,
 }
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.vote.SenateVoteXmlDTO
+
+import com.repcheck.utils.errors.RetryWrapper
 
 /**
  * Fetches and decodes Senate roll-call XML from senate.gov.

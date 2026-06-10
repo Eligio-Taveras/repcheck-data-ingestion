@@ -19,7 +19,6 @@ import org.http4s.{MediaType, Uri}
 import repcheck.ingestion.bills.metadata.errors.{BillFetchFailed, BillsApiErrorClassifier, BillsApiHttpError}
 import repcheck.ingestion.common.api.{CongressGovClientConfig, CongressGovPaginatedClient, FetchParams, PagedResponse}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.bill.{
   BillDetailDTO,
   BillListItemDTO,
@@ -27,6 +26,8 @@ import repcheck.shared.models.congress.dto.bill.{
   CoSponsorDTO,
   CosponsorListResponseDTO,
 }
+
+import com.repcheck.utils.errors.RetryWrapper
 
 class BillsApiClient[F[_]](
   config: CongressGovClientConfig,

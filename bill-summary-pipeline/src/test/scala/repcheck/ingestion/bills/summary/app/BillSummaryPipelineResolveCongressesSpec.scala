@@ -16,7 +16,8 @@ import repcheck.ingestion.bills.summary.config.BillSummaryConfig
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.RetryConfig
+
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * Direct coverage for [[BillSummaryPipeline.resolveCongresses]] across all three resolution layers (env var, config

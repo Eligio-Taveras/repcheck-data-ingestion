@@ -2,7 +2,8 @@ package repcheck.ingestion.votes.errors
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.pipeline.models.errors.ErrorClass
+
+import com.repcheck.utils.errors.ErrorClass
 
 class SenateVoteXmlHttpErrorSpec extends AnyFlatSpec with Matchers {
 

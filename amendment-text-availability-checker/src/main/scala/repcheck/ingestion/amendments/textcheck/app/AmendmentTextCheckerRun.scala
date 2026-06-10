@@ -21,8 +21,9 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.{ErrorClass, RetryWrapper}
 import repcheck.pipeline.models.metadata.ProcessingResult
+
+import com.repcheck.utils.errors.{ErrorClass, RetryWrapper}
 
 /**
  * Pure-wiring entry point for the amendment-text-availability-checker IOApp. Each method is a `private[app]` factory

@@ -43,11 +43,12 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, GooglePubSubEventPublisher}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
 import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.BillDO
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * Hybrid E2E tests: real GCP Pub/Sub (dev project) + Docker AlloyDB Omni + WireMock. Validates the full pipeline flow:

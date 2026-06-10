@@ -238,14 +238,14 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
       if (n < 2) IO.raiseError(new java.io.IOException("transient flake"))
       else IO.pure(n)
     }
-    val classifier = new repcheck.pipeline.models.errors.ErrorClassifier {
-      override def classify(t: Throwable): repcheck.pipeline.models.errors.ErrorClass =
-        repcheck.pipeline.models.errors.ErrorClass.Transient
+    val classifier = new com.repcheck.utils.errors.ErrorClassifier {
+      override def classify(t: Throwable): com.repcheck.utils.errors.ErrorClass =
+        com.repcheck.utils.errors.ErrorClass.Transient
     }
     val result = wrapper
       .withRetry[Int](
         transientThenOK,
-        repcheck.pipeline.models.errors.RetryConfig(),
+        com.repcheck.utils.errors.RetryConfig(),
         classifier,
         (_, t) => t,
         UUID.randomUUID(),

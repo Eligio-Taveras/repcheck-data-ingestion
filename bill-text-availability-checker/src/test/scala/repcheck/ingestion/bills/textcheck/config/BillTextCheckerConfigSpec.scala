@@ -2,7 +2,8 @@ package repcheck.ingestion.bills.textcheck.config
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.pipeline.models.errors.RetryConfig
+
+import com.repcheck.utils.errors.RetryConfig
 
 class BillTextCheckerConfigSpec extends AnyFlatSpec with Matchers {
 

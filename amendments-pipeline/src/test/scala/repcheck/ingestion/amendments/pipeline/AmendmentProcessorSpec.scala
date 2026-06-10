@@ -24,7 +24,6 @@ import repcheck.ingestion.common.api.{FetchParams, PagedResponse}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
 import repcheck.members.common.persistence.MemberRepository
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.amendment.AmendmentType
 import repcheck.shared.models.congress.bill.TextVersionCode
@@ -40,6 +39,8 @@ import repcheck.shared.models.congress.dto.amendment.{
 }
 import repcheck.shared.models.congress.dto.bill.{LatestActionDTO, SponsorDTO}
 import repcheck.shared.models.placeholder.HasPlaceholder
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * Unit coverage for [[AmendmentProcessor]]. The api client is mocked via Mockito so we don't have to thread real

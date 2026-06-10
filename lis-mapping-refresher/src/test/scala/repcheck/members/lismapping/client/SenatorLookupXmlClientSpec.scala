@@ -18,7 +18,8 @@ import org.typelevel.log4cats.slf4j.Slf4jLogger
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.xml.XmlFeedClient
 import repcheck.members.lismapping.config.LisMappingConfig
-import repcheck.pipeline.models.errors.RetryConfig
+
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * Tests for [[SenatorLookupXmlClient]] using the real `senator-lookup.xml` schema from senate.gov. XML helpers here

@@ -30,7 +30,6 @@ import repcheck.members.common.persistence.{
   MemberWriteInstances,
 }
 import repcheck.members.common.testing.{DockerRequired, TransactorFixture}
-import repcheck.pipeline.models.errors.RetryConfig
 import repcheck.pipeline.models.events.{
   BillTextAvailableEvent,
   BillTextIngestedEvent,
@@ -46,6 +45,8 @@ import repcheck.shared.models.congress.dto.member.{
   MemberTermSummaryDTO,
   PartyHistoryDTO,
 }
+
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * Cross-pipeline placeholder round-trip integration test for the **member** side.

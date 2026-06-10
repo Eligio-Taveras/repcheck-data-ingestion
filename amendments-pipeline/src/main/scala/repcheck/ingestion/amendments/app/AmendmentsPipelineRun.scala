@@ -14,7 +14,8 @@ import repcheck.ingestion.amendments.pipeline.DoobieVoteAmendmentLinker
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.execution.{PipelineFailureHandlerConfig, WorkflowStateUpdater}
 import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
-import repcheck.pipeline.models.errors.RetryWrapper
+
+import com.repcheck.utils.errors.RetryWrapper
 
 /**
  * Production-only entry point. Wires the real `EmberClient` / `HikariTransactor` / `WorkflowStateUpdater` factories and

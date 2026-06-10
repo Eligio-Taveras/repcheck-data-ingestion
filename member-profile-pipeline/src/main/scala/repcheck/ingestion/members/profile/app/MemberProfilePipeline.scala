@@ -26,8 +26,9 @@ import repcheck.members.common.persistence.{
   DoobieMemberRepository,
   DoobieMemberTermRepository,
 }
-import repcheck.pipeline.models.errors.{ErrorClass, RetryWrapper}
 import repcheck.pipeline.models.metadata.ProcessingResult
+
+import com.repcheck.utils.errors.{ErrorClass, RetryWrapper}
 
 /**
  * Testable wiring for the member profile pipeline. All resource acquisition and object construction is factored out of

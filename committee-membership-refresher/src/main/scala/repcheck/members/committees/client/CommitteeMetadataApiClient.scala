@@ -15,7 +15,8 @@ import org.http4s.{MediaType, Uri}
 import repcheck.ingestion.common.api.{CongressGovClientConfig, CongressGovPaginatedClient, FetchParams, PagedResponse}
 import repcheck.members.committees.errors.{CommitteeApiHttpError, CommitteeFetchFailed}
 import repcheck.members.committees.model.CommitteeListItemDTO
-import repcheck.pipeline.models.errors.RetryWrapper
+
+import com.repcheck.utils.errors.RetryWrapper
 
 class CommitteeMetadataApiClient[F[_]](
   config: CongressGovClientConfig,

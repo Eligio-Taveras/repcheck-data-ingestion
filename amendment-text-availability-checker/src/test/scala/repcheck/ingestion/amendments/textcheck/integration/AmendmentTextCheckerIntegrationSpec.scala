@@ -31,10 +31,11 @@ import repcheck.ingestion.bills.common.testing.{DockerRequired, PubSubEmulatorFi
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.events.GooglePubSubEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.shared.models.congress.amendment.AmendmentType
 import repcheck.shared.models.congress.common.Chamber
 import repcheck.shared.models.congress.dos.amendment.AmendmentDO
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * Integration spec — exercises the full path against AlloyDB Omni (Docker) + Pub/Sub emulator + WireMock for

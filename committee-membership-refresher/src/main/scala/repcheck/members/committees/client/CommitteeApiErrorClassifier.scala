@@ -1,7 +1,8 @@
 package repcheck.members.committees.client
 
 import repcheck.members.committees.errors.CommitteeApiHttpError
-import repcheck.pipeline.models.errors.{ErrorClass, ErrorClassifier}
+
+import com.repcheck.utils.errors.{ErrorClass, ErrorClassifier}
 
 private[client] object CommitteeApiErrorClassifier extends ErrorClassifier {
 

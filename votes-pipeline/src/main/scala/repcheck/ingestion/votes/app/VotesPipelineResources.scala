@@ -14,7 +14,8 @@ import repcheck.ingestion.common.events.{
   IngestionEventPublisher,
   PubSubEventPublisher,
 }
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * Managed-resources bundle for the votes pipeline plus the helper that composes it. Separated from [[VotesPipeline]] so

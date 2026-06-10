@@ -4,7 +4,8 @@ import scala.concurrent.duration._
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.pipeline.models.errors.RetryConfig
+
+import com.repcheck.utils.errors.RetryConfig
 
 class AmendmentTextCheckerConfigSpec extends AnyFlatSpec with Matchers {
 

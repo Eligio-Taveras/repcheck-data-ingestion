@@ -17,7 +17,8 @@ import repcheck.ingestion.common.events.EventPublisherConfig
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.members.profile.app.MemberProfilePipeline.AppConfig
 import repcheck.ingestion.members.profile.config.MemberProfileConfig
-import repcheck.pipeline.models.errors.RetryConfig
+
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * Direct coverage for [[MemberProfilePipeline.resolveCongresses]] across all three resolution layers (env var, config

@@ -20,8 +20,9 @@ import repcheck.ingestion.bills.summary.errors.{
   BillSummaryFetchFailed,
 }
 import repcheck.ingestion.common.api.{CongressGovClientConfig, CongressGovPaginatedClient, FetchParams, PagedResponse}
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.bill.BillSummaryDTO
+
+import com.repcheck.utils.errors.RetryWrapper
 
 /**
  * Paginated client for Congress.gov's `/summaries[/{congress}]` endpoints. Each page yields up to `config.pageSize`

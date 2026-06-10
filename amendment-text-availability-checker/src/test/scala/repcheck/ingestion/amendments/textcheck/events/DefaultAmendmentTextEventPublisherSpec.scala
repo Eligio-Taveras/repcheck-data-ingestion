@@ -10,9 +10,10 @@ import cats.effect.unsafe.implicits.global
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import repcheck.ingestion.common.events.{EventPublishFailed, PubSubEventPublisher}
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.{AmendmentTextAvailableEvent, EventTypes}
 import repcheck.shared.models.congress.amendment.AmendmentType
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 class DefaultAmendmentTextEventPublisherSpec extends AnyFlatSpec with Matchers {
 

@@ -1,7 +1,8 @@
 package repcheck.ingestion.amendments.errors
 
 import repcheck.ingestion.common.errors.HttpStatusErrorClassifier
-import repcheck.pipeline.models.errors.{ErrorClass, ErrorClassifier}
+
+import com.repcheck.utils.errors.{ErrorClass, ErrorClassifier}
 
 /**
  * Classifies HTTP failures from Congress.gov `/amendment` calls into Transient (worth retrying) vs Systemic (halt) per
