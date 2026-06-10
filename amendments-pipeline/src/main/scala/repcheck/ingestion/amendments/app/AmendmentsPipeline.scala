@@ -11,7 +11,7 @@ import repcheck.ingestion.amendments.observability.AmendmentMetrics
 import repcheck.ingestion.amendments.pipeline.{AmendmentProcessor, VoteAmendmentLinker}
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
-import repcheck.ingestion.common.execution.{PipelineBootstrap, WorkflowStateUpdater}
+import repcheck.ingestion.common.execution.{PipelineBootstrap, PipelineExecutor, WorkflowStateUpdater}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
@@ -90,7 +90,8 @@ private[app] object AmendmentsPipeline {
         val stream       = streamFactory(processor, runId)
         for {
           _    <- stepRecorder.recordStepStarted(runId, PipelineName)
-          code <- PipelineExecutor.execute[F](stream, processor, logger, PipelineName, runId, metrics)
+          code <- PipelineExecutor.execute[F](stream, logger, PipelineName, runId)
+          _    <- logMetricsSnapshot[F](logger, runId, metrics)
           _ <-
             if (code == ExitCode.Success) {
               // Reconcile votes↔amendments from the freshly-upserted action text, then record completion. The link
@@ -102,6 +103,21 @@ private[app] object AmendmentsPipeline {
         } yield code
       }
     } yield exitCode
+
+  private def logMetricsSnapshot[F[_]](
+    logger: PipelineLogger[F],
+    runId: String,
+    metrics: AmendmentMetrics,
+  ): F[Unit] = {
+    val snapshot = metrics.snapshot()
+    logger.info(
+      LogContext(runId, PipelineName),
+      s"Metrics: detailFetches=${snapshot.detailFetches.toString} " +
+        s"recursionRedundant=${snapshot.recursionRedundantFetches.toString} " +
+        s"orphanResolved=${snapshot.orphanResolved.toString} " +
+        s"recursionDepthExceeded=${snapshot.recursionDepthExceeded.toString}",
+    )
+  }
 
   /**
    * P1 pool-sizing pre-flight check, lifted into `F[_]` so the failure flows through the same effect chain as the rest

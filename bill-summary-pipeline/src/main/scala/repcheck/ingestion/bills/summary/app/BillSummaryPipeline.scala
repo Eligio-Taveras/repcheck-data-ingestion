@@ -22,7 +22,7 @@ import repcheck.ingestion.bills.summary.persistence.DoobieWorkflowRunStepsReposi
 import repcheck.ingestion.bills.summary.pipeline.BillSummaryProcessor
 import repcheck.ingestion.common.api.{CongressGovClientConfig, RateLimitedHttpClient}
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
-import repcheck.ingestion.common.execution.PipelineBootstrap
+import repcheck.ingestion.common.execution.{PipelineBootstrap, PipelineExecutor}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger, PipelineLoggerFactory}
 
 import com.repcheck.utils.errors.RetryWrapper

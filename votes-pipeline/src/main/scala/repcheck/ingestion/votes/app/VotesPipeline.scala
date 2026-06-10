@@ -16,7 +16,7 @@ import pureconfig.ConfigSource
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubPublisherResource}
-import repcheck.ingestion.common.execution.PipelineBootstrap
+import repcheck.ingestion.common.execution.{PipelineBootstrap, PipelineExecutor}
 import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
 import repcheck.ingestion.votes.config.VotesPipelineConfig
 import repcheck.ingestion.votes.errors.StepRunIdInvalid

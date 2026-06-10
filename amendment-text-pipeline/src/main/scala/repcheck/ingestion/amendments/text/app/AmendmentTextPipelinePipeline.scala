@@ -24,7 +24,7 @@ import repcheck.ingestion.amendments.text.persistence.{
 import repcheck.ingestion.amendments.text.pipeline.AmendmentTextProcessor
 import repcheck.ingestion.amendments.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 import repcheck.ingestion.common.db.DatabaseConfig
-import repcheck.ingestion.common.execution.{PipelineFailureHandlerConfig, WorkflowStateUpdater}
+import repcheck.ingestion.common.execution.{PipelineExecutor, PipelineFailureHandlerConfig, WorkflowStateUpdater}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
 import repcheck.pipeline.models.metadata.ProcessingResult
@@ -112,7 +112,7 @@ private[app] object AmendmentTextPipelinePipeline {
           resultStream = resultStream,
           logger = logger,
           pipelineName = PipelineName,
-          runId = runId,
+          runId = runId.toString,
           stepRunId = stepRunId,
           workflowStateUpdater = workflowStateUpdater,
         )

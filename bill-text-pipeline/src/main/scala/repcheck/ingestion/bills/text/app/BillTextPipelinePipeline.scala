@@ -21,7 +21,7 @@ import repcheck.ingestion.bills.text.pipeline.BillTextProcessor
 import repcheck.ingestion.bills.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
-import repcheck.ingestion.common.execution.{PipelineFailureHandlerConfig, WorkflowStateUpdater}
+import repcheck.ingestion.common.execution.{PipelineExecutor, PipelineFailureHandlerConfig, WorkflowStateUpdater}
 import repcheck.ingestion.common.logging.PipelineLogger
 import repcheck.ingestion.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
 import repcheck.ingestion.text.extraction.TextExtractor
@@ -109,7 +109,7 @@ private[app] object BillTextPipelinePipeline {
           pipelineName = PipelineName,
           // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
           // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
-          runId = 0L,
+          runId = "0",
           workflowStateUpdater = workflowStateUpdater,
         )
       }

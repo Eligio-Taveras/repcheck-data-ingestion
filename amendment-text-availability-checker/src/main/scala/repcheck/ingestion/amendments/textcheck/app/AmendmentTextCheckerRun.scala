@@ -20,6 +20,7 @@ import repcheck.ingestion.amendments.textcheck.pipeline.AmendmentTextAvailabilit
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
+import repcheck.ingestion.common.execution.PipelineExecutor
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
@@ -88,7 +89,7 @@ private[app] object AmendmentTextCheckerRun {
           resultStream = resultStream,
           logger = logger,
           pipelineName = PipelineName,
-          runId = runId,
+          runId = runId.toString,
           stepRunId = stepRunId,
         )
       }

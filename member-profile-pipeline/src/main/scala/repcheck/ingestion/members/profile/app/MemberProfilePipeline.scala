@@ -16,6 +16,7 @@ import doobie.util.transactor.Transactor
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
+import repcheck.ingestion.common.execution.PipelineExecutor
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.members.profile.api.MembersApiClient
 import repcheck.ingestion.members.profile.config.MemberProfileConfig
@@ -92,7 +93,7 @@ private[app] object MemberProfilePipeline {
           resultStream = streamFactory(processor, logger, congresses)
           // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
           // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
-          result <- PipelineExecutor.execute[F](resultStream, logger, PipelineName, 0L)
+          result <- PipelineExecutor.execute[F](resultStream, logger, PipelineName, "0")
         } yield result
       }
     } yield exitCode
