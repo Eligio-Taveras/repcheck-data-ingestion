@@ -3,7 +3,8 @@ package repcheck.ingestion.bills.summary.errors
 import scala.annotation.tailrec
 
 import repcheck.ingestion.common.errors.{HttpStatusError, HttpStatusErrorClassifier}
-import repcheck.pipeline.models.errors.ErrorClass
+
+import com.repcheck.utils.errors.ErrorClass
 
 /**
  * Classifies HTTP failures from Congress.gov `/summaries` calls into Transient (worth retrying) vs Systemic (halt) per

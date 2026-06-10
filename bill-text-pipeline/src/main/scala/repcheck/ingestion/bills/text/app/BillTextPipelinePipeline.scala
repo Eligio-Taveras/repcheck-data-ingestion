@@ -25,8 +25,9 @@ import repcheck.ingestion.common.execution.{PipelineFailureHandlerConfig, Workfl
 import repcheck.ingestion.common.logging.PipelineLogger
 import repcheck.ingestion.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
 import repcheck.ingestion.text.extraction.TextExtractor
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.metadata.ProcessingResult
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 private[app] object BillTextPipelinePipeline {
 

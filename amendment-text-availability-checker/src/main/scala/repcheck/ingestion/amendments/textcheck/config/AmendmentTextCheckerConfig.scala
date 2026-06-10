@@ -4,7 +4,7 @@ import scala.concurrent.duration._
 
 import pureconfig.ConfigReader
 
-import repcheck.pipeline.models.errors.RetryConfig
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * Pipeline-level configuration for `amendment-text-availability-checker`.

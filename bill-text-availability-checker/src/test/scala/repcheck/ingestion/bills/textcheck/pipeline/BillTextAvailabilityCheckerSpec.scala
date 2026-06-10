@@ -17,13 +17,14 @@ import repcheck.ingestion.bills.textcheck.api.BillTextApiClient
 import repcheck.ingestion.bills.textcheck.config.BillTextCheckerConfig
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.BillTextAvailableEvent
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.BillDO
 import repcheck.shared.models.congress.dto.bill.{FormatDTO, TextVersionDTO}
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 class BillTextAvailabilityCheckerSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 

@@ -25,8 +25,9 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.config.{HouseVotesConfig, SenateVoteXmlConfig, VotesPipelineConfig}
 import repcheck.ingestion.votes.errors.StepRunIdInvalid
 import repcheck.ingestion.votes.pipeline.VoteProcessor
-import repcheck.pipeline.models.errors.RetryConfig
 import repcheck.pipeline.models.metadata.ProcessingResult
+
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * Unit spec for [[VotesPipeline]]'s testable runtime + the companion factories

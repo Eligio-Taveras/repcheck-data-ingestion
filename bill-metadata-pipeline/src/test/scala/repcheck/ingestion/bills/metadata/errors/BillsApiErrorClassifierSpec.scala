@@ -8,7 +8,8 @@ import org.http4s.ember.core.EmberException
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.pipeline.models.errors.ErrorClass
+
+import com.repcheck.utils.errors.ErrorClass
 
 class BillsApiErrorClassifierSpec extends AnyFlatSpec with Matchers {
 

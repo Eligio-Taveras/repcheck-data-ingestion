@@ -16,8 +16,9 @@ import org.http4s.{MediaType, Uri}
 
 import repcheck.ingestion.amendments.errors.{AmendmentFetchFailed, AmendmentsApiErrorClassifier, AmendmentsApiHttpError}
 import repcheck.ingestion.common.api.{CongressGovClientConfig, CongressGovPaginatedClient, FetchParams, PagedResponse}
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.amendment.{AmendmentDetailDTO, AmendmentListItemDTO}
+
+import com.repcheck.utils.errors.RetryWrapper
 
 /**
  * Paginated client for Congress.gov's `/v3/amendment` endpoints. Each list page yields up to `config.pageSize`

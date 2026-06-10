@@ -13,8 +13,9 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.execution.{PipelineBootstrap, WorkflowStateUpdater}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.pipeline.models.metadata.ProcessingResult
+
+import com.repcheck.utils.errors.RetryWrapper
 
 /**
  * Top-level orchestration for the amendments pipeline: loads config, extracts the launcher's runId, acquires the logger

@@ -1,6 +1,6 @@
 package repcheck.ingestion.bills.textcheck.errors
 
-import repcheck.pipeline.models.errors.{ErrorClass, ErrorClassifier}
+import com.repcheck.utils.errors.{ErrorClass, ErrorClassifier}
 
 object EventPublishErrorClassifier extends ErrorClassifier {
 

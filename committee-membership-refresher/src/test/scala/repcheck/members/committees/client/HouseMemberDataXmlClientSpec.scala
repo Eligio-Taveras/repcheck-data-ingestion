@@ -18,7 +18,8 @@ import org.typelevel.log4cats.slf4j.Slf4jLogger
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.xml.XmlFeedClient
 import repcheck.members.committees.config.CommitteeMembershipConfig
-import repcheck.pipeline.models.errors.RetryConfig
+
+import com.repcheck.utils.errors.RetryConfig
 
 class HouseMemberDataXmlClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 

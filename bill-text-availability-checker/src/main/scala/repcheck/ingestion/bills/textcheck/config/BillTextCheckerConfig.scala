@@ -2,7 +2,7 @@ package repcheck.ingestion.bills.textcheck.config
 
 import pureconfig.ConfigReader
 
-import repcheck.pipeline.models.errors.RetryConfig
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * Comma-separated list of congresses the availability checker will sweep, e.g. "103,104,...,119".

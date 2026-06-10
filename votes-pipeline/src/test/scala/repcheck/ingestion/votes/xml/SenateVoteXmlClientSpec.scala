@@ -17,7 +17,8 @@ import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.config.SenateVoteXmlConfig
 import repcheck.ingestion.votes.errors.SenateVoteFetchFailed
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * Component-level WireMock tests for [[SenateVoteXmlClient]]. Covers §6.2 AC rows 1, 2, 4, 6, 7, 13 and the 5-digit

@@ -24,7 +24,8 @@ import repcheck.ingestion.common.api.{CongressGovClientConfig, RateLimitedHttpCl
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
 import repcheck.ingestion.common.execution.PipelineBootstrap
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger, PipelineLoggerFactory}
-import repcheck.pipeline.models.errors.RetryWrapper
+
+import com.repcheck.utils.errors.RetryWrapper
 
 /**
  * Top-level wiring for the bill-summary pipeline. Loads config, extracts the launcher-supplied `runId` / `stepRunId`,

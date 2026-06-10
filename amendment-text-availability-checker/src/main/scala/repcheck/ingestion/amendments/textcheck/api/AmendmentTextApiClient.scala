@@ -16,9 +16,10 @@ import repcheck.ingestion.amendments.textcheck.errors.{
   AmendmentTextCheckHttpError,
 }
 import repcheck.ingestion.common.api.CongressGovClientConfig
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.amendment.AmendmentType
 import repcheck.shared.models.congress.dto.amendment.{AmendmentTextItemDTO, AmendmentTextResponseDTO}
+
+import com.repcheck.utils.errors.RetryWrapper
 
 /**
  * Single-shot GET against Congress.gov's `/v3/amendment/{congress}/{type}/{amendmentNumber}/text` endpoint. Builds the

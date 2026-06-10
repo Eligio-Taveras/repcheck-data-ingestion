@@ -1,7 +1,8 @@
 package repcheck.ingestion.votes.errors
 
 import repcheck.ingestion.common.errors.HttpStatusErrorClassifier
-import repcheck.pipeline.models.errors.ErrorClass
+
+import com.repcheck.utils.errors.ErrorClass
 
 /**
  * Classifier for [[repcheck.ingestion.votes.api.HouseVotesApiClient]] HTTP failures. Layered on top of the shared

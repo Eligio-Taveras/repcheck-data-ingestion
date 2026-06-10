@@ -3,7 +3,8 @@ package repcheck.ingestion.amendments.text.errors
 import scala.annotation.tailrec
 
 import repcheck.ingestion.common.errors.{HttpStatusError, HttpStatusErrorClassifier}
-import repcheck.pipeline.models.errors.ErrorClass
+
+import com.repcheck.utils.errors.ErrorClass
 
 /**
  * Classifies amendment-text download failures into Transient vs Systemic.

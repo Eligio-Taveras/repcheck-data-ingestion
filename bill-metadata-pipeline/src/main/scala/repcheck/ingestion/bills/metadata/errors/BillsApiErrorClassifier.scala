@@ -6,7 +6,7 @@ import java.util.concurrent.TimeoutException
 
 import org.http4s.ember.core.EmberException
 
-import repcheck.pipeline.models.errors.{ErrorClass, ErrorClassifier}
+import com.repcheck.utils.errors.{ErrorClass, ErrorClassifier}
 
 /**
  * Classifier for [[repcheck.ingestion.bills.metadata.api.BillsApiClient]] failures.

@@ -17,7 +17,8 @@ import repcheck.ingestion.amendments.pipeline.AmendmentProcessor
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * Smoke test for [[AmendmentsProcessorFactory.build]]. Guards against latent wiring regressions (null-defaulted dep,

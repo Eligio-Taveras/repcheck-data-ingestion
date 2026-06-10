@@ -9,7 +9,8 @@ import doobie.util.transactor.Transactor
 import repcheck.ingestion.amendments.config.AmendmentsConfig
 import repcheck.ingestion.common.api.RateLimitedHttpClient
 import repcheck.ingestion.common.db.DatabaseConfig
-import repcheck.pipeline.models.errors.RetryWrapper
+
+import com.repcheck.utils.errors.RetryWrapper
 
 /**
  * Managed-resources bundle for the amendments-pipeline plus the helper that composes it. Mirrors

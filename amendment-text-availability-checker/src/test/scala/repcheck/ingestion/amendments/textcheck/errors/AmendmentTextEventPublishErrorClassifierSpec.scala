@@ -5,7 +5,8 @@ import java.util.concurrent.TimeoutException
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import repcheck.pipeline.models.errors.ErrorClass
+
+import com.repcheck.utils.errors.ErrorClass
 
 class AmendmentTextEventPublishErrorClassifierSpec extends AnyFlatSpec with Matchers {
 

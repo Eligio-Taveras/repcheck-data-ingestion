@@ -14,8 +14,9 @@ import org.http4s.{EntityDecoder, MediaType, Status, Uri}
 
 import repcheck.ingestion.bills.textcheck.errors.{BillTextApiErrorClassifier, BillTextApiHttpError, BillTextCheckFailed}
 import repcheck.ingestion.common.api.CongressGovClientConfig
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.shared.models.congress.dto.bill.TextVersionDTO
+
+import com.repcheck.utils.errors.RetryWrapper
 
 class BillTextApiClient[F[_]: Temporal](
   config: CongressGovClientConfig,

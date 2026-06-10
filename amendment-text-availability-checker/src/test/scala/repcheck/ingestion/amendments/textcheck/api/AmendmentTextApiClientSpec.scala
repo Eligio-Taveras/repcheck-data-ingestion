@@ -18,8 +18,9 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.amendments.textcheck.errors.AmendmentTextCheckFailed
 import repcheck.ingestion.common.api.CongressGovClientConfig
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.shared.models.congress.amendment.AmendmentType
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 class AmendmentTextApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 

@@ -4,7 +4,7 @@ import scala.concurrent.duration.FiniteDuration
 
 import pureconfig.ConfigReader
 
-import repcheck.pipeline.models.errors.RetryConfig
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * Member-profile pipeline configuration.

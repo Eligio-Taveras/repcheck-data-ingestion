@@ -17,10 +17,11 @@ import repcheck.ingestion.bills.textcheck.errors.{BillTextCheckFailed, EventPubl
 import repcheck.ingestion.bills.textcheck.selection.TextVersionSelector
 import repcheck.ingestion.common.events.IngestionEventPublisher
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
-import repcheck.pipeline.models.errors.RetryWrapper
 import repcheck.pipeline.models.events.BillTextAvailableEvent
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.dos.bill.BillDO
+
+import com.repcheck.utils.errors.RetryWrapper
 
 class BillTextAvailabilityChecker[F[_]: Async](
   textApiClient: BillTextApiClient[F],

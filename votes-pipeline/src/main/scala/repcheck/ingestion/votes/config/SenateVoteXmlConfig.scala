@@ -4,7 +4,7 @@ import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
 import pureconfig.ConfigReader
 
-import repcheck.pipeline.models.errors.RetryConfig
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * Configuration for the senate.gov Senate-vote XML client. Per the votes-pipeline execution plan (P2.2 decision 13):

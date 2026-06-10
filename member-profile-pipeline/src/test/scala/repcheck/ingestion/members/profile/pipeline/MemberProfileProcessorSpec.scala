@@ -57,7 +57,7 @@ class MemberProfileProcessorSpec extends AnyFlatSpec with Matchers with MockitoS
     congresses = List(118),
     parallelism = 1,
     pageDelay = 0.millis,
-    eventPublishRetry = repcheck.pipeline.models.errors.RetryConfig(
+    eventPublishRetry = com.repcheck.utils.errors.RetryConfig(
       maxRetries = 0,
       initialBackoffMs = 1,
       maxBackoffMs = 10,

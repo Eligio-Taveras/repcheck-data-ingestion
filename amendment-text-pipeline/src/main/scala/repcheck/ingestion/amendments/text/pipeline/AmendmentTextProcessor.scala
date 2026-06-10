@@ -21,11 +21,12 @@ import repcheck.ingestion.bills.common.persistence.TransactionRunner
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.chunking.TextChunker
 import repcheck.ingestion.text.embedding.{EmbeddingConfig, EmbeddingContextLengthExceeded, EmbeddingGenerationFailed}
-import repcheck.pipeline.models.errors.ErrorClass
 import repcheck.pipeline.models.events.AmendmentTextAvailableEvent
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.common.FormatType
 import repcheck.shared.models.congress.dos.amendment.AmendmentTextVersionDO
+
+import com.repcheck.utils.errors.ErrorClass
 
 /**
  * Processes one [[AmendmentTextAvailableEvent]] end-to-end. Mirror of `BillTextProcessor` for the amendment side.

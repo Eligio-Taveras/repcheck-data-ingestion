@@ -21,8 +21,9 @@ import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.common.api.{CongressGovClientConfig, HttpClientConfig}
 import repcheck.ingestion.votes.config.HouseVotesConfig
 import repcheck.ingestion.votes.errors.{HouseVoteApiErrorClassifier, HouseVoteApiHttpError, HouseVoteFetchFailed}
-import repcheck.pipeline.models.errors.{ErrorClass, RetryConfig, RetryWrapper}
 import repcheck.shared.models.congress.dto.vote.VoteListItemDTO
+
+import com.repcheck.utils.errors.{ErrorClass, RetryConfig, RetryWrapper}
 
 /**
  * Unit + component coverage for [[HouseVotesApiClient]] — combines MockitoScala-free argument-matcher checks with

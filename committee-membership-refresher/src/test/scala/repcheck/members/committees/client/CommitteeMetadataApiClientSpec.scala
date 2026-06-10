@@ -14,7 +14,8 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.common.api.{CongressGovClientConfig, FetchParams}
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 class CommitteeMetadataApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 

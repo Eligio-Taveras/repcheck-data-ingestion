@@ -1,6 +1,6 @@
 package repcheck.ingestion.amendments.textcheck.errors
 
-import repcheck.pipeline.models.errors.{ErrorClass, ErrorClassifier}
+import com.repcheck.utils.errors.{ErrorClass, ErrorClassifier}
 
 /**
  * Classifier for `amendment.text.available` Pub/Sub publish failures. IOException + TimeoutException → Transient; all

@@ -9,8 +9,9 @@ import io.circe.syntax._
 
 import repcheck.ingestion.amendments.textcheck.errors.AmendmentTextEventPublishErrorClassifier
 import repcheck.ingestion.common.events.{EventPublishFailed, PubSubEventPublisher}
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.pipeline.models.events.{AmendmentTextAvailableEvent, EventTypes, PipelineEvent}
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * Tagless-final publisher for `AmendmentTextAvailableEvent` on the `amendment.text.available` topic. The shared

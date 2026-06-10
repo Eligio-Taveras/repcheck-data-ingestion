@@ -27,8 +27,9 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.members.profile.app.MemberProfilePipeline.{AppConfig, PipelineResources}
 import repcheck.ingestion.members.profile.config.MemberProfileConfig
 import repcheck.ingestion.members.profile.pipeline.MemberProfileProcessor
-import repcheck.pipeline.models.errors.{ErrorClass, RetryConfig}
 import repcheck.pipeline.models.metadata.ProcessingResult
+
+import com.repcheck.utils.errors.{ErrorClass, RetryConfig}
 
 class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 

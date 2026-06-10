@@ -24,7 +24,8 @@ import repcheck.members.committees.config.CommitteeMembershipConfig
 import repcheck.members.committees.persistence.{DoobieCommitteeMemberRepository, DoobieCommitteeRepository}
 import repcheck.members.committees.pipeline.CommitteeMembershipProcessor
 import repcheck.members.common.persistence.DoobieMemberRepository
-import repcheck.pipeline.models.errors.{ErrorClass, RetryConfig, RetryWrapper}
+
+import com.repcheck.utils.errors.{ErrorClass, RetryConfig, RetryWrapper}
 
 private[app] object CommitteeMembershipRefresherPipeline {
 

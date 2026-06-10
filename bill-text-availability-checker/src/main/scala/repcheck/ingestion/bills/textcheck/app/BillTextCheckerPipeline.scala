@@ -19,8 +19,9 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.logging.PipelineLogger
-import repcheck.pipeline.models.errors.{ErrorClass, RetryWrapper}
 import repcheck.pipeline.models.metadata.ProcessingResult
+
+import com.repcheck.utils.errors.{ErrorClass, RetryWrapper}
 
 private[app] object BillTextCheckerPipeline {
 

@@ -24,7 +24,8 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.members.lismapping.app.LisMappingRefresherPipeline.{AppConfig, RefresherResources}
 import repcheck.members.lismapping.config.LisMappingConfig
 import repcheck.members.lismapping.pipeline.{LisMappingProcessor, LisMappingRefreshResult}
-import repcheck.pipeline.models.errors.{ErrorClass, RetryConfig}
+
+import com.repcheck.utils.errors.{ErrorClass, RetryConfig}
 
 class LisMappingRefresherPipelineSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 

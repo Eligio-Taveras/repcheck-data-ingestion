@@ -26,8 +26,9 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.app.{VotesPipeline, VotesPipelineResources, VotesProcessorFactory}
 import repcheck.ingestion.votes.config.{HouseVotesConfig, SenateVoteXmlConfig, VotesPipelineConfig}
 import repcheck.ingestion.votes.testing.TransactorFixture
-import repcheck.pipeline.models.errors.RetryConfig
 import repcheck.pipeline.models.events.VoteRecordedEvent
+
+import com.repcheck.utils.errors.RetryConfig
 
 /**
  * End-to-end integration spec for the votes pipeline. Stands up a full infrastructure stack — DockerPostgres (via

@@ -28,8 +28,9 @@ import repcheck.ingestion.common.placeholders.{DefaultPlaceholderCreator, Doobie
 import repcheck.members.common.MemberInsertSql
 import repcheck.members.common.persistence.{DoobieMemberRepository, MemberWriteInstances}
 import repcheck.members.common.testing.DockerRequired
-import repcheck.pipeline.models.errors.{RetryConfig, RetryWrapper}
 import repcheck.shared.models.congress.dos.member.MemberDO
+
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 /**
  * AlloyDB Omni-backed integration spec for [[AmendmentProcessor]] running against the real `amendments` / `bills` /
