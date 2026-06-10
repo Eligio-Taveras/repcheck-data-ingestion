@@ -25,6 +25,7 @@ import repcheck.ingestion.bills.metadata.config.BillMetadataConfig
 import repcheck.ingestion.bills.metadata.pipeline.BillMetadataProcessor
 import repcheck.ingestion.common.api.{CongressGovClientConfig, RateLimitedHttpClient}
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
+import repcheck.ingestion.common.execution.PipelineExecutor
 import repcheck.ingestion.common.logging.{LogContext, PipelineLoggerFactory}
 import repcheck.ingestion.common.placeholders.{DefaultPlaceholderCreator, DoobieEntityRepository}
 import repcheck.members.common.MemberInsertSql
@@ -111,7 +112,7 @@ private[app] object BillMetadataPipeline {
           logger.info(
             bootCtx,
             s"App boot: resources built, processor wired, handing off to PipelineExecutor (runId=${runId.toString})",
-          ) *> PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId)
+          ) *> PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId.toString)
       }
     } yield exitCode
   }

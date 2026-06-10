@@ -18,6 +18,7 @@ import repcheck.ingestion.bills.textcheck.pipeline.BillTextAvailabilityChecker
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
+import repcheck.ingestion.common.execution.PipelineExecutor
 import repcheck.ingestion.common.logging.PipelineLogger
 import repcheck.pipeline.models.metadata.ProcessingResult
 
@@ -75,7 +76,7 @@ private[app] object BillTextCheckerPipeline {
           pipelineName = PipelineName,
           // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
           // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
-          runId = 0L,
+          runId = "0",
         )
       }
     } yield exitCode
