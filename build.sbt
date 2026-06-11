@@ -157,6 +157,7 @@ lazy val commonTesting = (project in file("common-testing"))
     libraryDependencies ++= catsEffect ++ doobie ++ Seq(
       "org.scalatest" %% "scalatest"                     % "3.2.18",
       "com.repcheck"  %% "repcheck-db-migrations-runner" % "0.1.41",
+      "com.repcheck"  %% "repcheck-utils-testing-db"     % "0.1.4",
     ),
   )
 
