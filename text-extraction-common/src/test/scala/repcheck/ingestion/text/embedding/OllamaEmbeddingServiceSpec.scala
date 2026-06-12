@@ -44,7 +44,9 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
       baseUrl = s"http://127.0.0.1:${wireMock.port().toString}",
       modelName = "bill-text-embedding",
       dimensions = 4,
-      timeoutSeconds = 5,
+      // generous: the adapter ENFORCES this per call (the old in-repo service never did) and the first call under
+      // full-suite parallel load can exceed 5s without anything being wrong
+      timeoutSeconds = 30,
       maxChunkChars = 30000,
       embedBatchSize = 10,
       embedBatchTimeout = scala.concurrent.duration.DurationInt(1).second,
