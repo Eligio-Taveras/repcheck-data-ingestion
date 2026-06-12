@@ -16,10 +16,10 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 /**
  * [[EmbeddingService]] as a thin adapter over the shared `repcheck-embedding` client (F3b consolidation) — the wire
- * mechanics live in one place; THIS layer owns only the ingestion pipeline's error POLICY, unchanged: empty inputs
- * skip positionally, failures degrade to `None` per chunk (persisted as null-embedding rows a later tick
- * re-processes), and context-length poison inputs propagate as [[EmbeddingContextLengthExceeded]] so the pipeline
- * marks Failed-Systemic instead of retrying.
+ * mechanics live in one place; THIS layer owns only the ingestion pipeline's error POLICY, unchanged: empty inputs skip
+ * positionally, failures degrade to `None` per chunk (persisted as null-embedding rows a later tick re-processes), and
+ * context-length poison inputs propagate as [[EmbeddingContextLengthExceeded]] so the pipeline marks Failed-Systemic
+ * instead of retrying.
  *
  * Wire-identical to the previous in-repo implementation: same request shape (`keepAlive = None` keeps the server's
  * `OLLAMA_KEEP_ALIVE` in charge, e.g. the 24h local tuning), `maxRetries = 0` (the pipeline tick loop is the retry).
