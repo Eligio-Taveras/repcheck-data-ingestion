@@ -1,5 +1,7 @@
 package repcheck.ingestion.text.embedding
 
+import java.util.UUID
+
 import scala.concurrent.duration.DurationInt
 
 import cats.effect.Async
@@ -12,7 +14,7 @@ import org.http4s.client.Client
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 import com.repcheck.embedding.{OllamaConfig, OllamaEmbedRequestFailed, OllamaEmbeddingClient}
-import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
+import com.repcheck.utils.errors.{ErrorClass, RetryConfig, RetryWrapper}
 
 /**
  * [[EmbeddingService]] as a thin adapter over the shared `repcheck-embedding` client (F3b consolidation) — the wire
@@ -30,6 +32,10 @@ class OllamaEmbeddingService[F[_]: Async: UUIDGen](
   logger: PipelineLogger[F],
 ) extends EmbeddingService[F] {
 
+  /** With maxRetries = 0 the retry path never fires in production; exposed so the noop is honestly coverable. */
+  private[embedding] val retryLogNoop: (Int, Int, Long, ErrorClass, String, UUID) => F[Unit] =
+    (_, _, _, _, _, _) => Async[F].unit
+
   /** Left = invalid base URL; preserved semantics: every call logs and degrades to None rather than raising. */
   private val sharedClient: Either[String, OllamaEmbeddingClient[F]] =
     Uri
@@ -46,7 +52,7 @@ class OllamaEmbeddingService[F[_]: Async: UUIDGen](
             requestTimeout = config.timeoutSeconds.seconds,
             retry = RetryConfig(maxRetries = 0), // the pipeline tick loop is the retry, exactly as before
           ),
-          new RetryWrapper[F]((_, _, _, _, _, _) => Async[F].unit),
+          new RetryWrapper[F](retryLogNoop),
         )
       }
 

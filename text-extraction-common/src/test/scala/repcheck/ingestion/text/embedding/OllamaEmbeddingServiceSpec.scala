@@ -16,6 +16,7 @@ import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 import com.repcheck.embedding.OllamaEmbedRequestFailed
+import com.repcheck.utils.errors.ErrorClass
 
 class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
@@ -386,6 +387,23 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
     val result = service.generateEmbeddings(List("a", "b")).unsafeRunSync()
     val _      = result.size shouldBe 2
     result.forall(_.isEmpty) shouldBe true
+  }
+
+  "the adapter" should "degrade every call to None when the base URL is invalid" in {
+    val bad = new OllamaEmbeddingService[IO](
+      client = httpClient.allocated.unsafeRunSync()._1,
+      config = config.copy(baseUrl = "http://exa mple.com"),
+      logger = noopLogger,
+    )
+    val result = bad.generateEmbeddings(List("text")).unsafeRunSync()
+    val _      = result shouldBe List(None)
+    val seam   = bad.embedNonEmpty(List("text")).attempt.unsafeRunSync()
+    seam.swap.getOrElse(fail("expected a raise at the seam")) shouldBe a[EmbeddingGenerationFailed]
+  }
+
+  it should "expose the retry-log noop (maxRetries = 0 means it never fires in production)" in {
+    service.retryLogNoop(1, 0, 10L, ErrorClass.Transient, "msg", java.util.UUID.randomUUID()).unsafeRunSync()
+    succeed
   }
 
 }
