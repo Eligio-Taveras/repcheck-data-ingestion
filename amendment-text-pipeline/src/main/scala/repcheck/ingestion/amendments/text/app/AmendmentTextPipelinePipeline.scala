@@ -3,6 +3,7 @@ package repcheck.ingestion.amendments.text.app
 import java.util.concurrent.TimeoutException
 
 import cats.effect.syntax.temporal._
+import cats.effect.std.UUIDGen
 import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
@@ -214,7 +215,7 @@ private[app] object AmendmentTextPipelinePipeline {
     processor.processEvent(event, ackId, ack, nack)
   }
 
-  private[app] def buildResources[F[_]: Async](
+  private[app] def buildResources[F[_]: Async: UUIDGen](
     config: AppConfig,
     logger: PipelineLogger[F],
     transactorFactory: DatabaseConfig => Resource[F, Transactor[F]],
