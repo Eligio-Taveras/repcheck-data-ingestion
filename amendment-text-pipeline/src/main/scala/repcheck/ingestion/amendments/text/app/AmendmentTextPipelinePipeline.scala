@@ -2,8 +2,8 @@ package repcheck.ingestion.amendments.text.app
 
 import java.util.concurrent.TimeoutException
 
-import cats.effect.syntax.temporal._
 import cats.effect.std.UUIDGen
+import cats.effect.syntax.temporal._
 import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 

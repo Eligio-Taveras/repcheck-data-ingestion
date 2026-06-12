@@ -9,10 +9,10 @@ import cats.syntax.all._
 import org.http4s.Uri
 import org.http4s.client.Client
 
+import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+
 import com.repcheck.embedding.{OllamaConfig, OllamaEmbedRequestFailed, OllamaEmbeddingClient}
 import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
-
-import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
 /**
  * [[EmbeddingService]] as a thin adapter over the shared `repcheck-embedding` client (F3b consolidation) — the wire
