@@ -2,6 +2,7 @@ package repcheck.ingestion.bills.text.app
 
 import java.util.concurrent.TimeoutException
 
+import cats.effect.std.UUIDGen
 import cats.effect.syntax.temporal._
 import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
@@ -254,7 +255,7 @@ private[app] object BillTextPipelinePipeline {
     processor.processEvent(event, correlationId, ackId, ack, nack)
   }
 
-  private[app] def buildResources[F[_]: Async](
+  private[app] def buildResources[F[_]: Async: UUIDGen](
     config: AppConfig,
     logger: PipelineLogger[F],
     transactorFactory: DatabaseConfig => Resource[F, Transactor[F]],
