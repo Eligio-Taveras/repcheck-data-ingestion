@@ -15,6 +15,8 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 
+import com.repcheck.embedding.OllamaEmbedRequestFailed
+
 class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
   private val wireMock = new WireMockServer(
@@ -169,7 +171,7 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
     result shouldBe None
   }
 
-  it should "raise EmbeddingGenerationFailed when callOllama gets dimension mismatch" in {
+  it should "raise the shared-client wrapper when embedNonEmpty gets dimension mismatch" in {
     val wrongDimJson = """{"embeddings":[[0.1,0.2,0.3]]}"""
     wireMock.stubFor(
       post(urlEqualTo("/api/embed"))
@@ -181,12 +183,12 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
         )
     )
 
-    val error = service.callOllama(List("some text")).attempt.unsafeRunSync()
+    val error = service.embedNonEmpty(List("some text")).attempt.unsafeRunSync()
     val _     = error.isLeft shouldBe true
-    error.swap.getOrElse(fail("Expected error")) shouldBe a[EmbeddingGenerationFailed]
+    error.swap.getOrElse(fail("Expected error")) shouldBe a[OllamaEmbedRequestFailed]
   }
 
-  it should "raise EmbeddingGenerationFailed when Ollama returns empty embeddings array" in {
+  it should "raise the shared-client wrapper when Ollama returns empty embeddings array" in {
     wireMock.stubFor(
       post(urlEqualTo("/api/embed"))
         .willReturn(
@@ -197,9 +199,9 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
         )
     )
 
-    val error = service.callOllama(List("some text")).attempt.unsafeRunSync()
+    val error = service.embedNonEmpty(List("some text")).attempt.unsafeRunSync()
     val _     = error.isLeft shouldBe true
-    error.swap.getOrElse(fail("Expected error")) shouldBe a[EmbeddingGenerationFailed]
+    error.swap.getOrElse(fail("Expected error")) shouldBe a[OllamaEmbedRequestFailed]
   }
 
   it should "produce deterministic results for same input" in {
@@ -312,7 +314,7 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
         )
     )
 
-    val error = service.callOllama(List("oversized text")).attempt.unsafeRunSync()
+    val error = service.embedNonEmpty(List("oversized text")).attempt.unsafeRunSync()
     val _     = error.isLeft shouldBe true
     error.swap.getOrElse(fail("Expected error")) shouldBe a[EmbeddingContextLengthExceeded]
   }
@@ -328,7 +330,7 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
         )
     )
 
-    val error = service.callOllama(List("oversized")).attempt.unsafeRunSync()
+    val error = service.embedNonEmpty(List("oversized")).attempt.unsafeRunSync()
     error.swap.getOrElse(fail("Expected error")) shouldBe a[EmbeddingContextLengthExceeded]
   }
 
@@ -339,10 +341,10 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
         .willReturn(aResponse().withStatus(500).withBody("server crashed during context length check"))
     )
 
-    val error = service.callOllama(List("text")).attempt.unsafeRunSync()
+    val error = service.embedNonEmpty(List("text")).attempt.unsafeRunSync()
     val _     = error.isLeft shouldBe true
     val ex    = error.swap.getOrElse(fail("Expected error"))
-    val _     = ex shouldBe a[EmbeddingGenerationFailed]
+    val _     = ex shouldBe a[OllamaEmbedRequestFailed]
     ex shouldNot be(a[EmbeddingContextLengthExceeded])
   }
 
@@ -354,9 +356,9 @@ class OllamaEmbeddingServiceSpec extends AnyFlatSpec with Matchers with BeforeAn
         .willReturn(aResponse().withStatus(400).withBody("""{"error":"model not found"}"""))
     )
 
-    val error = service.callOllama(List("text")).attempt.unsafeRunSync()
+    val error = service.embedNonEmpty(List("text")).attempt.unsafeRunSync()
     val ex    = error.swap.getOrElse(fail("Expected error"))
-    val _     = ex shouldBe a[EmbeddingGenerationFailed]
+    val _     = ex shouldBe a[OllamaEmbedRequestFailed]
     ex shouldNot be(a[EmbeddingContextLengthExceeded])
   }
 

@@ -48,6 +48,7 @@ lazy val commonSettings = Seq(
     "GitHub Packages - ingestion-common" at "https://maven.pkg.github.com/Eligio-Taveras/repcheck-ingestion-common",
     "GitHub Packages - repcheck-utils" at "https://maven.pkg.github.com/Eligio-Taveras/repcheck-utils",
     "GitHub Packages - db-migrations" at "https://maven.pkg.github.com/Eligio-Taveras/repcheck-db-migrations",
+    "GitHub Packages - repcheck-embedding" at "https://maven.pkg.github.com/Eligio-Taveras/repcheck-embedding",
   ),
   libraryDependencies ++= Seq(
     "org.scalatest" %% "scalatest" % "3.2.18" % Test
@@ -58,7 +59,7 @@ lazy val commonSettings = Seq(
     "com.repcheck" %% "repcheck-ingestion-common"     % "0.1.30",
     "com.repcheck" %% "repcheck-db-migrations-runner" % "0.1.41" % Test,
     "com.repcheck" %% "repchecksharedmodels"          % "0.1.56",
-    "com.repcheck" %% "repcheck-utils"                 % "0.1.1",
+    "com.repcheck" %% "repcheck-utils"                 % "0.1.5",
   ),
   semanticdbEnabled := true,
   tpolecatScalacOptions ++= ScalaCConfig.scalaCOptions,
@@ -183,6 +184,9 @@ lazy val textExtractionCommon = (project in file("text-extraction-common"))
     name := "text-extraction-common",
     libraryDependencies ++= http4sEmber ++ circe ++ pureConfig ++ fs2
       ++ catsEffect ++ htmlParsing ++ pdfParsing ++ logging ++ testDeps,
+    // F3b consolidation: the embed wire mechanics live in the shared library; this module keeps only the
+    // ingestion error policy (Option-degrading adapter in OllamaEmbeddingService)
+    libraryDependencies += "com.repcheck" %% "repcheck-embedding" % "0.1.4",
   )
 
 lazy val membersCommon = (project in file("members-common"))
