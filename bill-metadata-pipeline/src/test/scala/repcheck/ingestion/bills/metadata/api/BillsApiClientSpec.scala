@@ -629,4 +629,10 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     }
   }
 
+  "BillSubjectsResponseDTO" should "default to an empty subject list when the subjects object is absent" in {
+    io.circe.parser
+      .decode[BillSubjectsResponseDTO]("""{"pagination": {"count": 0}}""")
+      .map(_.legislativeSubjects.isEmpty) shouldBe Right(true)
+  }
+
 }
