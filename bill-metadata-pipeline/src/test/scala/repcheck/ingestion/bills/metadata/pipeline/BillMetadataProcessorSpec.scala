@@ -29,7 +29,13 @@ import repcheck.shared.models.congress.bill.TextVersionCode
 import repcheck.shared.models.congress.common.{BillType, Chamber}
 import repcheck.shared.models.congress.dos.bill.{BillCosponsorDO, BillDO, BillSubjectDO}
 import repcheck.shared.models.congress.dos.member.MemberDO
-import repcheck.shared.models.congress.dto.bill.{BillDetailDTO, BillListItemDTO, CoSponsorDTO, SponsorDTO}
+import repcheck.shared.models.congress.dto.bill.{
+  BillDetailDTO,
+  BillListItemDTO,
+  CoSponsorDTO,
+  LegislativeSubjectDTO,
+  SponsorDTO,
+}
 import repcheck.shared.models.congress.dto.common.PaginationInfoDTO
 import repcheck.shared.models.placeholder.HasPlaceholder
 
@@ -132,8 +138,13 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     when(billRepoMock.updateExpectedVersion(anyString(), any[TextVersionCode]))
       .thenReturn(doobie.free.connection.unit)
 
+    val apiClientMock = mock[BillsApiClient[IO]]
+    // The processor always calls fetchSubjects; default to empty so tests not concerned with subjects still run.
+    when(apiClientMock.fetchSubjects(any[Int], anyString(), anyString()))
+      .thenReturn(IO.pure(List.empty[LegislativeSubjectDTO]))
+
     TestFixture(
-      apiClient = mock[BillsApiClient[IO]],
+      apiClient = apiClientMock,
       billRepo = billRepoMock,
       cosponsorRepo = mock[BillCosponsorRepository[ConnectionIO]],
       subjectRepo = mock[BillSubjectRepository[ConnectionIO]],
@@ -670,6 +681,22 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
 
     verify(f.logger, times(1))
       .debug(any[LogContext], org.mockito.ArgumentMatchers.contains("Filtered by minCongress=102"))
+  }
+
+  it should "fetch legislative subjects from the sub-endpoint and persist them" in {
+    val f        = createFixture()
+    val listItem = makeListItem()
+    val detail   = makeDetailDTO()
+    stubBasicRepos(f)
+    when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(detail))
+    when(f.apiClient.fetchSubjects(any[Int], anyString(), anyString()))
+      .thenReturn(IO.pure(List(LegislativeSubjectDTO("Health care", Some("2024-01-01T00:00:00Z")))))
+
+    val _ = f.processor.processListItem(listItem, correlationId).unsafeRunSync()
+
+    val captor = org.mockito.ArgumentCaptor.forClass(classOf[List[BillSubjectDO]])
+    val _      = verify(f.subjectRepo).replaceAll(any[Long], captor.capture())
+    captor.getValue.map(_.subjectName) should contain("Health care")
   }
 
 }

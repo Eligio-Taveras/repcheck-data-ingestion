@@ -25,7 +25,9 @@ import repcheck.shared.models.congress.dto.bill.{
   BillListResponseDTO,
   CoSponsorDTO,
   CosponsorListResponseDTO,
+  LegislativeSubjectDTO,
 }
+import repcheck.shared.models.congress.dto.common.PaginationInfoDTO
 
 import com.repcheck.utils.errors.RetryWrapper
 
@@ -170,10 +172,17 @@ class BillsApiClient[F[_]](
 
   def fetchCosponsors(cosponsorUrl: String): F[List[CoSponsorDTO]] =
     for {
-      _      <- logger.info(apiLogCtx, s"Fetching cosponsors: $cosponsorUrl")
-      start  <- temporal.realTime
-      result <- fetchCosponsorsPage(cosponsorUrl, List.empty, config.pageSize)
-      end    <- temporal.realTime
+      _     <- logger.info(apiLogCtx, s"Fetching cosponsors: $cosponsorUrl")
+      start <- temporal.realTime
+      result <- fetchPaginated[CosponsorListResponseDTO, CoSponsorDTO](
+        cosponsorUrl,
+        List.empty,
+        config.pageSize,
+        "cosponsor",
+        _.cosponsors,
+        _.pagination,
+      )
+      end <- temporal.realTime
       _ <- logger.info(
         apiLogCtx,
         s"Fetched ${result.size.toString} cosponsors total: $cosponsorUrl " +
@@ -181,11 +190,19 @@ class BillsApiClient[F[_]](
       )
     } yield result
 
-  private def fetchCosponsorsPage(
+  /**
+   * Follow a Congress.gov url-paginated sub-resource (cosponsors, subjects, …) to completion: fetch a page through the
+   * standard retry/backoff, accumulate its items, and recurse via `pagination.url` until a short page or no next url.
+   * `items`/`pagination` project the per-resource response; `resourceName` only labels the per-page debug log.
+   */
+  private def fetchPaginated[R: Decoder, A](
     url: String,
-    accumulated: List[CoSponsorDTO],
+    accumulated: List[A],
     pageSize: Int,
-  ): F[List[CoSponsorDTO]] =
+    resourceName: String,
+    items: R => List[A],
+    pagination: R => Option[PaginationInfoDTO],
+  ): F[List[A]] =
     parseUri(url).flatMap { baseUri =>
       val uri = baseUri
         .withQueryParam("api_key", config.apiKey)
@@ -196,13 +213,13 @@ class BillsApiClient[F[_]](
       val request = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
       val operation = client.run(request).use { response =>
         if (response.status.isSuccess) {
-          response.as[CosponsorListResponseDTO]
+          response.as[R]
         } else {
-          raiseApiError[CosponsorListResponseDTO](response)
+          raiseApiError[R](response)
         }
       }
 
-      val pageStart = temporal.flatMap(logger.debug(apiLogCtx, s"Fetching cosponsor page: $sanitizedUri")) { _ =>
+      val pageStart = temporal.flatMap(logger.debug(apiLogCtx, s"Fetching $resourceName page: $sanitizedUri")) { _ =>
         retryWrapper.withRetry(
           operation = operation,
           config = config.retry,
@@ -218,18 +235,40 @@ class BillsApiClient[F[_]](
         )
       }
 
-      pageStart.flatMap { listResponse =>
-        val all     = accumulated ++ listResponse.cosponsors
-        val nextUrl = listResponse.pagination.flatMap(_.url)
-        if (listResponse.cosponsors.size < pageSize || nextUrl.isEmpty) {
+      pageStart.flatMap { page =>
+        val pageItems = items(page)
+        val all       = accumulated ++ pageItems
+        val nextUrl   = pagination(page).flatMap(_.url)
+        if (pageItems.size < pageSize || nextUrl.isEmpty) {
           temporal.pure(all)
         } else {
-          temporal.flatMap(temporal.sleep(pageDelay)) { _ =>
-            fetchCosponsorsPage(nextUrl.getOrElse(url), all, pageSize)
-          }
+          temporal.flatMap(temporal.sleep(pageDelay))(_ =>
+            fetchPaginated(nextUrl.getOrElse(url), all, pageSize, resourceName, items, pagination)
+          )
         }
       }
     }
+
+  /**
+   * Fetch a bill's legislative subjects. Unlike cosponsors (whose sub-resource url the detail provides), the bill
+   * detail carries `subjects` only as a `{count,url}` ref that decodes empty, so we construct the `/subjects` url from
+   * the bill's own coordinates against `config.baseUrl` — robust regardless of whether the detail carries a `url`.
+   */
+  def fetchSubjects(congress: Int, billType: String, number: String): F[List[LegislativeSubjectDTO]] = {
+    val subjectsUrl = s"${config.baseUrl}/bill/${congress.toString}/${billType.toLowerCase}/$number/subjects"
+    for {
+      _ <- logger.info(apiLogCtx, s"Fetching subjects: $subjectsUrl")
+      result <- fetchPaginated[BillSubjectsResponseDTO, LegislativeSubjectDTO](
+        subjectsUrl,
+        List.empty,
+        config.pageSize,
+        "subject",
+        _.legislativeSubjects,
+        _.pagination,
+      )
+      _ <- logger.info(apiLogCtx, s"Fetched ${result.size.toString} subjects total: $subjectsUrl")
+    } yield result
+  }
 
 }
 

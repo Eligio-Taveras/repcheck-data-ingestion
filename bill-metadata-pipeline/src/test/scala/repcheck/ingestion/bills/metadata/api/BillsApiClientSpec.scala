@@ -529,4 +529,110 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     }
   }
 
+  private def subjectJson(name: String): String =
+    s"""{"name": "$name", "updateDate": "2017-02-14T22:56:36Z"}"""
+
+  // The real /subjects response nests policyArea as an OBJECT — included here to prove the decoder ignores it.
+  private def subjectsListJson(subjects: List[String], nextUrl: Option[String] = None): String = {
+    val items = subjects.mkString(",")
+    val paginationPart = nextUrl match {
+      case Some(url) => s""", "pagination": {"count": ${subjects.size}, "next": "$url"}"""
+      case None      => s""", "pagination": {"count": ${subjects.size}}"""
+    }
+    s"""{"subjects": {"legislativeSubjects": [$items], "policyArea": {"name": "Health"}}$paginationPart}"""
+  }
+
+  "fetchSubjects" should "return a single page of legislative subjects (ignoring the policyArea object)" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/103/hr/4593/subjects"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(subjectsListJson(List(subjectJson("Budget deficits"), subjectJson("Taxation"))))
+        )
+    )
+
+    val result = makeClient()
+      .fetchSubjects(103, "hr", "4593")
+      .unsafeRunSync()
+
+    result.map(_.name) shouldBe List("Budget deficits", "Taxation")
+  }
+
+  it should "paginate across multiple pages of subjects" in {
+    val page1 = (1 to 250).map(i => subjectJson(s"Subject $i")).toList
+    val page2 = (251 to 260).map(i => subjectJson(s"Subject $i")).toList
+
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/107/s/1628/subjects"))
+        .withQueryParam("offset", absent())
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(
+              subjectsListJson(
+                page1,
+                Some(s"http://localhost:${wireMock.port()}/v3/bill/107/s/1628/subjects?offset=250"),
+              )
+            )
+        )
+    )
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/107/s/1628/subjects"))
+        .withQueryParam("offset", equalTo("250"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(subjectsListJson(page2))
+        )
+    )
+
+    val result = makeClient()
+      .fetchSubjects(107, "s", "1628")
+      .unsafeRunSync()
+
+    result.size shouldBe 260
+  }
+
+  it should "return an empty list for a bill with no subjects" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/94/hr/10792/subjects"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody(subjectsListJson(List.empty))
+        )
+    )
+
+    val result = makeClient()
+      .fetchSubjects(94, "hr", "10792")
+      .unsafeRunSync()
+
+    result shouldBe empty
+  }
+
+  it should "fail on HTTP 500 after retries" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/118/hr/9/subjects"))
+        .willReturn(aResponse().withStatus(500).withBody("Internal error"))
+    )
+
+    val client = makeClient(RetryConfig(maxRetries = 1, initialBackoffMs = 10L))
+    val _ = intercept[BillFetchFailed] {
+      client
+        .fetchSubjects(118, "hr", "9")
+        .unsafeRunSync()
+    }
+  }
+
+  "BillSubjectsResponseDTO" should "default to an empty subject list when the subjects object is absent" in {
+    io.circe.parser
+      .decode[BillSubjectsResponseDTO]("""{"pagination": {"count": 0}}""")
+      .map(_.legislativeSubjects.isEmpty) shouldBe Right(true)
+  }
+
 }

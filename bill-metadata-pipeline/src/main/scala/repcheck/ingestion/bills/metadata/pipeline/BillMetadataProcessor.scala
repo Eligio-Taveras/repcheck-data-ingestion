@@ -28,7 +28,7 @@ import repcheck.members.common.persistence.MemberRepository
 import repcheck.pipeline.models.metadata.ProcessingResult
 import repcheck.shared.models.congress.dos.bill.BillDO
 import repcheck.shared.models.congress.dos.member.MemberDO
-import repcheck.shared.models.congress.dto.bill.{BillListItemDTO, CoSponsorDTO}
+import repcheck.shared.models.congress.dto.bill.BillListItemDTO
 import repcheck.shared.models.congress.dto.conversions.BillConversions._
 
 class BillMetadataProcessor[F[_]: Async](
@@ -52,6 +52,9 @@ class BillMetadataProcessor[F[_]: Async](
 
   private val billPersister =
     new BillPersister[F](billRepo, cosponsorRepo, subjectRepo, historyArchiver, xa, logger)
+
+  private val subResourceFetcher =
+    new BillSubResourceFetcher[F](apiClient, logger)
 
   def streamAll(runId: Long): Stream[F, ProcessingResult] = {
     val fromDateTime = Instant.now().minus(config.lookbackDays.toLong, ChronoUnit.DAYS)
@@ -253,8 +256,12 @@ class BillMetadataProcessor[F[_]: Async](
       conversionResult <- Async[F].fromEither(
         detail.toDO.leftMap(reason => BillProcessingFailed(naturalKey, s"DTO-to-DO conversion failed: $reason"))
       )
-      _ <- logger.info(ctx, s"[$naturalKey] step=convertDTO.done subjects=${conversionResult.subjects.size.toString}")
-      cosponsorDTOs <- fetchCosponsorsFromDetail(detail, ctx)
+      _ <- logger.info(ctx, s"[$naturalKey] step=convertDTO.done")
+      // Subjects + cosponsors are API sub-resources (the detail carries only {count,url} refs); the fetcher retrieves
+      // them. Subjects are mandatory metadata — a fetch failure fails the bill, consistent with cosponsors.
+      subjectDOs <- subResourceFetcher.fetchSubjects(detail, ctx)
+      _          <- logger.info(ctx, s"[$naturalKey] step=fetchSubjects.done subjectCount=${subjectDOs.size.toString}")
+      cosponsorDTOs <- subResourceFetcher.fetchCosponsors(detail, ctx)
       _ <- logger.info(
         ctx,
         s"[$naturalKey] step=fetchCosponsors.done cosponsorCount=${cosponsorDTOs.size.toString}",
@@ -270,27 +277,9 @@ class BillMetadataProcessor[F[_]: Async](
         s"[$naturalKey] step=resolveCosponsors.done resolved=${cosponsorDOs.size.toString}/${cosponsorDTOs.size.toString}",
       )
       _ <- logger.info(ctx, s"[$naturalKey] step=persist.start isNew=${isNew.toString}")
-      _ <- billPersister.persistBill(billDO, conversionResult.subjects, cosponsorDOs, naturalKey, isNew)
+      _ <- billPersister.persistBill(billDO, subjectDOs, cosponsorDOs, naturalKey, isNew)
       _ <- logger.info(ctx, s"Bill $naturalKey upserted")
     } yield ProcessingResult.Succeeded(naturalKey)
-  }
-
-  private def fetchCosponsorsFromDetail(
-    detail: repcheck.shared.models.congress.dto.bill.BillDetailDTO,
-    logCtx: LogContext,
-  ): F[List[CoSponsorDTO]] = {
-    val cosponsorUrl = detail.cosponsors.flatMap(_.url)
-    cosponsorUrl match {
-      case Some(url) =>
-        for {
-          _      <- logger.debug(logCtx, s"fetchCosponsorsFromDetail.url=$url")
-          result <- apiClient.fetchCosponsors(url)
-          _      <- logger.debug(logCtx, s"fetchCosponsorsFromDetail.done count=${result.size.toString}")
-        } yield result
-      case None =>
-        logger.debug(logCtx, s"fetchCosponsorsFromDetail.skip (no cosponsors URL on detail)") *>
-          Async[F].pure(List.empty[CoSponsorDTO])
-    }
   }
 
   private def parseInstantStr(dateStr: String): Option[Instant] =
