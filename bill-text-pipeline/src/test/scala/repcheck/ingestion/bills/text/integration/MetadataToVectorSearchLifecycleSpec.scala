@@ -350,6 +350,16 @@ class MetadataToVectorSearchLifecycleSpec
                |}""".stripMargin)
         )
     )
+    // The metadata pipeline always fetches the legislativeSubjects sub-resource (derived from detail.url); stub it empty.
+    val _ = wireMock.stubFor(
+      get(urlPathEqualTo(s"/v3/bill/$congress/$billType/$number/subjects"))
+        .willReturn(
+          aResponse()
+            .withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody("""{"subjects": {"legislativeSubjects": []}, "pagination": {"count": 0}}""")
+        )
+    )
   }
 
   /** Stubs the Congress.gov text versions endpoint. */

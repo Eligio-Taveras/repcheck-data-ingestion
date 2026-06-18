@@ -26,9 +26,9 @@ import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.common.placeholders.{EntityRepository, PlaceholderCreator}
 import repcheck.members.common.persistence.MemberRepository
 import repcheck.pipeline.models.metadata.ProcessingResult
-import repcheck.shared.models.congress.dos.bill.{BillDO, BillSubjectDO}
+import repcheck.shared.models.congress.dos.bill.BillDO
 import repcheck.shared.models.congress.dos.member.MemberDO
-import repcheck.shared.models.congress.dto.bill.{BillListItemDTO, CoSponsorDTO}
+import repcheck.shared.models.congress.dto.bill.BillListItemDTO
 import repcheck.shared.models.congress.dto.conversions.BillConversions._
 
 class BillMetadataProcessor[F[_]: Async](
@@ -52,6 +52,9 @@ class BillMetadataProcessor[F[_]: Async](
 
   private val billPersister =
     new BillPersister[F](billRepo, cosponsorRepo, subjectRepo, historyArchiver, xa, logger)
+
+  private val subResourceFetcher =
+    new BillSubResourceFetcher[F](apiClient, logger)
 
   def streamAll(runId: Long): Stream[F, ProcessingResult] = {
     val fromDateTime = Instant.now().minus(config.lookbackDays.toLong, ChronoUnit.DAYS)
@@ -254,11 +257,11 @@ class BillMetadataProcessor[F[_]: Async](
         detail.toDO.leftMap(reason => BillProcessingFailed(naturalKey, s"DTO-to-DO conversion failed: $reason"))
       )
       _ <- logger.info(ctx, s"[$naturalKey] step=convertDTO.done")
-      // Subjects come from the /subjects SUB-endpoint, not the bill detail (which carries only a {count,url} ref), so
-      // conversionResult.subjects is always empty — fetch the legislativeSubjects list here (mirrors cosponsors).
-      subjectDOs <- fetchSubjectsFromDetail(detail, ctx)
+      // Subjects + cosponsors are API sub-resources (the detail carries only {count,url} refs); the fetcher retrieves
+      // them. Subjects are mandatory metadata — a fetch failure fails the bill, consistent with cosponsors.
+      subjectDOs <- subResourceFetcher.fetchSubjects(detail, ctx)
       _          <- logger.info(ctx, s"[$naturalKey] step=fetchSubjects.done subjectCount=${subjectDOs.size.toString}")
-      cosponsorDTOs <- fetchCosponsorsFromDetail(detail, ctx)
+      cosponsorDTOs <- subResourceFetcher.fetchCosponsors(detail, ctx)
       _ <- logger.info(
         ctx,
         s"[$naturalKey] step=fetchCosponsors.done cosponsorCount=${cosponsorDTOs.size.toString}",
@@ -277,38 +280,6 @@ class BillMetadataProcessor[F[_]: Async](
       _ <- billPersister.persistBill(billDO, subjectDOs, cosponsorDOs, naturalKey, isNew)
       _ <- logger.info(ctx, s"Bill $naturalKey upserted")
     } yield ProcessingResult.Succeeded(naturalKey)
-  }
-
-  private def fetchCosponsorsFromDetail(
-    detail: repcheck.shared.models.congress.dto.bill.BillDetailDTO,
-    logCtx: LogContext,
-  ): F[List[CoSponsorDTO]] = {
-    val cosponsorUrl = detail.cosponsors.flatMap(_.url)
-    cosponsorUrl match {
-      case Some(url) =>
-        for {
-          _      <- logger.debug(logCtx, s"fetchCosponsorsFromDetail.url=$url")
-          result <- apiClient.fetchCosponsors(url)
-          _      <- logger.debug(logCtx, s"fetchCosponsorsFromDetail.done count=${result.size.toString}")
-        } yield result
-      case None =>
-        logger.debug(logCtx, s"fetchCosponsorsFromDetail.skip (no cosponsors URL on detail)") *>
-          Async[F].pure(List.empty[CoSponsorDTO])
-    }
-  }
-
-  private def fetchSubjectsFromDetail(
-    detail: repcheck.shared.models.congress.dto.bill.BillDetailDTO,
-    logCtx: LogContext,
-  ): F[List[BillSubjectDO]] = {
-    // detail.url is the bill base (.../bill/{congress}/{type}/{number}); the subjects sub-resource is appended.
-    val subjectsUrl = s"${detail.url}/subjects"
-    for {
-      _    <- logger.debug(logCtx, s"fetchSubjectsFromDetail.url=$subjectsUrl")
-      dtos <- apiClient.fetchSubjects(subjectsUrl)
-      _    <- logger.debug(logCtx, s"fetchSubjectsFromDetail.done count=${dtos.size.toString}")
-      // billId 0L is a placeholder — BillPersister rewrites it to the real id before replaceAll. Embeddings (D16) later.
-    } yield dtos.map(d => BillSubjectDO(0L, d.name, None, d.updateDate.flatMap(parseInstantStr)))
   }
 
   private def parseInstantStr(dateStr: String): Option[Instant] =

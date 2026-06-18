@@ -140,7 +140,8 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
 
     val apiClientMock = mock[BillsApiClient[IO]]
     // The processor always calls fetchSubjects; default to empty so tests not concerned with subjects still run.
-    when(apiClientMock.fetchSubjects(anyString())).thenReturn(IO.pure(List.empty[LegislativeSubjectDTO]))
+    when(apiClientMock.fetchSubjects(any[Int], anyString(), anyString()))
+      .thenReturn(IO.pure(List.empty[LegislativeSubjectDTO]))
 
     TestFixture(
       apiClient = apiClientMock,
@@ -688,7 +689,7 @@ class BillMetadataProcessorSpec extends AnyFlatSpec with Matchers with MockitoSu
     val detail   = makeDetailDTO()
     stubBasicRepos(f)
     when(f.apiClient.fetchDetail(anyString())).thenReturn(IO.pure(detail))
-    when(f.apiClient.fetchSubjects(anyString()))
+    when(f.apiClient.fetchSubjects(any[Int], anyString(), anyString()))
       .thenReturn(IO.pure(List(LegislativeSubjectDTO("Health care", Some("2024-01-01T00:00:00Z")))))
 
     val _ = f.processor.processListItem(listItem, correlationId).unsafeRunSync()

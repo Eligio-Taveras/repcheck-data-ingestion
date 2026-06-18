@@ -1,0 +1,10 @@
+{
+  "subjects": {
+    "legislativeSubjects": [
+      { "name": "Health", "updateDate": "2024-01-15T00:00:00Z" },
+      { "name": "Taxation", "updateDate": "2024-01-15T00:00:00Z" }
+    ],
+    "policyArea": { "name": "Health" }
+  },
+  "pagination": { "count": 2 }
+}

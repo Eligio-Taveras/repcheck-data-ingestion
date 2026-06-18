@@ -554,7 +554,7 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     )
 
     val result = makeClient()
-      .fetchSubjects(s"http://localhost:${wireMock.port()}/v3/bill/103/hr/4593/subjects")
+      .fetchSubjects(103, "hr", "4593")
       .unsafeRunSync()
 
     result.map(_.name) shouldBe List("Budget deficits", "Taxation")
@@ -591,7 +591,7 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     )
 
     val result = makeClient()
-      .fetchSubjects(s"http://localhost:${wireMock.port()}/v3/bill/107/s/1628/subjects")
+      .fetchSubjects(107, "s", "1628")
       .unsafeRunSync()
 
     result.size shouldBe 260
@@ -609,10 +609,24 @@ class BillsApiClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     )
 
     val result = makeClient()
-      .fetchSubjects(s"http://localhost:${wireMock.port()}/v3/bill/94/hr/10792/subjects")
+      .fetchSubjects(94, "hr", "10792")
       .unsafeRunSync()
 
     result shouldBe empty
+  }
+
+  it should "fail on HTTP 500 after retries" in {
+    wireMock.stubFor(
+      get(urlPathEqualTo("/v3/bill/118/hr/9/subjects"))
+        .willReturn(aResponse().withStatus(500).withBody("Internal error"))
+    )
+
+    val client = makeClient(RetryConfig(maxRetries = 1, initialBackoffMs = 10L))
+    val _ = intercept[BillFetchFailed] {
+      client
+        .fetchSubjects(118, "hr", "9")
+        .unsafeRunSync()
+    }
   }
 
 }
