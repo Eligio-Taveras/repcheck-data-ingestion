@@ -25,6 +25,7 @@ import repcheck.shared.models.congress.dto.bill.{
   BillListResponseDTO,
   CoSponsorDTO,
   CosponsorListResponseDTO,
+  LegislativeSubjectDTO,
 }
 
 import com.repcheck.utils.errors.RetryWrapper
@@ -227,6 +228,62 @@ class BillsApiClient[F[_]](
           temporal.flatMap(temporal.sleep(pageDelay)) { _ =>
             fetchCosponsorsPage(nextUrl.getOrElse(url), all, pageSize)
           }
+        }
+      }
+    }
+
+  def fetchSubjects(subjectsUrl: String): F[List[LegislativeSubjectDTO]] =
+    for {
+      _      <- logger.info(apiLogCtx, s"Fetching subjects: $subjectsUrl")
+      result <- fetchSubjectsPage(subjectsUrl, List.empty, config.pageSize)
+      _      <- logger.info(apiLogCtx, s"Fetched ${result.size.toString} subjects total: $subjectsUrl")
+    } yield result
+
+  private def fetchSubjectsPage(
+    url: String,
+    accumulated: List[LegislativeSubjectDTO],
+    pageSize: Int,
+  ): F[List[LegislativeSubjectDTO]] =
+    parseUri(url).flatMap { baseUri =>
+      val uri = baseUri
+        .withQueryParam("api_key", config.apiKey)
+        .withQueryParam("format", "json")
+        .withQueryParam("limit", pageSize)
+      val sanitizedUri = uri.removeQueryParam("api_key").renderString
+
+      val request = org.http4s.Request[F](uri = uri).putHeaders(Accept(MediaType.application.json))
+      val operation = client.run(request).use { response =>
+        if (response.status.isSuccess) {
+          response.as[BillSubjectsResponseDTO]
+        } else {
+          raiseApiError[BillSubjectsResponseDTO](response)
+        }
+      }
+
+      val pageStart = temporal.flatMap(logger.debug(apiLogCtx, s"Fetching subject page: $sanitizedUri")) { _ =>
+        retryWrapper.withRetry(
+          operation = operation,
+          config = config.retry,
+          classifier = BillsApiErrorClassifier,
+          errorFactory = (msg, cause) =>
+            BillFetchFailed(
+              endpoint = sanitizedUri,
+              statusCode = 0,
+              detail = msg,
+              cause = cause,
+            ),
+          correlationId = UUID.randomUUID(),
+        )
+      }
+
+      pageStart.flatMap { listResponse =>
+        val pageSubjects = listResponse.legislativeSubjects
+        val all          = accumulated ++ pageSubjects
+        val nextUrl      = listResponse.pagination.flatMap(_.url)
+        if (pageSubjects.size < pageSize || nextUrl.isEmpty) {
+          temporal.pure(all)
+        } else {
+          temporal.flatMap(temporal.sleep(pageDelay))(_ => fetchSubjectsPage(nextUrl.getOrElse(url), all, pageSize))
         }
       }
     }
