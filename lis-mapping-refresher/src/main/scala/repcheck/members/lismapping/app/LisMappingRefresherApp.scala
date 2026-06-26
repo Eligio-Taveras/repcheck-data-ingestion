@@ -1,22 +1,27 @@
 package repcheck.members.lismapping.app
 
-import cats.effect.{ExitCode, IO, IOApp, Sync}
+import cats.effect.{ExitCode, IO, IOApp}
 
 import org.http4s.ember.client.EmberClientBuilder
 
-import pureconfig.ConfigSource
-
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.events.PubSubPublisherResource
+import repcheck.ingestion.common.execution.PipelineBootstrap
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
 import repcheck.members.lismapping.app.LisMappingRefresherPipeline.AppConfig
 
 object LisMappingRefresherApp extends IOApp {
 
-  override def run(args: List[String]): IO[ExitCode] = {
-    val _ = args // args reserved for future CLI config override support
+  override def run(args: List[String]): IO[ExitCode] =
+    for {
+      runId    <- PipelineBootstrap.extractRunId[IO](args)
+      _        <- PipelineBootstrap.extractStepRunId[IO](args)
+      exitCode <- runPipeline(args, runId)
+    } yield exitCode
+
+  private[app] def runPipeline(args: List[String], runId: Long): IO[ExitCode] =
     LisMappingRefresherPipeline.runWithFactories[IO](
-      configLoader = Sync[IO].delay(ConfigSource.default.loadOrThrow[AppConfig]),
+      configLoader = PipelineBootstrap.loadConfig[IO, AppConfig](args),
       loggerFactory = (name: String) => PipelineLoggerFactory.make[IO](name),
       resourceBuilder = (config, logger) =>
         LisMappingRefresherPipeline.buildResources[IO](
@@ -27,7 +32,7 @@ object LisMappingRefresherApp extends IOApp {
           PubSubPublisherResource.make[IO](_),
         ),
       processorFactory = LisMappingRefresherPipeline.buildProcessor[IO],
+      runId = runId,
     )
-  }
 
 }

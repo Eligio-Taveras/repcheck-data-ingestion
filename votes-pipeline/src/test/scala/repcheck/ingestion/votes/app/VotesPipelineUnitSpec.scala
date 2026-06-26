@@ -20,10 +20,11 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
+import repcheck.ingestion.common.errors.{RunIdMissing, StepRunIdInvalid}
 import repcheck.ingestion.common.events.{EventPublisherConfig, IngestionEventPublisher}
+import repcheck.ingestion.common.execution.PipelineBootstrap
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.votes.config.{HouseVotesConfig, SenateVoteXmlConfig, VotesPipelineConfig}
-import repcheck.ingestion.votes.errors.StepRunIdInvalid
 import repcheck.ingestion.votes.pipeline.VoteProcessor
 import repcheck.pipeline.models.metadata.ProcessingResult
 
@@ -34,17 +35,18 @@ import com.repcheck.utils.errors.RetryConfig
  * ([[VotesPipelineResources.rateLimitedClient]] + [[VotesProcessorFactory.build]]). Verifies the factory-function
  * wiring contract:
  *   1. `runWithFactories` invokes each factory exactly once, in the documented order (config → logger → resources →
- *      processor → stream). 2. Config values are threaded end-to-end. 3. Arg parsing surfaces [[StepRunIdInvalid]] for
- *      missing / non-numeric `args(2)`. 4. Exit code reflects the collected [[ProcessingResult]] stream.
+ *      processor → stream). 2. Config values are threaded end-to-end. 3. Arg parsing surfaces `RunIdMissing` /
+ *      `StepRunIdInvalid` for missing / non-numeric `args(1)` / `args(2)`. 4. Exit code reflects the collected
+ *      [[ProcessingResult]] stream.
  *
  * No real transactor, HTTP client, or Pub/Sub publisher is constructed — factories return Mockito stubs wrapped in
  * `Resource.pure`, so the spec exercises only orchestration.
  */
 class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
-  private val runIdArg     = "run-abc"
+  private val runIdArg     = "123"
   private val stepRunIdArg = "42"
-  private val validArgs    = List("ignored-config-arg", runIdArg, stepRunIdArg)
+  private val validArgs    = List("{}", runIdArg, stepRunIdArg)
 
   private def makeAppConfig(): VotesPipeline.AppConfig =
     VotesPipeline.AppConfig(
@@ -260,41 +262,52 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   }
 
   // =====================================================================================
-  // Arg parsing — extractStepRunId
+  // Arg parsing — runWithFactories surfaces PipelineBootstrap.extractRunId / extractStepRunId
   // =====================================================================================
 
-  "extractStepRunId" should "return the Long value when args(2) is numeric" in {
-    VotesPipeline.extractStepRunId[IO](List("cfg", "run", "7")).unsafeRunSync() shouldBe 7L
+  private def runWithArgs(args: List[String]): Either[Throwable, Int] =
+    VotesPipeline
+      .runWithFactories[IO](
+        args = args,
+        configLoader = IO.pure(makeAppConfig()),
+        loggerFactory = IO.pure(makeLogger()),
+        resourceBuilder =
+          (_: VotesPipeline.AppConfig) => Resource.pure[IO, VotesPipelineResources.Resources[IO]](makeResources()),
+        processorFactory = (_, _, _) => mock[VoteProcessor[IO]],
+        congressesResolver = (_, _, _) => IO.pure(List(118)),
+        streamFactory = (_, _, _) => Stream.empty,
+      )
+      .attempt
+      .map(_.map(_.code))
+      .unsafeRunSync()
+
+  "runWithFactories arg parsing" should "raise RunIdMissing when args(1) is non-numeric" in {
+    runWithArgs(List("{}", "run-abc", "42")) match {
+      case Left(e: RunIdMissing) => e.getMessage should include("run-abc")
+      case other                 => fail(s"expected Left(RunIdMissing), got $other")
+    }
   }
 
   it should "raise StepRunIdInvalid when args(2) is missing" in {
-    val outcome = VotesPipeline.extractStepRunId[IO](List("cfg", "run")).attempt.unsafeRunSync()
-    outcome match {
-      case Left(e: StepRunIdInvalid) => e.getMessage should include("<missing>")
+    runWithArgs(List("{}", "123")) match {
+      case Left(e: StepRunIdInvalid) => e.getMessage should include("missing or invalid")
       case other                     => fail(s"expected Left(StepRunIdInvalid), got $other")
     }
   }
 
-  it should "raise StepRunIdInvalid when args(2) is blank" in {
-    val outcome = VotesPipeline.extractStepRunId[IO](List("cfg", "run", "   ")).attempt.unsafeRunSync()
-    outcome match {
-      case Left(e: StepRunIdInvalid) =>
-        val _ = e.rawValue shouldBe "   "
-        e.getMessage should include("invalid or missing")
-      case other => fail(s"expected Left(StepRunIdInvalid), got $other")
-    }
-  }
-
   it should "raise StepRunIdInvalid when args(2) is not a number" in {
-    val outcome = VotesPipeline.extractStepRunId[IO](List("cfg", "run", "not-a-long")).attempt.unsafeRunSync()
-    outcome match {
+    runWithArgs(List("{}", "123", "not-a-long")) match {
       case Left(e: StepRunIdInvalid) => e.getMessage should include("not-a-long")
       case other                     => fail(s"expected Left(StepRunIdInvalid), got $other")
     }
   }
 
+  "PipelineBootstrap.extractStepRunId" should "return the Long value when args(2) is numeric" in {
+    PipelineBootstrap.extractStepRunId[IO](List("{}", "123", "7")).unsafeRunSync() shouldBe 7L
+  }
+
   it should "trim whitespace around a valid numeric args(2)" in {
-    VotesPipeline.extractStepRunId[IO](List("cfg", "run", "  99  ")).unsafeRunSync() shouldBe 99L
+    PipelineBootstrap.extractStepRunId[IO](List("{}", "123", "  99  ")).unsafeRunSync() shouldBe 99L
   }
 
   // =====================================================================================

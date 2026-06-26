@@ -45,12 +45,13 @@ private[app] object CommitteeHistoryLoaderPipeline {
     for {
       config <- configLoader
       runId  <- PipelineBootstrap.extractRunId[F](args)
+      _      <- PipelineBootstrap.extractStepRunId[F](args)
       logger <- loggerFactory(PipelineName)
       exitCode <- resourceBuilder(config).use { resources =>
         val loader = loaderFactory(resources, config, logger)
-        val logCtx = LogContext(runId = runId, stepName = PipelineName)
+        val logCtx = LogContext(runId = runId.toString, stepName = PipelineName)
         for {
-          result <- loader.load(runId.toLongOption.getOrElse(0L))
+          result <- loader.load(runId)
           _ <- logger.info(
             logCtx,
             s"Pipeline completed: seen=${result.assignmentsSeen.toString} upserted=${result.upserted.toString} " +

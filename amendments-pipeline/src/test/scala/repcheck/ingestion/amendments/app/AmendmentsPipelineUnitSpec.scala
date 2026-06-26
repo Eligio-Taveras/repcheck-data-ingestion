@@ -23,7 +23,7 @@ import repcheck.ingestion.amendments.errors.PoolSizingTooSmall
 import repcheck.ingestion.amendments.pipeline.{AmendmentProcessor, PipelineRunSummary, VoteAmendmentLinker}
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
-import repcheck.ingestion.common.errors.RunIdMissing
+import repcheck.ingestion.common.errors.{RunIdMissing, StepRunIdInvalid}
 import repcheck.ingestion.common.execution.WorkflowStateUpdater
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.metadata.ProcessingResult
@@ -36,8 +36,8 @@ class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoS
   // Helpers
   // --------------------------------------------------------------------------------------------
 
-  private val runId     = "run-abc"
-  private val validArgs = List("ignored-config-arg", runId)
+  private val runId     = "123"
+  private val validArgs = List("{}", runId, "0")
 
   private def appConfig(
     parallelism: Int = 4,
@@ -120,16 +120,16 @@ class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoS
         repcheck.ingestion.common.execution.PipelineFailureHandlerConfig(maxRetries = 3),
       ) {
 
-    override def recordStepStarted(rid: String, stepName: String): IO[Unit] = IO {
-      val _ = events.updateAndGet(_ :+ s"started:$rid:$stepName")
+    override def recordStepStarted(rid: Long, stepName: String): IO[Unit] = IO {
+      val _ = events.updateAndGet(_ :+ s"started:${rid.toString}:$stepName")
     }
 
-    override def recordStepCompleted(rid: String, stepName: String): IO[Unit] = IO {
-      val _ = events.updateAndGet(_ :+ s"completed:$rid:$stepName")
+    override def recordStepCompleted(rid: Long, stepName: String): IO[Unit] = IO {
+      val _ = events.updateAndGet(_ :+ s"completed:${rid.toString}:$stepName")
     }
 
-    override def recordStepFailed(rid: String, stepName: String, error: String): IO[Unit] = IO {
-      val _ = events.updateAndGet(_ :+ s"failed:$rid:$stepName")
+    override def recordStepFailed(rid: Long, stepName: String, error: String): IO[Unit] = IO {
+      val _ = events.updateAndGet(_ :+ s"failed:${rid.toString}:$stepName")
     }
 
   }
@@ -322,6 +322,28 @@ class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoS
     outcome match {
       case Left(_: RunIdMissing) => succeed
       case other                 => fail(s"expected RunIdMissing, got $other")
+    }
+  }
+
+  it should "raise StepRunIdInvalid when args(2) is missing" in {
+    val outcome = AmendmentsPipeline
+      .runWithFactories[IO](
+        args = List("{}", "123"),
+        configLoader = IO.pure(appConfig()),
+        loggerFactory = IO.pure(silentLogger()),
+        retryWrapperFactory = (_: PipelineLogger[IO]) => new RetryWrapper[IO]((_, _, _, _, _, _) => IO.unit),
+        resourceBuilder = (_, _) => Resource.pure[IO, AmendmentsPipelineResources.Resources[IO]](stubResources()),
+        processorFactory = (_, _, _, _) => stubProcessor(),
+        streamFactory = (_, _) => Stream.empty,
+        stepRecorderFactory = _ => new TraceWorkflowUpdater(new AtomicReference(List.empty)),
+        linkerFactory = (_, _) => new TraceLinker(new AtomicReference(List.empty)),
+      )
+      .attempt
+      .unsafeRunSync()
+
+    outcome match {
+      case Left(_: StepRunIdInvalid) => succeed
+      case other                     => fail(s"expected StepRunIdInvalid, got $other")
     }
   }
 

@@ -11,15 +11,12 @@ import fs2.io.net.Network
 import doobie.implicits._
 import doobie.util.transactor.Transactor
 
-import pureconfig.ConfigSource
-
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubPublisherResource}
 import repcheck.ingestion.common.execution.{PipelineBootstrap, PipelineExecutor}
 import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
 import repcheck.ingestion.votes.config.VotesPipelineConfig
-import repcheck.ingestion.votes.errors.StepRunIdInvalid
 import repcheck.ingestion.votes.pipeline.VoteProcessor
 import repcheck.pipeline.models.metadata.ProcessingResult
 
@@ -34,8 +31,9 @@ import repcheck.pipeline.models.metadata.ProcessingResult
  *
  * ==Launcher contract==
  *
- *   - `args(0)` — config JSON placeholder (currently unused; the pipeline loads `application.conf` directly).
- *   - `args(1)` — run-level identifier (`workflow_runs.id` string).
+ *   - `args(0)` — config-override JSON blob (`{}` = none), layered over `application.conf` via
+ *     `PipelineBootstrap.loadConfig`.
+ *   - `args(1)` — run-level identifier (`workflow_runs.id` Long assigned by the launcher).
  *   - `args(2)` — step-level identifier (`workflow_run_steps.id` Long assigned by the launcher before invocation).
  */
 private[votes] object VotesPipeline {
@@ -62,7 +60,7 @@ private[votes] object VotesPipeline {
   def run[F[_]: Async: Network](args: List[String]): F[ExitCode] =
     runWithFactories[F](
       args = args,
-      configLoader = Sync[F].delay(ConfigSource.default.loadOrThrow[AppConfig]),
+      configLoader = PipelineBootstrap.loadConfig[F, AppConfig](args),
       loggerFactory = PipelineLoggerFactory.make[F](PipelineName),
       resourceBuilder = (cfg: AppConfig) =>
         VotesPipelineResources.build[F](
@@ -94,13 +92,13 @@ private[votes] object VotesPipeline {
     for {
       config    <- configLoader
       runId     <- PipelineBootstrap.extractRunId[F](args)
-      stepRunId <- extractStepRunId[F](args)
+      stepRunId <- PipelineBootstrap.extractStepRunId[F](args)
       logger    <- loggerFactory
       exitCode <- resourceBuilder(config).use { resources =>
         for {
           congresses <- congressesResolver(config, resources.xa, logger)
           processor = processorFactory(config, resources, logger)
-          stream    = streamFactory(processor, runId, congresses)
+          stream    = streamFactory(processor, runId.toString, congresses)
           result <- PipelineExecutor.execute[F](stream, logger, PipelineName, runId, stepRunId)
         } yield result
       }
@@ -154,21 +152,5 @@ private[votes] object VotesPipeline {
         } yield derived
     }
   }
-
-  /**
-   * Extract the step-level identifier from `args(2)` and parse it as a `Long`. The launcher is responsible for creating
-   * the `workflow_run_steps` row and passing its BIGSERIAL PK before invoking the pipeline — a missing or non-numeric
-   * value indicates a broken launcher contract and fails the run fast via [[StepRunIdInvalid]].
-   */
-  private[app] def extractStepRunId[F[_]: Sync](args: List[String]): F[Long] =
-    args.lift(2) match {
-      case Some(raw) if raw.trim.nonEmpty =>
-        raw.trim.toLongOption match {
-          case Some(id) => Sync[F].pure(id)
-          case None     => Sync[F].raiseError[Long](StepRunIdInvalid(raw))
-        }
-      case Some(raw) => Sync[F].raiseError[Long](StepRunIdInvalid(raw))
-      case None      => Sync[F].raiseError[Long](StepRunIdInvalid("<missing>"))
-    }
 
 }

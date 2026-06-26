@@ -56,7 +56,10 @@ private[app] object BillTextCheckerPipeline {
     streamFactory: (
       BillTextAvailabilityChecker[F],
       PipelineLogger[F],
+      Long,
     ) => Stream[F, ProcessingResult],
+    runId: Long = 0L,
+    stepRunId: Long = 0L,
   ): F[ExitCode] =
     for {
       config <- configLoader
@@ -69,14 +72,13 @@ private[app] object BillTextCheckerPipeline {
           config,
           logger,
         )
-        val resultStream = streamFactory(checker, logger)
+        val resultStream = streamFactory(checker, logger, runId)
         PipelineExecutor.execute[F](
           resultStream = resultStream,
           logger = logger,
           pipelineName = PipelineName,
-          // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
-          // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
-          runId = "0",
+          runId = runId,
+          stepRunId = stepRunId,
         )
       }
     } yield exitCode
@@ -120,10 +122,10 @@ private[app] object BillTextCheckerPipeline {
   private[app] def buildStream[F[_]](
     checker: BillTextAvailabilityChecker[F],
     logger: PipelineLogger[F],
+    runId: Long,
   ): Stream[F, ProcessingResult] = {
     val _ = logger // reserved for future pre/post-stream logging
-    // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration.
-    checker.checkAll(0L)
+    checker.checkAll(runId)
   }
 
   private[app] def buildResources[F[_]](

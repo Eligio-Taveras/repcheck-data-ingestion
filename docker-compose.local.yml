@@ -219,6 +219,9 @@ services:
 
   bill-metadata-pipeline:
     container_name: bill-metadata-pipeline
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none),
+    # args(1) = runId (Long), args(2) = stepRunId (Long).
+    command: ["{}", "1", "1"]
     build:
       context: .
       dockerfile: bill-metadata-pipeline/Dockerfile
@@ -246,12 +249,12 @@ services:
     build:
       context: .
       dockerfile: bill-summary-pipeline/Dockerfile
-    # Launcher contract: args(0) = config (unused — PureConfig reads env),
-    # args(1) = runId, args(2) = stepRunId. extractStepRunId raises
-    # StepRunIdInvalid without args(2). For local-stack runs we pass `"0"`
-    # placeholders since the launcher / workflow_run_steps integration isn't
-    # wired up in docker-compose yet.
-    command: ["cfg-unused", "local-bill-summary-run", "0"]
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none,
+    # layered over application.conf/env), args(1) = runId (Long), args(2) = stepRunId
+    # (Long). extractStepRunId raises StepRunIdInvalid without args(2). For local-stack
+    # runs we pass numeric placeholders since the launcher / workflow_run_steps
+    # integration isn't wired up in docker-compose yet.
+    command: ["{}", "1", "0"]
     depends_on:
       db-migrations:
         condition: service_completed_successfully
@@ -275,6 +278,9 @@ services:
 
   bill-text-availability-checker:
     container_name: bill-text-availability-checker
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none),
+    # args(1) = runId (Long), args(2) = stepRunId (Long).
+    command: ["{}", "1", "1"]
     build:
       context: .
       dockerfile: bill-text-availability-checker/Dockerfile
@@ -302,6 +308,10 @@ services:
 
   bill-text-pipeline:
     container_name: bill-text-pipeline
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none),
+    # args(1) = runId (Long), args(2) = stepRunId (Long). WorkflowStateUpdater also
+    # gated on the WORKFLOW_RUN_ID env var (unset here).
+    command: ["{}", "1", "1"]
     build:
       context: .
       dockerfile: bill-text-pipeline/Dockerfile
@@ -361,6 +371,9 @@ services:
 
   member-profile-pipeline:
     container_name: member-profile-pipeline
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none),
+    # args(1) = runId (Long), args(2) = stepRunId (Long).
+    command: ["{}", "1", "1"]
     build:
       context: .
       dockerfile: member-profile-pipeline/Dockerfile
@@ -388,6 +401,9 @@ services:
 
   lis-mapping-refresher:
     container_name: lis-mapping-refresher
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none),
+    # args(1) = runId (Long), args(2) = stepRunId (Long).
+    command: ["{}", "1", "1"]
     build:
       context: .
       dockerfile: lis-mapping-refresher/Dockerfile
@@ -413,9 +429,9 @@ services:
     build:
       context: .
       dockerfile: committee-membership-refresher/Dockerfile
-    # Launcher contract: args(0) = config (unused), args(1) = runId.
-    # PipelineBootstrap.extractRunId parses args(1).
-    command: ["cfg-unused", "local-committee-run"]
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none),
+    # args(1) = runId (Long), args(2) = stepRunId (Long). PipelineBootstrap parses all three.
+    command: ["{}", "1", "0"]
     depends_on:
       db-migrations:
         condition: service_completed_successfully
@@ -444,8 +460,9 @@ services:
       dockerfile: committee-membership-refresher/Dockerfile
     entrypoint:
       ["java", "-XX:MaxRAMPercentage=75.0", "-cp", "app.jar", "repcheck.members.committees.app.CommitteeHistoryLoaderApp"]
-    # Launcher contract: args(0) = config (unused), args(1) = runId.
-    command: ["cfg-unused", "history-backfill-run"]
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none),
+    # args(1) = runId (Long), args(2) = stepRunId (Long).
+    command: ["{}", "1", "0"]
     depends_on:
       db-migrations:
         condition: service_completed_successfully
@@ -465,10 +482,10 @@ services:
     build:
       context: .
       dockerfile: votes-pipeline/Dockerfile
-    # Launcher contract: args(0) = config (unused — PureConfig reads env),
-    # args(1) = runId, args(2) = stepRunId. PipelineBootstrap raises
-    # RunIdMissing without args(1).
-    command: ["cfg-unused", "local-votes-run", "1"]
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none,
+    # layered over application.conf/env), args(1) = runId (Long), args(2) = stepRunId
+    # (Long). PipelineBootstrap raises RunIdMissing without args(1).
+    command: ["{}", "1", "1"]
     depends_on:
       db-migrations:
         condition: service_completed_successfully
@@ -536,13 +553,12 @@ services:
     build:
       context: .
       dockerfile: amendments-pipeline/Dockerfile
-    # Launcher contract: args(0) = config (unused — PureConfig reads env),
-    # args(1) = runId (PipelineBootstrap.extractRunId parses args(1).toLong;
-    # MUST be numeric — non-numeric raises RunIdMissing). args(2) = stepRunId.
-    # `1` matches the workflow_runs row seeded by workflow-runs-init, so
-    # AmendmentsPipeline's WorkflowStateUpdater.recordStepStarted has a parent
-    # FK target.
-    command: ["cfg-unused", "1", "1"]
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none,
+    # layered over application.conf/env), args(1) = runId (Long — MUST be numeric,
+    # non-numeric raises RunIdMissing), args(2) = stepRunId (Long). `1` matches the
+    # workflow_runs row seeded by workflow-runs-init, so AmendmentsPipeline's
+    # WorkflowStateUpdater.recordStepStarted has a parent FK target.
+    command: ["{}", "1", "1"]
     depends_on:
       db-migrations:
         condition: service_completed_successfully
@@ -572,11 +588,10 @@ services:
     build:
       context: .
       dockerfile: amendment-text-availability-checker/Dockerfile
-    # Launcher contract: args(0) = runId (Long), args(1) = stepRunId (Long).
-    # Defaults to 0L if missing/unparseable so any token would work, but pass
-    # `"1"` so a non-zero runId activates the WorkflowStateUpdater path against
-    # the workflow_runs row seeded by workflow-runs-init.
-    command: ["1", "1"]
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none),
+    # args(1) = runId (Long), args(2) = stepRunId (Long). A non-zero runId activates
+    # the WorkflowStateUpdater path against the workflow_runs row seeded by workflow-runs-init.
+    command: ["{}", "1", "1"]
     depends_on:
       db-migrations:
         condition: service_completed_successfully
@@ -610,9 +625,10 @@ services:
     build:
       context: .
       dockerfile: amendment-text-pipeline/Dockerfile
-    # Launcher contract: args(0) = runId (Long), args(1) = stepRunId (Long).
-    # `"1"` matches the seeded workflow_runs row (activates WorkflowStateUpdater).
-    command: ["1", "1"]
+    # Uniform 3-arg launcher contract: args(0) = config-override JSON (`{}` = none),
+    # args(1) = runId (Long), args(2) = stepRunId (Long). `"1"` matches the seeded
+    # workflow_runs row (activates WorkflowStateUpdater).
+    command: ["{}", "1", "1"]
     depends_on:
       db-migrations:
         condition: service_completed_successfully

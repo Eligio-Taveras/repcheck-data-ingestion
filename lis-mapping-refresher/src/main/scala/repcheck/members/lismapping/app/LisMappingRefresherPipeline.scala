@@ -74,16 +74,14 @@ private[app] object LisMappingRefresherPipeline {
       AppConfig,
       PipelineLogger[F],
     ) => LisMappingProcessor[F],
+    runId: Long = 0L,
   ): F[ExitCode] =
     for {
       config <- configLoader
       logger <- loggerFactory(PipelineName)
       exitCode <- resourceBuilder(config, logger).use { resources =>
         val processor = processorFactory(resources.httpClient, resources.xa, resources.pubSubPublisher, config, logger)
-        // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
-        // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
-        val runId: Long = 0L
-        val logCtx      = LogContext(runId = runId.toString, stepName = PipelineName)
+        val logCtx    = LogContext(runId = runId.toString, stepName = PipelineName)
         for {
           result <- processor.refreshAll(runId)
           _ <- logger.info(

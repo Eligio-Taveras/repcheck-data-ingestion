@@ -4,11 +4,9 @@ import java.util.concurrent.TimeUnit
 
 import scala.concurrent.duration.DurationInt
 
-import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Sync}
+import cats.effect.{Async, ExitCode, IO, IOApp, Resource}
 
 import org.http4s.ember.client.EmberClientBuilder
-
-import pureconfig.ConfigSource
 
 import com.google.api.gax.core.NoCredentialsProvider
 import com.google.api.gax.grpc.GrpcTransportChannel
@@ -21,7 +19,7 @@ import repcheck.ingestion.bills.text.subscription.PubSubSubscriberResource
 import repcheck.ingestion.common.api.RateLimitedHttpClient
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.events.PubSubPublisherResource
-import repcheck.ingestion.common.execution.WorkflowStateUpdater
+import repcheck.ingestion.common.execution.{PipelineBootstrap, WorkflowStateUpdater}
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
 
 object BillTextPipelineApp extends IOApp {
@@ -68,10 +66,16 @@ object BillTextPipelineApp extends IOApp {
           .map(Some(_))
     }
 
-  override def run(args: List[String]): IO[ExitCode] = {
-    val _ = args // args reserved for future CLI config override support
+  override def run(args: List[String]): IO[ExitCode] =
+    for {
+      runId     <- PipelineBootstrap.extractRunId[IO](args)
+      stepRunId <- PipelineBootstrap.extractStepRunId[IO](args)
+      exitCode  <- runPipeline(args, runId, stepRunId)
+    } yield exitCode
+
+  private[app] def runPipeline(args: List[String], runId: Long, stepRunId: Long): IO[ExitCode] =
     BillTextPipelinePipeline.runWithFactories[IO](
-      configLoader = Sync[IO].delay(ConfigSource.default.loadOrThrow[AppConfig]),
+      configLoader = PipelineBootstrap.loadConfig[IO, AppConfig](args),
       loggerFactory = (name: String) => PipelineLoggerFactory.make[IO](name),
       resourceBuilder = (config, logger) =>
         BillTextPipelinePipeline.buildResources[IO](
@@ -131,7 +135,8 @@ object BillTextPipelineApp extends IOApp {
       streamFactory = BillTextPipelinePipeline.buildStream[IO],
       workflowStateUpdaterFactory =
         (xa, cfg) => sys.env.get("WORKFLOW_RUN_ID").map(_ => new WorkflowStateUpdater[IO](xa, cfg)),
+      runId = runId,
+      stepRunId = stepRunId,
     )
-  }
 
 }

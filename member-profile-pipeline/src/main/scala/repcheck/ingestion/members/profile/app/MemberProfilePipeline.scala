@@ -81,7 +81,9 @@ private[app] object MemberProfilePipeline {
       PipelineLogger[F],
     ) => MemberProfileProcessor[F],
     congressesResolver: (AppConfig, Transactor[F], PipelineLogger[F]) => F[List[Int]],
-    streamFactory: (MemberProfileProcessor[F], PipelineLogger[F], List[Int]) => Stream[F, ProcessingResult],
+    streamFactory: (MemberProfileProcessor[F], PipelineLogger[F], List[Int], Long) => Stream[F, ProcessingResult],
+    runId: Long = 0L,
+    stepRunId: Long = 0L,
   ): F[ExitCode] =
     for {
       config <- configLoader
@@ -90,10 +92,8 @@ private[app] object MemberProfilePipeline {
         for {
           congresses <- congressesResolver(config, resources.xa, logger)
           processor    = processorFactory(resources.httpClient, resources.xa, resources.pubSubPublisher, config, logger)
-          resultStream = streamFactory(processor, logger, congresses)
-          // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
-          // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
-          result <- PipelineExecutor.execute[F](resultStream, logger, PipelineName, "0")
+          resultStream = streamFactory(processor, logger, congresses, runId)
+          result <- PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId, stepRunId)
         } yield result
       }
     } yield exitCode
@@ -206,10 +206,10 @@ private[app] object MemberProfilePipeline {
     processor: MemberProfileProcessor[F],
     logger: PipelineLogger[F],
     congresses: List[Int],
+    runId: Long,
   ): Stream[F, ProcessingResult] = {
     val _ = logger // reserved for future pre/post-stream logging
-    // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration.
-    processor.streamAll(0L, congresses)
+    processor.streamAll(runId, congresses)
   }
 
   /**
