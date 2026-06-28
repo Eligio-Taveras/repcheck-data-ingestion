@@ -16,11 +16,11 @@ import repcheck.ingestion.common.execution.PipelineBootstrap
 class BillSummaryPipelineSpec extends AnyFlatSpec with Matchers {
 
   "PipelineBootstrap.extractStepRunId" should "return the parsed Long when args(2) is a valid number" in {
-    PipelineBootstrap.extractStepRunId[IO](List("{}", "1", "42")).unsafeRunSync() shouldBe 42L
+    PipelineBootstrap.extractStepRunId[IO](List("{}", "1", "42")).unsafeRunSync().value shouldBe 42L
   }
 
   it should "accept '0' for docker-compose / Ofelia placeholder use" in {
-    PipelineBootstrap.extractStepRunId[IO](List("{}", "1", "0")).unsafeRunSync() shouldBe 0L
+    PipelineBootstrap.extractStepRunId[IO](List("{}", "1", "0")).unsafeRunSync().value shouldBe 0L
   }
 
   it should "raise StepRunIdInvalid when args(2) is missing" in {

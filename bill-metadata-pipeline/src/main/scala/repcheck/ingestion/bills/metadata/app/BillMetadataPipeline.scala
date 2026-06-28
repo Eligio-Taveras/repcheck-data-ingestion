@@ -23,14 +23,12 @@ import repcheck.ingestion.bills.metadata.config.BillMetadataConfig
 import repcheck.ingestion.bills.metadata.pipeline.BillMetadataProcessor
 import repcheck.ingestion.common.api.{CongressGovClientConfig, RateLimitedHttpClient}
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
-import repcheck.ingestion.common.execution.{PipelineBootstrap, PipelineExecutor}
+import repcheck.ingestion.common.execution.{PipelineBootstrap, PipelineExecutor, RetryWrapperFactory}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLoggerFactory}
 import repcheck.ingestion.common.placeholders.{DefaultPlaceholderCreator, DoobieEntityRepository}
 import repcheck.members.common.MemberInsertSql
 import repcheck.members.common.persistence.{DoobieMemberRepository, MemberWriteInstances}
 import repcheck.shared.models.congress.dos.member.MemberDO
-
-import com.repcheck.utils.errors.RetryWrapper
 
 private[app] object BillMetadataPipeline {
 
@@ -75,18 +73,9 @@ private[app] object BillMetadataPipeline {
           // timeout-and-back-off cycle (e.g., a Congress.gov page that hangs into the 30s timeout,
           // then retries with up to ~330s of cumulative backoff) presents to operators as a frozen
           // pipeline — no log line is emitted between attempts, so it's indistinguishable from a
-          // genuine deadlock. The previous `(_, _, _, _, _, _) => Async[F].unit` callback silently
-          // swallowed retry signals; this version preserves the correlationId so a single retried
-          // request's lifecycle is traceable across attempts.
-          val retryLogCtx = LogContext("0", "bill-metadata")
-          val retryWrapper = new RetryWrapper[F]((attempt, maxRetries, delayMs, errorClass, message, correlationId) =>
-            logger.warn(
-              retryLogCtx.copy(correlationId = Some(correlationId)),
-              s"Retry $attempt/$maxRetries scheduled in ${delayMs.toString}ms " +
-                s"(errorClass=${errorClass.toString}): $message",
-            )
-          )
-          val apiClient = BillsApiClient[F](config.congressApi, httpClient, retryWrapper, logger)
+          // genuine deadlock.
+          val retryWrapper = RetryWrapperFactory.logging[F](logger, PipelineName)
+          val apiClient    = BillsApiClient[F](config.congressApi, httpClient, retryWrapper, logger)
 
           val processor = new BillMetadataProcessor[F](
             apiClient = apiClient,
@@ -102,10 +91,10 @@ private[app] object BillMetadataPipeline {
             logger = logger,
           )
 
-          val resultStream = processor.streamAll(runId)
+          val resultStream = processor.streamAll(runId.value)
           logger.info(
             bootCtx,
-            s"App boot: resources built, processor wired, handing off to PipelineExecutor (runId=${runId.toString})",
+            s"App boot: resources built, processor wired, handing off to PipelineExecutor (runId=${runId.value.toString})",
           ) *> PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId, stepRunId)
       }
     } yield exitCode

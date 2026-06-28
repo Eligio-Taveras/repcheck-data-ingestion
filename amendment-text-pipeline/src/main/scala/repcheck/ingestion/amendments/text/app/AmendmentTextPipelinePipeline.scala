@@ -26,6 +26,7 @@ import repcheck.ingestion.amendments.text.pipeline.AmendmentTextProcessor
 import repcheck.ingestion.amendments.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.execution.{PipelineExecutor, PipelineFailureHandlerConfig, WorkflowStateUpdater}
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
 import repcheck.pipeline.models.metadata.ProcessingResult
@@ -90,11 +91,11 @@ private[app] object AmendmentTextPipelinePipeline {
       AmendmentTextProcessor[F],
       AppConfig,
       PipelineLogger[F],
-      Long,
+      RunId,
     ) => Stream[F, ProcessingResult],
     workflowStateUpdaterFactory: (Transactor[F], PipelineFailureHandlerConfig) => Option[WorkflowStateUpdater[F]],
-    runId: Long = 0L,
-    stepRunId: Long = 0L,
+    runId: RunId = RunId(0L),
+    stepRunId: StepRunId = StepRunId(0L),
   ): F[ExitCode] =
     for {
       config <- configLoader
@@ -165,10 +166,10 @@ private[app] object AmendmentTextPipelinePipeline {
     processor: AmendmentTextProcessor[F],
     config: AppConfig,
     logger: PipelineLogger[F],
-    runId: Long,
+    runId: RunId,
   ): Stream[F, ProcessingResult] = {
     val pullTimeoutLogCtx = LogContext(
-      runId = runId.toString,
+      runId = runId.value.toString,
       stepName = "pubsub-pull",
     )
     val pullWithTimeout: F[List[ReceivedEvent]] =

@@ -23,6 +23,7 @@ import repcheck.ingestion.bills.text.subscription.{EventSubscriberConfig, PubSub
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.execution.{PipelineExecutor, PipelineFailureHandlerConfig, WorkflowStateUpdater}
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
 import repcheck.ingestion.common.logging.PipelineLogger
 import repcheck.ingestion.text.embedding.{EmbeddingConfig, OllamaEmbeddingService}
 import repcheck.ingestion.text.extraction.TextExtractor
@@ -86,8 +87,8 @@ private[app] object BillTextPipelinePipeline {
       PipelineLogger[F],
     ) => Stream[F, ProcessingResult],
     workflowStateUpdaterFactory: (Transactor[F], PipelineFailureHandlerConfig) => Option[WorkflowStateUpdater[F]],
-    runId: Long,
-    stepRunId: Long,
+    runId: RunId,
+    stepRunId: StepRunId,
   ): F[ExitCode] =
     for {
       config <- configLoader

@@ -21,6 +21,7 @@ import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.execution.PipelineExecutor
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
@@ -68,10 +69,10 @@ private[app] object AmendmentTextCheckerRun {
     streamFactory: (
       AmendmentTextAvailabilityChecker[F],
       PipelineLogger[F],
-      Long,
+      RunId,
     ) => Stream[F, ProcessingResult],
-    runId: Long = 0L,
-    stepRunId: Long = 0L,
+    runId: RunId = RunId(0L),
+    stepRunId: StepRunId = StepRunId(0L),
   ): F[ExitCode] =
     for {
       config <- configLoader
@@ -157,10 +158,10 @@ private[app] object AmendmentTextCheckerRun {
   private[app] def buildStream[F[_]](
     checker: AmendmentTextAvailabilityChecker[F],
     logger: PipelineLogger[F],
-    runId: Long,
+    runId: RunId,
   ): Stream[F, ProcessingResult] = {
     val _ = logger // reserved for future pre/post-stream logging
-    checker.checkAll(runId)
+    checker.checkAll(runId.value)
   }
 
   private[app] def buildResources[F[_]](

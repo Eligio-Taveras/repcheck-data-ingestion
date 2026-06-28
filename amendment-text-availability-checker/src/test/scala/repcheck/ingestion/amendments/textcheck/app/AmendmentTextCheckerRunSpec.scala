@@ -24,6 +24,7 @@ import repcheck.ingestion.amendments.textcheck.pipeline.AmendmentTextAvailabilit
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
+import repcheck.ingestion.common.ids.RunId
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
@@ -236,7 +237,7 @@ class AmendmentTextCheckerRunSpec extends AnyFlatSpec with Matchers with Mockito
     val expectedResult = ProcessingResult.Succeeded(entityId = "117-SAMDT-1")
     when(checker.checkAll(anyLong())).thenReturn(Stream.emit(expectedResult))
 
-    val results = AmendmentTextCheckerRun.buildStream[IO](checker, logger, 0L).compile.toList.unsafeRunSync()
+    val results = AmendmentTextCheckerRun.buildStream[IO](checker, logger, RunId(0L)).compile.toList.unsafeRunSync()
     val _       = results.size shouldBe 1
     results.headOption.map(_.entityId) shouldBe Some("117-SAMDT-1")
   }
@@ -245,7 +246,7 @@ class AmendmentTextCheckerRunSpec extends AnyFlatSpec with Matchers with Mockito
     val logger  = new StubPipelineLogger
     val checker = mock[AmendmentTextAvailabilityChecker[IO]]
     when(checker.checkAll(anyLong())).thenReturn(Stream.empty)
-    AmendmentTextCheckerRun.buildStream[IO](checker, logger, 0L).compile.toList.unsafeRunSync() shouldBe empty
+    AmendmentTextCheckerRun.buildStream[IO](checker, logger, RunId(0L)).compile.toList.unsafeRunSync() shouldBe empty
   }
 
   it should "pass the runId through to checker.checkAll" in {
@@ -257,7 +258,7 @@ class AmendmentTextCheckerRunSpec extends AnyFlatSpec with Matchers with Mockito
       captured.set(invocation.getArgument[Long](0))
       Stream.empty
     }
-    val _ = AmendmentTextCheckerRun.buildStream[IO](checker, logger, 999L).compile.drain.unsafeRunSync()
+    val _ = AmendmentTextCheckerRun.buildStream[IO](checker, logger, RunId(999L)).compile.drain.unsafeRunSync()
     captured.get shouldBe 999L
   }
 

@@ -24,10 +24,11 @@ import repcheck.ingestion.bills.textcheck.pipeline.BillTextAvailabilityChecker
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
-import com.repcheck.utils.errors.{ErrorClass, RetryConfig}
+import com.repcheck.utils.errors.RetryConfig
 
 class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -130,8 +131,8 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, CheckerResources[IO]](stubResources()),
         checkerFactory = (_, _, _, _, _) => mock[BillTextAvailabilityChecker[IO]],
         streamFactory = (_, _, _) => Stream.empty,
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .unsafeRunSync()
 
@@ -149,8 +150,8 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, CheckerResources[IO]](stubResources()),
         checkerFactory = (_, _, _, _, _) => mock[BillTextAvailabilityChecker[IO]],
         streamFactory = (_, _, _) => Stream.empty,
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .attempt
       .unsafeRunSync()
@@ -170,26 +171,13 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, CheckerResources[IO]](stubResources()),
         checkerFactory = (_, _, _, _, _) => mock[BillTextAvailabilityChecker[IO]],
         streamFactory = (_, _, _) => Stream.empty,
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .unsafeRunSync()
 
     val summaryLogs = logger.messages.filter(_.contains("Pipeline completed"))
     summaryLogs should not be empty
-  }
-
-  "noOpRetryLogger" should "return F[Unit] regardless of arguments" in {
-    // Directly invoke the extracted retry logger so its body is exercised — the production
-    // retry path wires this through RetryWrapper, but no unit test triggers an actual retry,
-    // leaving the lambda uncovered when inlined. Extracting to a named method lets tests
-    // cover the body without having to simulate transient failures.
-    val result = BillTextCheckerPipeline
-      .noOpRetryLogger[IO]
-      .apply(1, 3, 100L, ErrorClass.Transient, "test error", UUID.randomUUID())
-      .unsafeRunSync()
-
-    result shouldBe ((): Unit)
   }
 
   "buildChecker" should "construct a BillTextAvailabilityChecker with all dependencies" in {
@@ -279,7 +267,7 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
 
     when(checker.checkAll(eqTo(77L))).thenReturn(Stream.emit(expectedResult))
 
-    val results = BillTextCheckerPipeline.buildStream[IO](checker, logger, 77L).compile.toList.unsafeRunSync()
+    val results = BillTextCheckerPipeline.buildStream[IO](checker, logger, RunId(77L)).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 1
     results.headOption.map(_.entityId) shouldBe Some("118-HR-1")
@@ -291,7 +279,7 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
 
     when(checker.checkAll(anyLong())).thenReturn(Stream.empty)
 
-    val results = BillTextCheckerPipeline.buildStream[IO](checker, logger, 0L).compile.toList.unsafeRunSync()
+    val results = BillTextCheckerPipeline.buildStream[IO](checker, logger, RunId(0L)).compile.toList.unsafeRunSync()
 
     results shouldBe empty
   }

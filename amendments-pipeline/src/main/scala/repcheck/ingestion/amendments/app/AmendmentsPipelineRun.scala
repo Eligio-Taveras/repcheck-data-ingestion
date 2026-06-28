@@ -10,7 +10,12 @@ import fs2.io.net.Network
 
 import repcheck.ingestion.amendments.pipeline.DoobieVoteAmendmentLinker
 import repcheck.ingestion.common.db.TransactorResource
-import repcheck.ingestion.common.execution.{PipelineBootstrap, PipelineFailureHandlerConfig, WorkflowStateUpdater}
+import repcheck.ingestion.common.execution.{
+  PipelineBootstrap,
+  PipelineFailureHandlerConfig,
+  RetryWrapperFactory,
+  WorkflowStateUpdater,
+}
 import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
 
 import com.repcheck.utils.errors.RetryWrapper
@@ -33,7 +38,7 @@ private[app] object AmendmentsPipelineRun {
       args = args,
       configLoader = PipelineBootstrap.loadConfig[F, AmendmentsPipeline.AppConfig](args),
       loggerFactory = PipelineLoggerFactory.make[F](PipelineName),
-      retryWrapperFactory = (logger: PipelineLogger[F]) => AmendmentsPipeline.buildRetryWrapper[F](logger),
+      retryWrapperFactory = (logger: PipelineLogger[F]) => RetryWrapperFactory.logging[F](logger, PipelineName),
       resourceBuilder = (cfg: AmendmentsPipeline.AppConfig, retryWrapper: RetryWrapper[F]) =>
         AmendmentsPipelineResources.build[F](
           config = cfg,

@@ -27,6 +27,7 @@ import repcheck.ingestion.bills.text.subscription.{EventSubscriberConfig, PubSub
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.execution.PipelineFailureHandlerConfig
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.embedding.EmbeddingConfig
 import repcheck.pipeline.models.events.{BillTextAvailableEvent, PipelineEvent}
@@ -151,8 +152,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .unsafeRunSync()
 
@@ -171,8 +172,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .attempt
       .unsafeRunSync()
@@ -193,8 +194,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .unsafeRunSync()
 

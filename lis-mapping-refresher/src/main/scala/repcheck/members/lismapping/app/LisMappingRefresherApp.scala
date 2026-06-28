@@ -16,7 +16,7 @@ object LisMappingRefresherApp extends IOApp {
     for {
       runId    <- PipelineBootstrap.extractRunId[IO](args)
       _        <- PipelineBootstrap.extractStepRunId[IO](args)
-      exitCode <- runPipeline(args, runId)
+      exitCode <- runPipeline(args, runId.value)
     } yield exitCode
 
   private[app] def runPipeline(args: List[String], runId: Long): IO[ExitCode] =

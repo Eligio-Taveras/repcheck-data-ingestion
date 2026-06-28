@@ -5,9 +5,11 @@ import cats.effect.{ExitCode, IO, IOApp}
 import org.http4s.ember.client.EmberClientBuilder
 
 import repcheck.ingestion.common.api.RateLimitedHttpClient
+import repcheck.ingestion.common.congresses.CongressResolver
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.events.PubSubPublisherResource
 import repcheck.ingestion.common.execution.PipelineBootstrap
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
 import repcheck.ingestion.members.profile.app.MemberProfilePipeline.AppConfig
 
@@ -20,7 +22,7 @@ object MemberProfilePipelineApp extends IOApp {
       exitCode  <- runPipeline(args, runId, stepRunId)
     } yield exitCode
 
-  private[app] def runPipeline(args: List[String], runId: Long, stepRunId: Long): IO[ExitCode] =
+  private[app] def runPipeline(args: List[String], runId: RunId, stepRunId: StepRunId): IO[ExitCode] =
     MemberProfilePipeline.runWithFactories[IO](
       configLoader = PipelineBootstrap.loadConfig[IO, AppConfig](args),
       loggerFactory = (name: String) => PipelineLoggerFactory.make[IO](name),
@@ -35,8 +37,15 @@ object MemberProfilePipelineApp extends IOApp {
           PubSubPublisherResource.make[IO](_),
         ),
       processorFactory = MemberProfilePipeline.buildProcessor[IO],
-      congressesResolver =
-        (cfg, xa, logger) => MemberProfilePipeline.resolveCongresses[IO](cfg, xa, logger, sys.env.get),
+      congressesResolver = (cfg, xa, logger) =>
+        CongressResolver.resolve[IO](
+          envVarName = "MEMBERS_CONGRESSES",
+          stepName = "member-profile-pipeline:resolve-congresses",
+          configuredCongresses = cfg.pipeline.congresses,
+          xa = xa,
+          logger = logger,
+          envGetter = sys.env.get,
+        ),
       streamFactory = MemberProfilePipeline.buildStream[IO],
       runId = runId,
       stepRunId = stepRunId,

@@ -9,6 +9,7 @@ import repcheck.ingestion.common.api.RateLimitedHttpClient
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.events.PubSubPublisherResource
 import repcheck.ingestion.common.execution.PipelineBootstrap
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
 
 /**
@@ -33,7 +34,7 @@ object AmendmentTextCheckerApp extends IOApp {
       exitCode  <- runChecker(args, runId, stepRunId)
     } yield exitCode
 
-  private[app] def runChecker(args: List[String], runId: Long, stepRunId: Long): IO[ExitCode] =
+  private[app] def runChecker(args: List[String], runId: RunId, stepRunId: StepRunId): IO[ExitCode] =
     AmendmentTextCheckerRun.runWithFactories[IO](
       configLoader = PipelineBootstrap.loadConfig[IO, AppConfig](args),
       loggerFactory = (name: String) => PipelineLoggerFactory.make[IO](name),
