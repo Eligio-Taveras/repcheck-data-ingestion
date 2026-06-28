@@ -86,8 +86,8 @@ private[app] object BillTextPipelinePipeline {
       PipelineLogger[F],
     ) => Stream[F, ProcessingResult],
     workflowStateUpdaterFactory: (Transactor[F], PipelineFailureHandlerConfig) => Option[WorkflowStateUpdater[F]],
-    runId: Long = 0L,
-    stepRunId: Long = 0L,
+    runId: Long,
+    stepRunId: Long,
   ): F[ExitCode] =
     for {
       config <- configLoader

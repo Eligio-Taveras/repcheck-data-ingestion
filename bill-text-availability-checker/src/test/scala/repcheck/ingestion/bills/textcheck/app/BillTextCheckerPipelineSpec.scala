@@ -130,6 +130,8 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, CheckerResources[IO]](stubResources()),
         checkerFactory = (_, _, _, _, _) => mock[BillTextAvailabilityChecker[IO]],
         streamFactory = (_, _, _) => Stream.empty,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 
@@ -147,6 +149,8 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, CheckerResources[IO]](stubResources()),
         checkerFactory = (_, _, _, _, _) => mock[BillTextAvailabilityChecker[IO]],
         streamFactory = (_, _, _) => Stream.empty,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .attempt
       .unsafeRunSync()
@@ -166,6 +170,8 @@ class BillTextCheckerPipelineSpec extends AnyFlatSpec with Matchers with Mockito
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, CheckerResources[IO]](stubResources()),
         checkerFactory = (_, _, _, _, _) => mock[BillTextAvailabilityChecker[IO]],
         streamFactory = (_, _, _) => Stream.empty,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 

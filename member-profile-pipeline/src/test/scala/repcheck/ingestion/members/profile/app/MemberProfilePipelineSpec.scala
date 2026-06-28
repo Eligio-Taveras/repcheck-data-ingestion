@@ -135,6 +135,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
         streamFactory = (_, _, _, _) => Stream.empty,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 
@@ -153,6 +155,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
         streamFactory = (_, _, _, _) => Stream.emit(ProcessingResult.Failed("A000001", "api error")),
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 
@@ -171,6 +175,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
         streamFactory = (_, _, _, _) => Stream.empty,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .attempt
       .unsafeRunSync()
@@ -191,6 +197,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
         streamFactory = (_, _, _, _) => Stream.empty,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 
@@ -215,6 +223,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
           capturedList.set(congresses)
           Stream.empty
         },
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 

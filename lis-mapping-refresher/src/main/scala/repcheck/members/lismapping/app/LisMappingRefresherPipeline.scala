@@ -74,7 +74,7 @@ private[app] object LisMappingRefresherPipeline {
       AppConfig,
       PipelineLogger[F],
     ) => LisMappingProcessor[F],
-    runId: Long = 0L,
+    runId: Long,
   ): F[ExitCode] =
     for {
       config <- configLoader

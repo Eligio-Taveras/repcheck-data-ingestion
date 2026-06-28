@@ -151,6 +151,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 
@@ -169,6 +171,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .attempt
       .unsafeRunSync()
@@ -189,6 +193,8 @@ class BillTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with Mockit
         processorFactory = (_, _, _, _, _, _) => mock[BillTextProcessor[IO]],
         streamFactory = (_, _, _, _) => Stream.empty,
         workflowStateUpdaterFactory = (_, _) => None,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 

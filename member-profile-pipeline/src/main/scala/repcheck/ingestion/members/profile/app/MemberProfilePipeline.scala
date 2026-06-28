@@ -82,8 +82,8 @@ private[app] object MemberProfilePipeline {
     ) => MemberProfileProcessor[F],
     congressesResolver: (AppConfig, Transactor[F], PipelineLogger[F]) => F[List[Int]],
     streamFactory: (MemberProfileProcessor[F], PipelineLogger[F], List[Int], Long) => Stream[F, ProcessingResult],
-    runId: Long = 0L,
-    stepRunId: Long = 0L,
+    runId: Long,
+    stepRunId: Long,
   ): F[ExitCode] =
     for {
       config <- configLoader
