@@ -58,12 +58,13 @@ private[app] object CommitteeMembershipRefresherPipeline {
     for {
       config <- configLoader
       runId  <- PipelineBootstrap.extractRunId[F](args)
+      _      <- PipelineBootstrap.extractStepRunId[F](args)
       logger <- loggerFactory(PipelineName)
       exitCode <- resourceBuilder(config, logger).use { resources =>
         val processor = processorFactory(resources.httpClient, resources.xa, config, logger)
-        val logCtx    = LogContext(runId = runId, stepName = PipelineName)
+        val logCtx    = LogContext(runId = runId.toString, stepName = PipelineName)
         for {
-          result <- processor.refreshAll(runId.toLongOption.getOrElse(0L))
+          result <- processor.refreshAll(runId)
           _ <- logger.info(
             logCtx,
             s"Pipeline completed: committees=${result.committeesUpserted.toString} " +

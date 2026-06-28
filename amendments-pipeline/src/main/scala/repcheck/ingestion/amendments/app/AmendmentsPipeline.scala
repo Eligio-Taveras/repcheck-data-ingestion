@@ -68,12 +68,13 @@ private[app] object AmendmentsPipeline {
     linkerFactory: (AmendmentsPipelineResources.Resources[F], PipelineLogger[F]) => VoteAmendmentLinker[F],
   ): F[ExitCode] =
     for {
-      config <- configLoader
-      _      <- validatePoolSizingF[F](config)
-      runId  <- PipelineBootstrap.extractRunId[F](args)
-      logger <- loggerFactory
+      config    <- configLoader
+      _         <- validatePoolSizingF[F](config)
+      runId     <- PipelineBootstrap.extractRunId[F](args)
+      stepRunId <- PipelineBootstrap.extractStepRunId[F](args)
+      logger    <- loggerFactory
       _ <- logger.info(
-        LogContext(runId, PipelineName),
+        LogContext(runId.toString, PipelineName),
         s"Boot: db=${config.database.host}:${config.database.port.toString}/${config.database.database} " +
           s"maxConnections=${config.database.maxConnections.toString} " +
           s"pipeline.parallelism=${config.pipeline.parallelism.toString} " +
@@ -87,16 +88,16 @@ private[app] object AmendmentsPipeline {
         val processor    = processorFactory(config, resources, logger, metrics)
         val stepRecorder = stepRecorderFactory(resources)
         val linker       = linkerFactory(resources, logger)
-        val stream       = streamFactory(processor, runId)
+        val stream       = streamFactory(processor, runId.toString)
         for {
           _    <- stepRecorder.recordStepStarted(runId, PipelineName)
-          code <- PipelineExecutor.execute[F](stream, logger, PipelineName, runId)
-          _    <- logMetricsSnapshot[F](logger, runId, metrics)
+          code <- PipelineExecutor.execute[F](stream, logger, PipelineName, runId, stepRunId)
+          _    <- logMetricsSnapshot[F](logger, runId.toString, metrics)
           _ <-
             if (code == ExitCode.Success) {
               // Reconcile votes↔amendments from the freshly-upserted action text, then record completion. The link
               // pass is best-effort: a failure here is logged but does not fail an otherwise-successful run.
-              runLinker[F](linker, runId, logger) *> stepRecorder.recordStepCompleted(runId, PipelineName)
+              runLinker[F](linker, runId.toString, logger) *> stepRecorder.recordStepCompleted(runId, PipelineName)
             } else {
               stepRecorder.recordStepFailed(runId, PipelineName, "pipeline reported one or more failures")
             }

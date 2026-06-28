@@ -12,12 +12,9 @@ import doobie._
 import doobie.implicits._
 import doobie.util.transactor.Transactor
 
-import pureconfig.ConfigSource
-
 import repcheck.ingestion.bills.common.persistence.{DoobieBillRepository, DoobieBillSummaryRepository}
 import repcheck.ingestion.bills.summary.api.BillSummariesApiClient
 import repcheck.ingestion.bills.summary.config.BillSummaryConfig
-import repcheck.ingestion.bills.summary.errors.StepRunIdInvalid
 import repcheck.ingestion.bills.summary.persistence.DoobieWorkflowRunStepsRepository
 import repcheck.ingestion.bills.summary.pipeline.BillSummaryProcessor
 import repcheck.ingestion.common.api.{CongressGovClientConfig, RateLimitedHttpClient}
@@ -34,8 +31,9 @@ import com.repcheck.utils.errors.RetryWrapper
  *
  * ==Launcher contract==
  *
- *   - `args(0)` — config JSON placeholder (currently unused; the pipeline loads `application.conf` directly).
- *   - `args(1)` — run-level identifier (`workflow_runs.id` string). Required and non-blank.
+ *   - `args(0)` — config-override JSON blob (`{}` = none), layered over `application.conf` via
+ *     `PipelineBootstrap.loadConfig`.
+ *   - `args(1)` — run-level identifier (`workflow_runs.id` `Long`). Required and parseable.
  *   - `args(2)` — step-level identifier (`workflow_run_steps.id` `Long`). Required and parseable.
  *
  * For docker-compose / Ofelia local environments where the launcher hasn't been wired up yet, callers can pass `"0"`
@@ -53,9 +51,9 @@ private[app] object BillSummaryPipeline {
 
   def run[F[_]: Async: Network](args: List[String]): F[ExitCode] =
     for {
-      config    <- Sync[F].delay(ConfigSource.default.loadOrThrow[AppConfig])
+      config    <- PipelineBootstrap.loadConfig[F, AppConfig](args)
       runId     <- PipelineBootstrap.extractRunId[F](args)
-      stepRunId <- extractStepRunId[F](args)
+      stepRunId <- PipelineBootstrap.extractStepRunId[F](args)
       logger    <- PipelineLoggerFactory.make[F](PipelineName)
       exitCode <- buildResources[F](config).use {
         case (xa, httpClient) =>
@@ -75,7 +73,7 @@ private[app] object BillSummaryPipeline {
               config = config.pipeline,
               logger = logger,
             )
-            resultStream = processor.streamAll(runId, congresses)
+            resultStream = processor.streamAll(runId.toString, congresses)
             result <- PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId, stepRunId)
           } yield result
       }
@@ -147,24 +145,5 @@ private[app] object BillSummaryPipeline {
         permits = config.pipeline.httpConcurrency.toLong,
       )
     } yield (xa, throttledClient)
-
-  /**
-   * Extract the step-level identifier from `args(2)` and parse it as a `Long`. The launcher is responsible for creating
-   * the `workflow_run_steps` row and passing its BIGSERIAL PK before invoking the pipeline — a missing or non-numeric
-   * value indicates a broken launcher contract and fails the run fast via [[StepRunIdInvalid]].
-   *
-   * For docker-compose / Ofelia entries where workflow_run_steps integration is not yet wired, callers pass `"0"` to
-   * supply a placeholder Long that satisfies the contract without dishonestly hardcoding the value in source.
-   */
-  private[app] def extractStepRunId[F[_]: Sync](args: List[String]): F[Long] =
-    args.lift(2) match {
-      case Some(raw) if raw.trim.nonEmpty =>
-        raw.trim.toLongOption match {
-          case Some(id) => Sync[F].pure(id)
-          case None     => Sync[F].raiseError[Long](StepRunIdInvalid(raw))
-        }
-      case Some(raw) => Sync[F].raiseError[Long](StepRunIdInvalid(raw))
-      case None      => Sync[F].raiseError[Long](StepRunIdInvalid("<missing>"))
-    }
 
 }

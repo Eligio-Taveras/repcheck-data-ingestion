@@ -134,7 +134,9 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
-        streamFactory = (_, _, _) => Stream.empty,
+        streamFactory = (_, _, _, _) => Stream.empty,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 
@@ -152,7 +154,9 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
-        streamFactory = (_, _, _) => Stream.emit(ProcessingResult.Failed("A000001", "api error")),
+        streamFactory = (_, _, _, _) => Stream.emit(ProcessingResult.Failed("A000001", "api error")),
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 
@@ -170,7 +174,9 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
-        streamFactory = (_, _, _) => Stream.empty,
+        streamFactory = (_, _, _, _) => Stream.empty,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .attempt
       .unsafeRunSync()
@@ -190,7 +196,9 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
-        streamFactory = (_, _, _) => Stream.empty,
+        streamFactory = (_, _, _, _) => Stream.empty,
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 
@@ -211,10 +219,12 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, PipelineResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = (_, _, _) => IO.pure(resolverList),
-        streamFactory = (_, _, congresses) => {
+        streamFactory = (_, _, congresses, _) => {
           capturedList.set(congresses)
           Stream.empty
         },
+        runId = 1L,
+        stepRunId = 1L,
       )
       .unsafeRunSync()
 
@@ -245,19 +255,19 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
     processor.toString should not be empty
   }
 
-  "buildStream" should "delegate to processor.streamAll with the supplied congresses list" in {
+  "buildStream" should "delegate to processor.streamAll with the supplied congresses list and runId" in {
     val logger    = new StubPipelineLogger
     val processor = mock[MemberProfileProcessor[IO]]
 
-    when(processor.streamAll(anyLong(), eqTo(List(118, 119))))
+    when(processor.streamAll(eqTo(55L), eqTo(List(118, 119))))
       .thenReturn(Stream.emit(ProcessingResult.Succeeded("A000001")))
 
     val results =
-      MemberProfilePipeline.buildStream[IO](processor, logger, List(118, 119)).compile.toList.unsafeRunSync()
+      MemberProfilePipeline.buildStream[IO](processor, logger, List(118, 119), 55L).compile.toList.unsafeRunSync()
 
     val _ = results.size shouldBe 1
     val _ = results.headOption.map(_.entityId) shouldBe Some("A000001")
-    verify(processor, times(1)).streamAll(anyLong(), eqTo(List(118, 119)))
+    verify(processor, times(1)).streamAll(eqTo(55L), eqTo(List(118, 119)))
   }
 
   it should "return empty stream when processor produces no results" in {
@@ -266,7 +276,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
 
     when(processor.streamAll(anyLong(), eqTo(List(118)))).thenReturn(Stream.empty)
 
-    val results = MemberProfilePipeline.buildStream[IO](processor, logger, List(118)).compile.toList.unsafeRunSync()
+    val results =
+      MemberProfilePipeline.buildStream[IO](processor, logger, List(118), 0L).compile.toList.unsafeRunSync()
 
     results shouldBe empty
   }

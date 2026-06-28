@@ -148,6 +148,8 @@ services:
     build:
       context: .
       dockerfile: bill-metadata-pipeline/Dockerfile
+    # Launcher contract: args(0) = config-override JSON ({}=none), args(1) = runId, args(2) = stepRunId.
+    command: ["{}", "1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -172,7 +174,7 @@ services:
       dockerfile: bill-summary-pipeline/Dockerfile
     # Launcher contract: args(0) = config (unused), args(1) = runId, args(2) = stepRunId.
     # See docker-compose.local.yml for the full justification — same pattern.
-    command: ["cfg-unused", "e2e-bill-summary-run", "0"]
+    command: ["{}", "1", "0"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -201,6 +203,8 @@ services:
     build:
       context: .
       dockerfile: bill-text-availability-checker/Dockerfile
+    # Launcher contract: args(0) = config-override JSON ({}=none), args(1) = runId, args(2) = stepRunId.
+    command: ["{}", "1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -229,6 +233,8 @@ services:
     build:
       context: .
       dockerfile: bill-text-pipeline/Dockerfile
+    # Launcher contract: args(0) = config-override JSON ({}=none), args(1) = runId, args(2) = stepRunId.
+    command: ["{}", "1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -282,7 +288,7 @@ services:
     # Launcher contract: args(0) = config (unused — PureConfig reads env),
     # args(1) = runId (surfaces in logs + events), args(2) = stepRunId.
     # PipelineBootstrap raises RunIdMissing if args(1) is absent.
-    command: ["cfg-unused", "e2e-votes-run", "1"]
+    command: ["{}", "1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -332,6 +338,8 @@ services:
     build:
       context: .
       dockerfile: member-profile-pipeline/Dockerfile
+    # Launcher contract: args(0) = config-override JSON ({}=none), args(1) = runId, args(2) = stepRunId.
+    command: ["{}", "1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -373,6 +381,8 @@ services:
     build:
       context: .
       dockerfile: lis-mapping-refresher/Dockerfile
+    # Launcher contract: args(0) = config-override JSON ({}=none), args(1) = runId, args(2) = stepRunId.
+    command: ["{}", "1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -442,7 +452,7 @@ services:
     # raises RunIdMissing wrapping NumberFormatException), args(2) = stepRunId.
     # Use a numeric placeholder for e2e — there is no workflow_runs row in this slice,
     # so any Long is acceptable.
-    command: ["cfg-unused", "1", "1"]
+    command: ["{}", "1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -479,7 +489,7 @@ services:
     # Launcher contract: args(0) = runId (Long), args(1) = stepRunId (Long).
     # Both default to 0L if missing/unparseable, so this command is for log clarity rather than
     # a hard requirement — `args.lift(0).flatMap(_.toLongOption).getOrElse(0L)` won't crash.
-    command: ["1", "1"]
+    command: ["{}", "1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy
@@ -522,7 +532,7 @@ services:
     # Launcher contract: args(0) = runId (Long), args(1) = stepRunId (Long).
     # Same convention as the availability-checker — defaults to 0L on missing/unparseable, so
     # this is for log clarity. A non-zero runId here also activates the WorkflowStateUpdater.
-    command: ["1", "1"]
+    command: ["{}", "1", "1"]
     depends_on:
       alloydb:
         condition: service_healthy

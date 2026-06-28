@@ -125,6 +125,7 @@ class LisMappingRefresherPipelineSpec extends AnyFlatSpec with Matchers with Moc
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, RefresherResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => processor,
+        runId = 1L,
       )
       .unsafeRunSync()
 
@@ -141,6 +142,7 @@ class LisMappingRefresherPipelineSpec extends AnyFlatSpec with Matchers with Moc
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, RefresherResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => mock[LisMappingProcessor[IO]],
+        runId = 1L,
       )
       .attempt
       .unsafeRunSync()
@@ -164,6 +166,7 @@ class LisMappingRefresherPipelineSpec extends AnyFlatSpec with Matchers with Moc
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, RefresherResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => processor,
+        runId = 1L,
       )
       .attempt
       .unsafeRunSync()
@@ -186,6 +189,7 @@ class LisMappingRefresherPipelineSpec extends AnyFlatSpec with Matchers with Moc
         resourceBuilder =
           (_: AppConfig, _: PipelineLogger[IO]) => Resource.pure[IO, RefresherResources[IO]](stubResources()),
         processorFactory = (_, _, _, _, _) => processor,
+        runId = 1L,
       )
       .unsafeRunSync()
 

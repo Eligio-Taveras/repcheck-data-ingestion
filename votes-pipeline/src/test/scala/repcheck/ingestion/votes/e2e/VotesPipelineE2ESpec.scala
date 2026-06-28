@@ -204,9 +204,11 @@ class VotesPipelineE2ESpec
 
   /**
    * Launch the pipeline end-to-end and return (exitCode, capturedLogLines). Uses a fixed set of launcher args so the
-   * runId and stepRunId in logs / events are deterministic across tests.
+   * runId and stepRunId in logs / events are deterministic across tests. runIds are arbitrary positive Longs (the
+   * launcher requires numeric ids); paired first/second values per scenario (e.g. 101/102) denote the two runs of an
+   * idempotency check.
    */
-  private def runPipeline(runId: String = "e2e-run-1"): (cats.effect.ExitCode, List[String]) = {
+  private def runPipeline(runId: String = "1"): (cats.effect.ExitCode, List[String]) = {
     val capturing = new CapturingLogger
     val args      = List("cfg-ignored", runId, "42")
     val cfg       = buildAppConfig()
@@ -522,14 +524,14 @@ class VotesPipelineE2ESpec
     stubSenateVote(648, loadFixture("senate/vote-119-1-00648-s1071.xml"))
 
     // First run
-    val (exit1, _)  = runPipeline(runId = "e2e-run-first")
+    val (exit1, _)  = runPipeline(runId = "101")
     val _           = exit1.code shouldBe 0
     val _           = countVotes() shouldBe 2L
     val firstEvents = pullAllEvents()
     val _           = firstEvents.size shouldBe 2
 
     // Second run — same stubs, no stored-state change in between, so detector should classify both as Unchanged.
-    val (exit2, _)   = runPipeline(runId = "e2e-run-second")
+    val (exit2, _)   = runPipeline(runId = "102")
     val _            = exit2.code shouldBe 0
     val _            = countVotes() shouldBe 2L       // still 2, no new rows
     val _            = countVoteHistory() shouldBe 0L // no archives because nothing changed
@@ -554,7 +556,7 @@ class VotesPipelineE2ESpec
     stubHouseList(miniHouseListJson(List((240, "HR", "3424", "2025-09-09T18:53:19-04:00"))))
     stubHouseMembers(240, originalBody)
     stubSenateIndex(miniSenateIndexXml(Nil))
-    val (exit1, _) = runPipeline(runId = "e2e-s3-first")
+    val (exit1, _) = runPipeline(runId = "301")
     val _          = exit1.code shouldBe 0
     val _          = countVotes() shouldBe 1L
     val _          = pullAllEvents().size shouldBe 1
@@ -565,7 +567,7 @@ class VotesPipelineE2ESpec
     stubHouseMembers(240, secondRunBody)
     stubSenateIndex(miniSenateIndexXml(Nil))
 
-    val (exit2, _) = runPipeline(runId = "e2e-s3-second")
+    val (exit2, _) = runPipeline(runId = "302")
     val _          = exit2.code shouldBe 0
     val _          = countVotes() shouldBe 1L       // still 1 — same natural key
     val _          = countVoteHistory() shouldBe 1L // one archive row
@@ -588,7 +590,7 @@ class VotesPipelineE2ESpec
     stubHouseList(miniHouseListJson(List((240, "HR", "3424", "2025-09-09T18:53:19-04:00"))))
     stubHouseMembers(240, originalBody)
     stubSenateIndex(miniSenateIndexXml(Nil))
-    val (exit1, _) = runPipeline(runId = "e2e-s4-first")
+    val (exit1, _) = runPipeline(runId = "401")
     val _          = exit1.code shouldBe 0
     val _          = pullAllEvents().size shouldBe 1
 
@@ -598,7 +600,7 @@ class VotesPipelineE2ESpec
     stubHouseMembers(240, secondRunBody)
     stubSenateIndex(miniSenateIndexXml(Nil))
 
-    val (exit2, _) = runPipeline(runId = "e2e-s4-second")
+    val (exit2, _) = runPipeline(runId = "402")
     val _          = exit2.code shouldBe 0
     val _          = countVoteHistory() shouldBe 1L // archived because metadata changed
     pullAllEvents().size shouldBe 0 // no event because positions didn't change
@@ -616,7 +618,7 @@ class VotesPipelineE2ESpec
     stubSenateIndex(miniSenateIndexXml(List((659, "PN373", "On the Cloture Motion"))))
     stubSenateVote(659, loadFixture("senate/vote-119-1-00659-pn373-cloture.xml"))
 
-    val (exit, _) = runPipeline(runId = "e2e-s5")
+    val (exit, _) = runPipeline(runId = "5")
     val _         = exit.code shouldBe 0
     val _         = countVotes() shouldBe 1L
     val _         = countStanceStatus() shouldBe 0L // no bill → no stance row
@@ -636,7 +638,7 @@ class VotesPipelineE2ESpec
     stubHouseMembers(240, loadFixture("house/house-vote-119-1-240-members-hr3424.json"))
     stubSenateIndex(miniSenateIndexXml(Nil))
 
-    val (exit, _) = runPipeline(runId = "e2e-s6")
+    val (exit, _) = runPipeline(runId = "6")
     val _         = exit.code shouldBe 0
     val _         = countVotes() shouldBe 1L
 
@@ -656,7 +658,7 @@ class VotesPipelineE2ESpec
     stubHouseMembers(96, loadFixture("house/house-vote-119-1-96-members-sjres18.json"))
     stubSenateIndex(miniSenateIndexXml(Nil))
 
-    val (exit, _) = runPipeline(runId = "e2e-s7")
+    val (exit, _) = runPipeline(runId = "7")
     val _         = exit.code shouldBe 0
 
     // The placeholder bill (119, SJRES, 18) should now exist. Title is empty string per placeholder contract.
@@ -681,7 +683,7 @@ class VotesPipelineE2ESpec
     stubSenateIndex(miniSenateIndexXml(List((648, "S. 1071", "On the Motion"))))
     stubSenateVote(648, loadFixture("senate/vote-119-1-00648-s1071.xml"))
 
-    val (exit, _) = runPipeline(runId = "e2e-s8")
+    val (exit, _) = runPipeline(runId = "8")
     val _         = exit.code shouldBe 0
     val _         = countVotes() shouldBe 1L
 
@@ -703,7 +705,7 @@ class VotesPipelineE2ESpec
     stubSenateIndex(miniSenateIndexXml(List((648, "S. 1071", "On the Motion"))))
     stubSenateVote(648, loadFixture("senate/vote-119-1-00648-s1071.xml"))
 
-    val (exit, _) = runPipeline(runId = "e2e-s9")
+    val (exit, _) = runPipeline(runId = "9")
 
     // Exit code reflects failure (chamber-level Failed result raises itemsFailed > 0).
     val _ = exit.code shouldBe 1
@@ -736,7 +738,7 @@ class VotesPipelineE2ESpec
     stubHouseMembers(96, loadFixture("house/house-vote-119-1-96-members-sjres18.json"))
     stubSenateIndex(miniSenateIndexXml(Nil))
 
-    val (exit, _) = runPipeline(runId = "e2e-s10")
+    val (exit, _) = runPipeline(runId = "10")
     val _         = exit.code shouldBe 1 // at least one failure → Error
 
     // Vote 96 should still have persisted despite vote 240's failure.

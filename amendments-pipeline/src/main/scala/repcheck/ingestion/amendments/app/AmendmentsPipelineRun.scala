@@ -2,17 +2,15 @@ package repcheck.ingestion.amendments.app
 
 import scala.concurrent.duration._
 
-import cats.effect.{Async, ExitCode, Sync}
+import cats.effect.{Async, ExitCode}
 
 import org.http4s.ember.client.EmberClientBuilder
 
 import fs2.io.net.Network
 
-import pureconfig.ConfigSource
-
 import repcheck.ingestion.amendments.pipeline.DoobieVoteAmendmentLinker
 import repcheck.ingestion.common.db.TransactorResource
-import repcheck.ingestion.common.execution.{PipelineFailureHandlerConfig, WorkflowStateUpdater}
+import repcheck.ingestion.common.execution.{PipelineBootstrap, PipelineFailureHandlerConfig, WorkflowStateUpdater}
 import repcheck.ingestion.common.logging.{PipelineLogger, PipelineLoggerFactory}
 
 import com.repcheck.utils.errors.RetryWrapper
@@ -33,7 +31,7 @@ private[app] object AmendmentsPipelineRun {
   def run[F[_]: Async: Network](args: List[String]): F[ExitCode] =
     AmendmentsPipeline.runWithFactories[F](
       args = args,
-      configLoader = Sync[F].delay(ConfigSource.default.loadOrThrow[AmendmentsPipeline.AppConfig]),
+      configLoader = PipelineBootstrap.loadConfig[F, AmendmentsPipeline.AppConfig](args),
       loggerFactory = PipelineLoggerFactory.make[F](PipelineName),
       retryWrapperFactory = (logger: PipelineLogger[F]) => AmendmentsPipeline.buildRetryWrapper[F](logger),
       resourceBuilder = (cfg: AmendmentsPipeline.AppConfig, retryWrapper: RetryWrapper[F]) =>

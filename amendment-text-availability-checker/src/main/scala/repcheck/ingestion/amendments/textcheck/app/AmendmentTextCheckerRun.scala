@@ -89,7 +89,7 @@ private[app] object AmendmentTextCheckerRun {
           resultStream = resultStream,
           logger = logger,
           pipelineName = PipelineName,
-          runId = runId.toString,
+          runId = runId,
           stepRunId = stepRunId,
         )
       }

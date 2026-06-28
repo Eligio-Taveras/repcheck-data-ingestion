@@ -86,6 +86,8 @@ private[app] object BillTextPipelinePipeline {
       PipelineLogger[F],
     ) => Stream[F, ProcessingResult],
     workflowStateUpdaterFactory: (Transactor[F], PipelineFailureHandlerConfig) => Option[WorkflowStateUpdater[F]],
+    runId: Long,
+    stepRunId: Long,
   ): F[ExitCode] =
     for {
       config <- configLoader
@@ -108,9 +110,8 @@ private[app] object BillTextPipelinePipeline {
           resultStream = resultStream,
           logger = logger,
           pipelineName = PipelineName,
-          // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
-          // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
-          runId = "0",
+          runId = runId,
+          stepRunId = stepRunId,
           workflowStateUpdater = workflowStateUpdater,
         )
       }

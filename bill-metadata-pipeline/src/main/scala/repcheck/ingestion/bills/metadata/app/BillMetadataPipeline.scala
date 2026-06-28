@@ -2,7 +2,7 @@ package repcheck.ingestion.bills.metadata.app
 
 import scala.concurrent.duration._
 
-import cats.effect.{Async, ExitCode, Resource, Sync}
+import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
 import org.http4s.client.Client
@@ -11,8 +11,6 @@ import org.http4s.ember.client.EmberClientBuilder
 import fs2.io.net.Network
 
 import doobie.util.transactor.Transactor
-
-import pureconfig.ConfigSource
 
 import repcheck.ingestion.bills.common.persistence.{
   DoobieBillCosponsorRepository,
@@ -25,7 +23,7 @@ import repcheck.ingestion.bills.metadata.config.BillMetadataConfig
 import repcheck.ingestion.bills.metadata.pipeline.BillMetadataProcessor
 import repcheck.ingestion.common.api.{CongressGovClientConfig, RateLimitedHttpClient}
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
-import repcheck.ingestion.common.execution.PipelineExecutor
+import repcheck.ingestion.common.execution.{PipelineBootstrap, PipelineExecutor}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLoggerFactory}
 import repcheck.ingestion.common.placeholders.{DefaultPlaceholderCreator, DoobieEntityRepository}
 import repcheck.members.common.MemberInsertSql
@@ -47,13 +45,12 @@ private[app] object BillMetadataPipeline {
   import MemberWriteInstances._
 
   def run[F[_]: Async: Network](args: List[String]): F[ExitCode] = {
-    val _       = args // args reserved for future CLI config override support
     val bootCtx = LogContext("0", "bill-metadata-boot")
     for {
-      config <- Sync[F].delay {
-        ConfigSource.default.loadOrThrow[AppConfig]
-      }
-      logger <- PipelineLoggerFactory.make[F](PipelineName)
+      config    <- PipelineBootstrap.loadConfig[F, AppConfig](args)
+      runId     <- PipelineBootstrap.extractRunId[F](args)
+      stepRunId <- PipelineBootstrap.extractStepRunId[F](args)
+      logger    <- PipelineLoggerFactory.make[F](PipelineName)
       _ <- logger.info(
         bootCtx,
         s"App boot: db=${config.database.host}:${config.database.port.toString}/${config.database.database} " +
@@ -105,14 +102,11 @@ private[app] object BillMetadataPipeline {
             logger = logger,
           )
 
-          // TODO: replace 0L with the Long run ID obtained from workflow_runs DB registration
-          // once PipelineBootstrap.extractRunId (ingestion-common §3.7) is implemented.
-          val runId        = 0L
           val resultStream = processor.streamAll(runId)
           logger.info(
             bootCtx,
             s"App boot: resources built, processor wired, handing off to PipelineExecutor (runId=${runId.toString})",
-          ) *> PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId.toString)
+          ) *> PipelineExecutor.execute[F](resultStream, logger, PipelineName, runId, stepRunId)
       }
     } yield exitCode
   }

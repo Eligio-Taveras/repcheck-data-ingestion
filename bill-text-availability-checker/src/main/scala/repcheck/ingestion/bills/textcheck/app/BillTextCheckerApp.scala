@@ -2,24 +2,29 @@ package repcheck.ingestion.bills.textcheck.app
 
 import scala.concurrent.duration._
 
-import cats.effect.{ExitCode, IO, IOApp, Sync}
+import cats.effect.{ExitCode, IO, IOApp}
 
 import org.http4s.ember.client.EmberClientBuilder
-
-import pureconfig.ConfigSource
 
 import repcheck.ingestion.bills.textcheck.app.BillTextCheckerPipeline.AppConfig
 import repcheck.ingestion.common.api.RateLimitedHttpClient
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.events.PubSubPublisherResource
+import repcheck.ingestion.common.execution.PipelineBootstrap
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
 
 object BillTextCheckerApp extends IOApp {
 
-  override def run(args: List[String]): IO[ExitCode] = {
-    val _ = args // args reserved for future CLI config override support
+  override def run(args: List[String]): IO[ExitCode] =
+    for {
+      runId     <- PipelineBootstrap.extractRunId[IO](args)
+      stepRunId <- PipelineBootstrap.extractStepRunId[IO](args)
+      exitCode  <- runChecker(args, runId, stepRunId)
+    } yield exitCode
+
+  private[app] def runChecker(args: List[String], runId: Long, stepRunId: Long): IO[ExitCode] =
     BillTextCheckerPipeline.runWithFactories[IO](
-      configLoader = Sync[IO].delay(ConfigSource.default.loadOrThrow[AppConfig]),
+      configLoader = PipelineBootstrap.loadConfig[IO, AppConfig](args),
       loggerFactory = (name: String) => PipelineLoggerFactory.make[IO](name),
       resourceBuilder = (config, logger) =>
         BillTextCheckerPipeline.buildResources[IO](
@@ -47,7 +52,8 @@ object BillTextCheckerApp extends IOApp {
         ),
       checkerFactory = BillTextCheckerPipeline.buildChecker[IO],
       streamFactory = BillTextCheckerPipeline.buildStream[IO],
+      runId = runId,
+      stepRunId = stepRunId,
     )
-  }
 
 }

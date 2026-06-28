@@ -2,11 +2,9 @@ package repcheck.ingestion.amendments.text.app
 
 import java.util.concurrent.TimeUnit
 
-import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Sync}
+import cats.effect.{Async, ExitCode, IO, IOApp, Resource}
 
 import org.http4s.ember.client.EmberClientBuilder
-
-import pureconfig.ConfigSource
 
 import com.google.api.gax.core.NoCredentialsProvider
 import com.google.api.gax.grpc.GrpcTransportChannel
@@ -18,7 +16,7 @@ import repcheck.ingestion.amendments.text.app.AmendmentTextPipelinePipeline.AppC
 import repcheck.ingestion.amendments.text.subscription.PubSubSubscriberResource
 import repcheck.ingestion.common.api.RateLimitedHttpClient
 import repcheck.ingestion.common.db.TransactorResource
-import repcheck.ingestion.common.execution.WorkflowStateUpdater
+import repcheck.ingestion.common.execution.{PipelineBootstrap, WorkflowStateUpdater}
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
 
 /**
@@ -26,13 +24,15 @@ import repcheck.ingestion.common.logging.PipelineLoggerFactory
  * [[AmendmentTextPipelinePipeline]] companion object. Mirror of
  * [[repcheck.ingestion.bills.text.app.BillTextPipelineApp]].
  *
- * CLI args (positional, both optional, default `0L`):
- *   - `args(0)` — `runId`: workflow-run identifier (Long); placeholder until the workflow_runs table is wired up.
- *   - `args(1)` — `stepRunId`: workflow_run_steps row identifier (Long); placeholder until that table exists.
+ * Uniform 3-arg launcher contract (all strict):
+ *   - `args(0)` — config-override JSON blob (`{}` = none), layered over `application.conf` via
+ *     `PipelineBootstrap.loadConfig`.
+ *   - `args(1)` — `runId`: workflow-run identifier (Long). Required and parseable.
+ *   - `args(2)` — `stepRunId`: workflow_run_steps row identifier (Long). Required and parseable.
  *
- * Both default to `0L` when missing or unparseable so the app remains runnable without a workflow registrar. The
- * `WorkflowStateUpdater` is constructed only when a non-zero `runId` is supplied — the placeholder `0L` means no
- * workflow registration is in scope and the updater would have nothing real to write to.
+ * For local / pre-registrar environments callers pass `"0"` for `runId` / `stepRunId`. The `WorkflowStateUpdater` is
+ * constructed only when a non-zero `runId` is supplied — the placeholder `0L` means no workflow registration is in
+ * scope and the updater would have nothing real to write to.
  */
 object AmendmentTextPipelineApp extends IOApp {
 
@@ -60,12 +60,16 @@ object AmendmentTextPipelineApp extends IOApp {
           .map(Some(_))
     }
 
-  override def run(args: List[String]): IO[ExitCode] = {
-    val runId     = args.lift(0).flatMap(_.toLongOption).getOrElse(0L)
-    val stepRunId = args.lift(1).flatMap(_.toLongOption).getOrElse(0L)
+  override def run(args: List[String]): IO[ExitCode] =
+    for {
+      runId     <- PipelineBootstrap.extractRunId[IO](args)
+      stepRunId <- PipelineBootstrap.extractStepRunId[IO](args)
+      exitCode  <- runPipeline(args, runId, stepRunId)
+    } yield exitCode
 
+  private[app] def runPipeline(args: List[String], runId: Long, stepRunId: Long): IO[ExitCode] =
     AmendmentTextPipelinePipeline.runWithFactories[IO](
-      configLoader = Sync[IO].delay(ConfigSource.default.loadOrThrow[AppConfig]),
+      configLoader = PipelineBootstrap.loadConfig[IO, AppConfig](args),
       loggerFactory = (name: String) => PipelineLoggerFactory.make[IO](name),
       resourceBuilder = (config, logger) =>
         AmendmentTextPipelinePipeline.buildResources[IO](
@@ -126,6 +130,5 @@ object AmendmentTextPipelineApp extends IOApp {
       runId = runId,
       stepRunId = stepRunId,
     )
-  }
 
 }

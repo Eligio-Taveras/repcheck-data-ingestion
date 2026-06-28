@@ -113,7 +113,7 @@ private[app] object AmendmentTextPipelinePipeline {
           resultStream = resultStream,
           logger = logger,
           pipelineName = PipelineName,
-          runId = runId.toString,
+          runId = runId,
           stepRunId = stepRunId,
           workflowStateUpdater = workflowStateUpdater,
         )

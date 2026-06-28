@@ -87,7 +87,7 @@ class CommitteeHistoryLoaderPipelineSpec extends AnyFlatSpec with Matchers with 
   "runWithFactories" should "load and exit successfully" in {
     val exit = CommitteeHistoryLoaderPipeline
       .runWithFactories[IO](
-        args = List("cfg-unused", "5"),
+        args = List("{}", "5", "0"),
         configLoader = IO.pure(appConfig),
         loggerFactory = _ => IO.pure(noopLogger),
         resourceBuilder = _ => Resource.pure[IO, LoaderResources[IO]](LoaderResources(testXa, noClient)),
