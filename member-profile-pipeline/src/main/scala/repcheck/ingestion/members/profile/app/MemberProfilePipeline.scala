@@ -2,22 +2,21 @@ package repcheck.ingestion.members.profile.app
 
 import java.util.UUID
 
-import cats.effect.{Async, ExitCode, Resource, Sync}
+import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
 import org.http4s.client.Client
 
 import fs2.Stream
 
-import doobie._
-import doobie.implicits._
 import doobie.util.transactor.Transactor
 
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
 import repcheck.ingestion.common.execution.PipelineExecutor
-import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
+import repcheck.ingestion.common.logging.PipelineLogger
 import repcheck.ingestion.members.profile.api.MembersApiClient
 import repcheck.ingestion.members.profile.config.MemberProfileConfig
 import repcheck.ingestion.members.profile.pipeline.MemberProfileProcessor
@@ -81,9 +80,9 @@ private[app] object MemberProfilePipeline {
       PipelineLogger[F],
     ) => MemberProfileProcessor[F],
     congressesResolver: (AppConfig, Transactor[F], PipelineLogger[F]) => F[List[Int]],
-    streamFactory: (MemberProfileProcessor[F], PipelineLogger[F], List[Int], Long) => Stream[F, ProcessingResult],
-    runId: Long,
-    stepRunId: Long,
+    streamFactory: (MemberProfileProcessor[F], PipelineLogger[F], List[Int], RunId) => Stream[F, ProcessingResult],
+    runId: RunId,
+    stepRunId: StepRunId,
   ): F[ExitCode] =
     for {
       config <- configLoader
@@ -97,61 +96,6 @@ private[app] object MemberProfilePipeline {
         } yield result
       }
     } yield exitCode
-
-  /**
-   * Resolve the list of congresses to ingest. Three layers, in priority order:
-   *
-   *   1. `MEMBERS_CONGRESSES` env var (comma-separated, e.g. `"117,118,119"`). Highest priority — read via the
-   *      `envGetter` parameter (production: `sys.env.get`; tests: a stub) because HOCON cannot parse a string into
-   *      `List[Int]`. Trimmed entries; non-numeric tokens raise.
-   *   1. `config.pipeline.congresses` from `application.conf` / test profiles. Useful for forcing a specific
-   *      multi-congress list without touching env vars.
-   *   1. `SELECT DISTINCT congress FROM bills` from the live DB. Default — lets members-pipeline naturally follow
-   *      whatever congresses the bills pipeline has covered.
-   *
-   * The injectable `envGetter` lets tests exercise the env-path deterministically without mutating the JVM environment.
-   * Production callers pass `sys.env.get` (see [[MemberProfilePipelineApp]]). Mirrors
-   * `repcheck.ingestion.votes.app.VotesPipeline.resolveCongresses` (which inlines the env lookup; we made it injectable
-   * here to keep coverage honest).
-   */
-  private[app] def resolveCongresses[F[_]: Async](
-    config: AppConfig,
-    xa: Transactor[F],
-    logger: PipelineLogger[F],
-    envGetter: String => Option[String],
-  ): F[List[Int]] = {
-    val ctx = LogContext("startup", "members-pipeline:resolve-congresses")
-
-    Sync[F].delay(envGetter("MEMBERS_CONGRESSES").map(_.trim).filter(_.nonEmpty)).flatMap {
-      case Some(raw) =>
-        Sync[F]
-          .delay(raw.split(",").iterator.map(_.trim).filter(_.nonEmpty).map(_.toInt).toList)
-          .flatMap(parsed =>
-            logger
-              .info(ctx, s"Using ${parsed.size} congresses from MEMBERS_CONGRESSES env: ${parsed.mkString(",")}")
-              .as(parsed)
-          )
-      case None if config.pipeline.congresses.nonEmpty =>
-        val configured = config.pipeline.congresses
-        logger
-          .info(
-            ctx,
-            s"Using ${configured.size} congresses from config.pipeline.congresses: ${configured.mkString(",")}",
-          )
-          .as(configured)
-      case None =>
-        val query = sql"SELECT DISTINCT congress FROM bills WHERE congress IS NOT NULL ORDER BY congress DESC"
-          .query[Int]
-          .to[List]
-        for {
-          derived <- xa.trans.apply(query)
-          _ <- logger.info(
-            ctx,
-            s"No env or config override — derived ${derived.size} congresses from bills table: ${derived.mkString(",")}",
-          )
-        } yield derived
-    }
-  }
 
   /**
    * No-op retry logger used when we don't need per-attempt logging. Extracted as a named method so tests can exercise
@@ -206,10 +150,10 @@ private[app] object MemberProfilePipeline {
     processor: MemberProfileProcessor[F],
     logger: PipelineLogger[F],
     congresses: List[Int],
-    runId: Long,
+    runId: RunId,
   ): Stream[F, ProcessingResult] = {
     val _ = logger // reserved for future pre/post-stream logging
-    processor.streamAll(runId, congresses)
+    processor.streamAll(runId.value, congresses)
   }
 
   /**

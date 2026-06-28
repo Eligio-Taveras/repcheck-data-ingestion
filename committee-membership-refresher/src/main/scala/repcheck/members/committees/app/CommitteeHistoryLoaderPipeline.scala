@@ -49,9 +49,9 @@ private[app] object CommitteeHistoryLoaderPipeline {
       logger <- loggerFactory(PipelineName)
       exitCode <- resourceBuilder(config).use { resources =>
         val loader = loaderFactory(resources, config, logger)
-        val logCtx = LogContext(runId = runId.toString, stepName = PipelineName)
+        val logCtx = LogContext(runId = runId.value.toString, stepName = PipelineName)
         for {
-          result <- loader.load(runId)
+          result <- loader.load(runId.value)
           _ <- logger.info(
             logCtx,
             s"Pipeline completed: seen=${result.assignmentsSeen.toString} upserted=${result.upserted.toString} " +

@@ -303,11 +303,11 @@ class VotesPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar 
   }
 
   "PipelineBootstrap.extractStepRunId" should "return the Long value when args(2) is numeric" in {
-    PipelineBootstrap.extractStepRunId[IO](List("{}", "123", "7")).unsafeRunSync() shouldBe 7L
+    PipelineBootstrap.extractStepRunId[IO](List("{}", "123", "7")).unsafeRunSync().value shouldBe 7L
   }
 
   it should "trim whitespace around a valid numeric args(2)" in {
-    PipelineBootstrap.extractStepRunId[IO](List("{}", "123", "  99  ")).unsafeRunSync() shouldBe 99L
+    PipelineBootstrap.extractStepRunId[IO](List("{}", "123", "  99  ")).unsafeRunSync().value shouldBe 99L
   }
 
   // =====================================================================================

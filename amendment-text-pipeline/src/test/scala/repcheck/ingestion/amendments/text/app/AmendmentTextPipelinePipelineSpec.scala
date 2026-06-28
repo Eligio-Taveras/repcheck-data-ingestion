@@ -25,6 +25,7 @@ import repcheck.ingestion.amendments.text.pipeline.AmendmentTextProcessor
 import repcheck.ingestion.amendments.text.subscription.{EventSubscriberConfig, PubSubEventSubscriber, ReceivedEvent}
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.execution.PipelineFailureHandlerConfig
+import repcheck.ingestion.common.ids.RunId
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.text.embedding.EmbeddingConfig
 import repcheck.pipeline.models.events.{AmendmentTextAvailableEvent, PipelineEvent}
@@ -184,7 +185,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
     }
 
     val result = AmendmentTextPipelinePipeline
-      .buildStream[IO](subscriber, processor, testConfig, logger, runId = 0L)
+      .buildStream[IO](subscriber, processor, testConfig, logger, runId = RunId(0L))
       .compile
       .toList
       .unsafeRunSync()
@@ -253,7 +254,7 @@ class AmendmentTextPipelinePipelineSpec extends AnyFlatSpec with Matchers with M
     val cfg = testConfig.copy(eventSubscriber = testConfig.eventSubscriber.copy(pullTimeout = 100.millis))
 
     val result = AmendmentTextPipelinePipeline
-      .buildStream[IO](subscriber, processor, cfg, logger, runId = 99L)
+      .buildStream[IO](subscriber, processor, cfg, logger, runId = RunId(99L))
       .compile
       .toList
       .unsafeRunSync()

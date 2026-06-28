@@ -1,7 +1,5 @@
 package repcheck.ingestion.bills.textcheck.app
 
-import java.util.UUID
-
 import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
@@ -18,11 +16,10 @@ import repcheck.ingestion.bills.textcheck.pipeline.BillTextAvailabilityChecker
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{DefaultIngestionEventPublisher, EventPublisherConfig, PubSubEventPublisher}
-import repcheck.ingestion.common.execution.PipelineExecutor
+import repcheck.ingestion.common.execution.{PipelineExecutor, RetryWrapperFactory}
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
 import repcheck.ingestion.common.logging.PipelineLogger
 import repcheck.pipeline.models.metadata.ProcessingResult
-
-import com.repcheck.utils.errors.{ErrorClass, RetryWrapper}
 
 private[app] object BillTextCheckerPipeline {
 
@@ -56,10 +53,10 @@ private[app] object BillTextCheckerPipeline {
     streamFactory: (
       BillTextAvailabilityChecker[F],
       PipelineLogger[F],
-      Long,
+      RunId,
     ) => Stream[F, ProcessingResult],
-    runId: Long,
-    stepRunId: Long,
+    runId: RunId,
+    stepRunId: StepRunId,
   ): F[ExitCode] =
     for {
       config <- configLoader
@@ -83,14 +80,6 @@ private[app] object BillTextCheckerPipeline {
       }
     } yield exitCode
 
-  /**
-   * No-op retry logger used when we don't need per-attempt logging. Extracted as a named method (rather than inlined as
-   * a lambda) so tests can invoke it directly and cover its body — an inlined lambda is never exercised in unit tests
-   * because the test path doesn't trigger a retry, which leaves the lambda body uncovered.
-   */
-  private[app] def noOpRetryLogger[F[_]: Async]: (Int, Int, Long, ErrorClass, String, UUID) => F[Unit] =
-    (_, _, _, _, _, _) => Async[F].unit
-
   private[app] def buildChecker[F[_]: Async](
     httpClient: Client[F],
     xa: Transactor[F],
@@ -99,7 +88,7 @@ private[app] object BillTextCheckerPipeline {
     logger: PipelineLogger[F],
   ): BillTextAvailabilityChecker[F] = {
     val billRepo     = new DoobieBillRepository
-    val retryWrapper = new RetryWrapper[F](noOpRetryLogger[F])
+    val retryWrapper = RetryWrapperFactory.noOp[F]
     val eventPublisher = new DefaultIngestionEventPublisher[F](
       publisher = pubSubPublisher,
       topicName = config.eventPublisher.topicName,
@@ -122,10 +111,10 @@ private[app] object BillTextCheckerPipeline {
   private[app] def buildStream[F[_]](
     checker: BillTextAvailabilityChecker[F],
     logger: PipelineLogger[F],
-    runId: Long,
+    runId: RunId,
   ): Stream[F, ProcessingResult] = {
     val _ = logger // reserved for future pre/post-stream logging
-    checker.checkAll(runId)
+    checker.checkAll(runId.value)
   }
 
   private[app] def buildResources[F[_]](

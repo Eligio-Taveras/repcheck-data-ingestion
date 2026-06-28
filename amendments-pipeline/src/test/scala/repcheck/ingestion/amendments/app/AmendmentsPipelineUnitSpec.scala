@@ -28,7 +28,7 @@ import repcheck.ingestion.common.execution.WorkflowStateUpdater
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.pipeline.models.metadata.ProcessingResult
 
-import com.repcheck.utils.errors.{ErrorClass, ErrorClassifier, RetryConfig, RetryWrapper}
+import com.repcheck.utils.errors.{RetryConfig, RetryWrapper}
 
 class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoSugar {
 
@@ -363,54 +363,6 @@ class AmendmentsPipelineUnitSpec extends AnyFlatSpec with Matchers with MockitoS
     val res = AmendmentsPipelineResources.validatePoolSizing(db, cfg)
     val _   = res.isDefined shouldBe true
     res.foreach(_ should include("45"))
-  }
-
-  // --------------------------------------------------------------------------------------------
-  // buildRetryWrapper
-  // --------------------------------------------------------------------------------------------
-
-  "buildRetryWrapper" should "construct a RetryWrapper that funnels retries into the supplied logger" in {
-    val captured = new AtomicReference[List[String]](List.empty)
-    val logger = new PipelineLogger[IO] {
-      override def info(context: LogContext, message: String): IO[Unit] = IO.unit
-      override def warn(context: LogContext, message: String): IO[Unit] = IO {
-        val _ = captured.updateAndGet(_ :+ message)
-      }
-      override def error(context: LogContext, message: String, cause: Option[Throwable]): IO[Unit] = IO.unit
-      override def debug(context: LogContext, message: String): IO[Unit]                           = IO.unit
-    }
-
-    val wrapper  = AmendmentsPipeline.buildRetryWrapper[IO](logger)
-    val attempts = new AtomicReference[Int](0)
-    val operation: IO[String] = IO {
-      val n = attempts.updateAndGet(_ + 1)
-      n
-    }.flatMap(n =>
-      if (n == 1) { IO.raiseError[String](new RuntimeException("transient: boom")) }
-      else { IO.pure("ok") }
-    )
-
-    val classifier = new ErrorClassifier {
-      override def classify(t: Throwable): ErrorClass = ErrorClass.Transient
-    }
-
-    val result = wrapper
-      .withRetry[String](
-        operation = operation,
-        config = RetryConfig(
-          maxRetries = 2,
-          initialBackoffMs = 1L,
-          maxBackoffMs = 1L,
-          backoffMultiplier = 1.0,
-        ),
-        classifier = classifier,
-        errorFactory = (_, cause) => cause,
-        correlationId = java.util.UUID.randomUUID(),
-      )
-      .unsafeRunSync()
-
-    val _ = result shouldBe "ok"
-    captured.get().exists(_.contains("Retry 1/2")) shouldBe true
   }
 
 }

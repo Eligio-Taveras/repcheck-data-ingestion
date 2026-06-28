@@ -23,6 +23,7 @@ import org.scalatestplus.mockito.MockitoSugar
 import repcheck.ingestion.common.api.CongressGovClientConfig
 import repcheck.ingestion.common.db.DatabaseConfig
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubEventPublisher}
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
 import repcheck.ingestion.common.logging.{LogContext, PipelineLogger}
 import repcheck.ingestion.members.profile.app.MemberProfilePipeline.{AppConfig, PipelineResources}
 import repcheck.ingestion.members.profile.config.MemberProfileConfig
@@ -135,8 +136,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
         streamFactory = (_, _, _, _) => Stream.empty,
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .unsafeRunSync()
 
@@ -155,8 +156,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
         streamFactory = (_, _, _, _) => Stream.emit(ProcessingResult.Failed("A000001", "api error")),
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .unsafeRunSync()
 
@@ -175,8 +176,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
         streamFactory = (_, _, _, _) => Stream.empty,
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .attempt
       .unsafeRunSync()
@@ -197,8 +198,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
         processorFactory = (_, _, _, _, _) => mock[MemberProfileProcessor[IO]],
         congressesResolver = stubCongressesResolver,
         streamFactory = (_, _, _, _) => Stream.empty,
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .unsafeRunSync()
 
@@ -223,8 +224,8 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
           capturedList.set(congresses)
           Stream.empty
         },
-        runId = 1L,
-        stepRunId = 1L,
+        runId = RunId(1L),
+        stepRunId = StepRunId(1L),
       )
       .unsafeRunSync()
 
@@ -263,7 +264,11 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
       .thenReturn(Stream.emit(ProcessingResult.Succeeded("A000001")))
 
     val results =
-      MemberProfilePipeline.buildStream[IO](processor, logger, List(118, 119), 55L).compile.toList.unsafeRunSync()
+      MemberProfilePipeline
+        .buildStream[IO](processor, logger, List(118, 119), RunId(55L))
+        .compile
+        .toList
+        .unsafeRunSync()
 
     val _ = results.size shouldBe 1
     val _ = results.headOption.map(_.entityId) shouldBe Some("A000001")
@@ -277,7 +282,7 @@ class MemberProfilePipelineSpec extends AnyFlatSpec with Matchers with MockitoSu
     when(processor.streamAll(anyLong(), eqTo(List(118)))).thenReturn(Stream.empty)
 
     val results =
-      MemberProfilePipeline.buildStream[IO](processor, logger, List(118), 0L).compile.toList.unsafeRunSync()
+      MemberProfilePipeline.buildStream[IO](processor, logger, List(118), RunId(0L)).compile.toList.unsafeRunSync()
 
     results shouldBe empty
   }

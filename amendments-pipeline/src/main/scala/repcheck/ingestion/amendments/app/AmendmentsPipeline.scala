@@ -148,20 +148,4 @@ private[app] object AmendmentsPipeline {
     }
   }
 
-  /**
-   * Build a `RetryWrapper[F]` whose log callback funnels every retry attempt into the pipeline's structured logger as a
-   * WARN. Mirrors `BillMetadataPipeline.run` — without this the wrapper is a black hole on retries, and a stalled Ember
-   * timeout looks like a frozen pipeline to operators.
-   */
-  private[app] def buildRetryWrapper[F[_]: Async](logger: PipelineLogger[F]): RetryWrapper[F] = {
-    val ctx = LogContext("0", PipelineName)
-    new RetryWrapper[F]((attempt, maxRetries, delayMs, errorClass, message, correlationId) =>
-      logger.warn(
-        ctx.copy(correlationId = Some(correlationId)),
-        s"Retry ${attempt.toString}/${maxRetries.toString} scheduled in ${delayMs.toString}ms " +
-          s"(errorClass=${errorClass.toString}): $message",
-      )
-    )
-  }
-
 }

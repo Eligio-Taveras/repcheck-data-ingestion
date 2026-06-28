@@ -1,6 +1,6 @@
 package repcheck.ingestion.votes.app
 
-import cats.effect.{Async, ExitCode, Resource, Sync}
+import cats.effect.{Async, ExitCode, Resource}
 import cats.syntax.all._
 
 import org.http4s.ember.client.EmberClientBuilder
@@ -8,10 +8,10 @@ import org.http4s.ember.client.EmberClientBuilder
 import fs2.Stream
 import fs2.io.net.Network
 
-import doobie.implicits._
 import doobie.util.transactor.Transactor
 
 import repcheck.ingestion.common.api.CongressGovClientConfig
+import repcheck.ingestion.common.congresses.CongressResolver
 import repcheck.ingestion.common.db.{DatabaseConfig, TransactorResource}
 import repcheck.ingestion.common.events.{EventPublisherConfig, PubSubPublisherResource}
 import repcheck.ingestion.common.execution.{PipelineBootstrap, PipelineExecutor}
@@ -70,7 +70,14 @@ private[votes] object VotesPipeline {
           pubSubPublisherFactory = PubSubPublisherResource.make[F](_),
         ),
       processorFactory = VotesProcessorFactory.build[F],
-      congressesResolver = (cfg, xa, logger) => resolveCongresses[F](cfg, xa, logger),
+      congressesResolver = (cfg, xa, logger) =>
+        CongressResolver.resolve[F](
+          envVarName = "VOTES_CONGRESSES",
+          stepName = "votes-pipeline:resolve-congresses",
+          configuredCongresses = cfg.pipeline.congresses,
+          xa = xa,
+          logger = logger,
+        ),
       streamFactory =
         (processor: VoteProcessor[F], runId: String, congresses: List[Int]) => processor.streamAll(runId, congresses),
     )
@@ -103,54 +110,5 @@ private[votes] object VotesPipeline {
         } yield result
       }
     } yield exitCode
-
-  /**
-   * Resolve the list of congresses to ingest. Three layers, in priority order:
-   *
-   *   1. `VOTES_CONGRESSES` env var (comma-separated, e.g. `"117,118,119"`). Highest priority — read directly via
-   *      `sys.env` because HOCON cannot parse a string into `List[Int]`. Trimmed entries; non-numeric tokens raise. 2.
-   *      `config.pipeline.congresses` from `application.conf` / test profiles. Useful for forcing a specific
-   *      multi-congress list without touching env vars. 3. `SELECT DISTINCT congress FROM bills` from the live DB.
-   *      Default — lets votes-pipeline naturally follow whatever congresses the bills pipeline has covered.
-   *
-   * This is the production wiring; the unit spec replaces the whole resolver with a stub so it never touches env or DB.
-   */
-  private[app] def resolveCongresses[F[_]: Async](
-    config: AppConfig,
-    xa: Transactor[F],
-    logger: PipelineLogger[F],
-  ): F[List[Int]] = {
-    val ctx = repcheck.ingestion.common.logging.LogContext("startup", "votes-pipeline:resolve-congresses")
-
-    Sync[F].delay(sys.env.get("VOTES_CONGRESSES").map(_.trim).filter(_.nonEmpty)).flatMap {
-      case Some(raw) =>
-        Sync[F]
-          .delay(raw.split(",").iterator.map(_.trim).filter(_.nonEmpty).map(_.toInt).toList)
-          .flatMap(parsed =>
-            logger
-              .info(ctx, s"Using ${parsed.size} congresses from VOTES_CONGRESSES env: ${parsed.mkString(",")}")
-              .as(parsed)
-          )
-      case None if config.pipeline.congresses.nonEmpty =>
-        val configured = config.pipeline.congresses
-        logger
-          .info(
-            ctx,
-            s"Using ${configured.size} congresses from config.pipeline.congresses: ${configured.mkString(",")}",
-          )
-          .as(configured)
-      case None =>
-        val query = sql"SELECT DISTINCT congress FROM bills WHERE congress IS NOT NULL ORDER BY congress DESC"
-          .query[Int]
-          .to[List]
-        for {
-          derived <- xa.trans.apply(query)
-          _ <- logger.info(
-            ctx,
-            s"No env or config override — derived ${derived.size} congresses from bills table: ${derived.mkString(",")}",
-          )
-        } yield derived
-    }
-  }
 
 }

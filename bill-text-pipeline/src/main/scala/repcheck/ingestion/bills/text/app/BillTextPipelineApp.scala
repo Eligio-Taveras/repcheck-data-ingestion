@@ -20,6 +20,7 @@ import repcheck.ingestion.common.api.RateLimitedHttpClient
 import repcheck.ingestion.common.db.TransactorResource
 import repcheck.ingestion.common.events.PubSubPublisherResource
 import repcheck.ingestion.common.execution.{PipelineBootstrap, WorkflowStateUpdater}
+import repcheck.ingestion.common.ids.{RunId, StepRunId}
 import repcheck.ingestion.common.logging.PipelineLoggerFactory
 
 object BillTextPipelineApp extends IOApp {
@@ -73,7 +74,7 @@ object BillTextPipelineApp extends IOApp {
       exitCode  <- runPipeline(args, runId, stepRunId)
     } yield exitCode
 
-  private[app] def runPipeline(args: List[String], runId: Long, stepRunId: Long): IO[ExitCode] =
+  private[app] def runPipeline(args: List[String], runId: RunId, stepRunId: StepRunId): IO[ExitCode] =
     BillTextPipelinePipeline.runWithFactories[IO](
       configLoader = PipelineBootstrap.loadConfig[IO, AppConfig](args),
       loggerFactory = (name: String) => PipelineLoggerFactory.make[IO](name),
